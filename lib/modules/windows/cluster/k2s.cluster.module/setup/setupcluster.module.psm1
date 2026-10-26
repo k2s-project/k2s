@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
 
@@ -438,14 +438,8 @@ function Join-LinuxNode {
 
         (Invoke-CmdOnVmViaSSHKey -CmdToExecute 'sudo systemctl start crio' -UserName $NodeUserName -IpAddress $NodeIpAddress).Output | Write-Log
         
-        $job = Invoke-Expression "Start-Job -ScriptBlock `${Function:Wait-ForNodesReady} -ArgumentList $NodeName"
         Write-Log "Invoke join command in node '$NodeName'"
         (Invoke-CmdOnVmViaSSHKey -CmdToExecute $joinCommand -UserName $NodeUserName -IpAddress $NodeIpAddress).Output | Write-Log
-
-        # print the output of the WaitForJoin.ps1
-        Receive-Job $job
-        $job | Stop-Job
-
 
         # check success in joining
         Write-Log "Check join status for node '$NodeName'"

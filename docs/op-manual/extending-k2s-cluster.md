@@ -141,6 +141,8 @@ The command should print the hostname, `Debian`, `13`, and complete without aski
 
 ### 2. Add the new node with K2s CLI
 
+Linux workers join through SSH. Node addition does not require a local Windows `kubeadm` process ID.
+
 ```cmd
 k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection>
 ```

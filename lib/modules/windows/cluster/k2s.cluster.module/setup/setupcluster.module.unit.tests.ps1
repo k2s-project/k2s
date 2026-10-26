@@ -19,6 +19,64 @@ BeforeAll {
     function Get-Service { [CmdletBinding()] param($Name) }
 }
 
+Describe 'Linux join readiness monitoring' -Tag 'unit', 'ci', 'cluster' {
+    BeforeAll {
+        $parseErrors = $null
+        $moduleAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PSScriptRoot\setupcluster.module.psm1", [ref]$null, [ref]$parseErrors)
+        if ($parseErrors) { throw ($parseErrors | Out-String) }
+        $linuxJoin = $moduleAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Join-LinuxNode'
+        }, $false)
+        $windowsJoin = $moduleAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Join-WindowsNode'
+        }, $false)
+        if ($null -eq $linuxJoin -or $null -eq $windowsJoin) { throw 'Join functions missing from module.' }
+    }
+
+    It 'does not invoke the Windows process-monitor helper during Linux join' {
+        $windowsMonitorCalls = @($linuxJoin.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.Extent.Text -match '\bWait-ForNodesReady\b'
+        }, $true))
+
+        $windowsMonitorCalls | Should -BeNullOrEmpty
+    }
+
+    It 'retains remote kubeadm join followed by the node-status check' {
+        $remoteJoin = @($linuxJoin.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -eq 'Invoke-CmdOnVmViaSSHKey' -and
+                $node.Extent.Text -match '-CmdToExecute \$joinCommand\b'
+        }, $true))
+        $statusChecks = @($linuxJoin.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.Extent.Text -match '\bget node \$NodeName\b'
+        }, $true))
+
+        $remoteJoin.Count | Should -Be 1
+        $statusChecks.Count | Should -Be 1
+        $statusChecks[0].Extent.StartLineNumber | Should -BeGreaterThan $remoteJoin[0].Extent.StartLineNumber
+    }
+
+    It 'preserves the Windows monitor with its actual local kubeadm process ID' {
+        $windowsMonitor = @($windowsJoin.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -eq 'Start-Job' -and
+                $node.Extent.Text -match '\bWait-ForNodesReady\b'
+        }, $true))
+
+        $windowsMonitor.Count | Should -Be 1
+        $windowsMonitor[0].Extent.Text | Should -Match '-ArgumentList \$controlPlaneHostName, \$joinProcess\.Id'
+    }
+}
+
     BeforeEach {
         Mock Write-Log {}
         Mock Stop-Process {}

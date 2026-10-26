@@ -224,6 +224,50 @@ This produces `kubernetes_images.json` listing every image across the cluster an
 
 ---
 
+## Debian 13 Node Hardening
+
+New Windows-hosted Debian 13 control-plane images and newly added external Debian 13 workers use shared hardening during provisioning. The supported worker-add workflow targets existing VMs or physical hosts; it does not create managed worker VMs. Existing installations, cached older images and native Linux K2s hosts are not migrated. Rebuild the base image to validate this behavior.
+
+### Package policy
+
+| Candidates | Reason |
+|-----------|--------|
+| `man-db`, `manpages`, `manpages-dev`, `groff`, `groff-base`, `doc-debian`, `info`, `install-info` | Documentation viewers and formatting, not node execution |
+| `nano`, `vim-tiny`, `ed` | Interactive editing is not required for managed provisioning |
+| `exim4`, `exim4-base`, `exim4-config`, `exim4-daemon-light`, `exim4-daemon-heavy` | A Kubernetes node is not a mail server |
+| `avahi-daemon` | Node discovery does not use multicast DNS |
+
+Only installed candidates are considered. The complete purge/autoremove transaction is simulated before execution; held, essential, required-priority and explicitly protected operational packages block unsafe removal. Protection covers Kubernetes, CRI-O, Buildah and nftables, boot/kernel and guest agents, SSH/sudo/systemd, networking (including `ebtables` and `ipset`), DNS, clock and storage/mount tools. In particular, `rpcbind`, `nfs-common`, `cifs-utils`, `btrfs-progs`, `xfsprogs`, `mdadm` and `multipath-tools` are not blanket removal candidates. Dependency metadata alone cannot prove addon compatibility; regression testing remains mandatory.
+
+Hardening requires no package downloads. `/var/lib/k2s/hardening/removal-plan.log` records the simulation and `reinstall.tsv` records planned removed package names and versions, including transitive removals. A checked post-purge inventory verifies removal before updating `removed.tsv`; a query failure stops cleanup rather than treating packages as absent. Preserve these records when investigating partial failures. Repeated cleanup retains the reinstall list.
+
+### Timers, documentation and updates
+
+Automatic `apt-daily` and `apt-daily-upgrade` services/timers are masked before K2s package operations. Timer triggers stop; existing package transactions finish under bounded waiting. Timeout fails provisioning without deleting locks or killing package processes. `motd-news.timer` is disabled when present.
+
+Cloud-init completion with recoverable errors (exit code 2) logs a warning and its full status diagnostics; fatal errors and timeouts stop provisioning. Stopped APT timers have their failed state cleared without terminating active package services.
+
+Late cleanup follows required package/tool installation and precedes image sealing or external-worker join. `/etc/dpkg/dpkg.cfg.d/01_nodoc` excludes documentation under `/usr/share/{doc,man,groff,info,lintian,linda}` from subsequent package installs. Copyright/license notices and runtime examples are retained; locales and common licenses are untouched. APT archive-cache cleanup does not remove retained K2s offline payloads under the provisioning user's home directory.
+
+!!! warning "Controlled security patching remains necessary"
+    Disabling automatic APT jobs does not patch Debian vulnerabilities. Image maintainers must regularly rebuild and validate patched images; operators must deliver approved OS updates through controlled maintenance, including verified offline Debian/delta payloads. Kubernetes-only upgrades do not guarantee OS security patch coverage. Do not assume security updates still run automatically.
+
+### Validation and recovery
+
+1. Retain the previous image/package and capture an equivalent unhardened package inventory, rootfs SBOM, vulnerability scan and size baseline before cleanup.
+2. Smoke-test fresh control-plane and worker nodes, reboot, repeat hardening and check masks, package/tool availability and documentation exclusions. Check exclusions after offline package/delta updates.
+3. Run install/start/stop/restart, addon enable/disable, worker-add and offline delta-upgrade regression suites before publication. Compare rootfs CycloneDX component counts and vulnerability identities using identical Trivy/database versions and equivalent OS/K2s package inputs. Record guest-used bytes and packaged-artifact sizes; fewer guest files do not guarantee VHDX shrinkage, lower RAM or faster boots.
+4. Rehearse recovery on a disposable test image before staged publication. Retaining the previous image is the image rollback; replacing a live control-plane disk is not a substitute for a verified cluster/data backup and restore.
+5. If a tool is needed later, review `reinstall.tsv` and restore recorded versions from approved available packages, accounting for dependencies. Reinstallation does not restore configuration/data lost during purge. A failed simulation aborts before purge; a later failure is not transactional rollback.
+
+Package-safety mocks and isolated filesystem checks of the actual documentation cleanup run through existing Pester unit-test discovery, using Git for Windows Bash. A missing Bash executable or a failed check fails the test; these checks do not replace Debian guest, offline-update or reboot validation. Run just these checks with:
+
+```powershell
+Invoke-Pester -Path .\test\debian13-hardening.unit.tests.ps1 -Tag unit -Output Detailed
+```
+
+---
+
 ## Package Integrity
 
 The `build/catalog/` directory contains Windows catalog files (`.cat`, `.cdf`) used for file integrity verification:

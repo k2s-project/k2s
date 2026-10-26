@@ -305,6 +305,8 @@ function Add-LinuxWorkerNode {
 
         Write-Log "Prepare the computer $IpAddress for provisioning"
 
+        Invoke-Debian13NodeHardening -Stage prepare -InstalledDistribution $installedDistributionOnRemoteComputer -UserName $UserName -IpAddress $IpAddress
+
         Set-UpComputerBeforeProvisioning -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -InstalledDistribution $installedDistributionOnRemoteComputer
 
         # GPU detection: Check if NVIDIA GPU is present on the node (for both online and offline modes)
@@ -325,6 +327,8 @@ function Add-LinuxWorkerNode {
         }
 
         Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -InstalledDistribution $installedDistributionOnRemoteComputer -NodePackagePath $NodePackagePath -SkipGpuPackages:(!$gpuDetected)
+
+        Invoke-Debian13NodeHardening -Stage cleanup -InstalledDistribution $installedDistributionOnRemoteComputer -UserName $UserName -IpAddress $IpAddress
 
         Repair-LinuxWorkerNodeRegistriesConfig -UserName $UserName -IpAddress $IpAddress
 

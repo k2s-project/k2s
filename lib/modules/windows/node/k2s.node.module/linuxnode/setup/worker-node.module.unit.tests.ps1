@@ -18,6 +18,7 @@ Describe 'Add-LinuxWorkerNode failure cleanup' -Tag 'unit', 'ci', 'worker-node' 
         It 'preserves the node config entry (for upgrade/restore) and re-throws the original error' {
             InModuleScope $moduleName {
                 function Add-NodeConfig { param([string]$Name, [Parameter(ValueFromRemainingArguments)]$Rest) }
+                function Invoke-Debian13NodeHardening { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Set-UpComputerBeforeProvisioning { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Repair-LinuxWorkerNodeRegistriesConfig { param([Parameter(ValueFromRemainingArguments)]$Rest) }
@@ -29,6 +30,7 @@ Describe 'Add-LinuxWorkerNode failure cleanup' -Tag 'unit', 'ci', 'worker-node' 
                 # Arrange: Add-NodeConfig succeeds, first provisioning step throws.
                 Mock Write-Log {}
                 Mock Add-NodeConfig {}
+                Mock Invoke-Debian13NodeHardening {}
                 Mock Set-UpComputerBeforeProvisioning { throw 'join failed' }
                 Mock Remove-NodeConfig {}
                 Mock Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {}
@@ -44,6 +46,79 @@ Describe 'Add-LinuxWorkerNode failure cleanup' -Tag 'unit', 'ci', 'worker-node' 
                 # Assert: config entry is NOT deleted - it must survive for a system
                 # upgrade to restore the node; 'k2s node remove' cleans it up later (AC1)
                 Should -Invoke Remove-NodeConfig -Times 0 -Exactly
+            }
+        }
+    }
+}
+
+Describe 'Add-LinuxWorkerNode Debian13 hardening' -Tag 'unit', 'ci', 'worker-node' {
+    BeforeEach {
+        InModuleScope $moduleName {
+            function script:Add-NodeConfig { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            function script:Invoke-Debian13NodeHardening { param($Stage, $InstalledDistribution, $UserName, $IpAddress, $UserPwd = '') }
+            function script:Set-UpComputerBeforeProvisioning { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            function script:Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            function script:Join-LinuxNode { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            function script:Invoke-CmdOnVmViaSSHKey { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+
+            $script:hardeningEvents = [System.Collections.Generic.List[string]]::new()
+            $script:failedHardeningStage = ''
+            Mock Write-Log {}
+            Mock Add-NodeConfig { $script:hardeningEvents.Add('config') }
+            Mock Invoke-Debian13NodeHardening {
+                $script:hardeningEvents.Add($Stage)
+                if ($Stage -eq $script:failedHardeningStage) { throw 'Remote command failed: unsafe hardening refused' }
+            }
+            Mock Set-UpComputerBeforeProvisioning { $script:hardeningEvents.Add('provision') }
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = '' } }
+            Mock Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { $script:hardeningEvents.Add('packages') }
+            Mock Repair-LinuxWorkerNodeRegistriesConfig { $script:hardeningEvents.Add('repair') }
+            Mock Add-LinuxWorkerNodeRegistryMirrors { $script:hardeningEvents.Add('mirrors') }
+            Mock Clear-LinuxWorkerNodeRoutes { $script:hardeningEvents.Add('routes') }
+            Mock Join-LinuxNode { $script:hardeningEvents.Add('join') }
+        }
+    }
+
+    It 'prepares before provisioning and cleans after packages before registry repair and join' {
+        InModuleScope $moduleName {
+            Add-LinuxWorkerNode -NodeName worker -UserName remote -IpAddress '172.19.1.101' -WindowsHostIpAddress '172.19.1.1' -installedDistributionOnRemoteComputer debian13 -NodeType VM-EXISTING
+
+            ($script:hardeningEvents -join ',') | Should -Be 'config,prepare,provision,packages,cleanup,repair,mirrors,routes,join'
+            Should -Invoke Invoke-Debian13NodeHardening -Times 2 -Exactly -ParameterFilter {
+                $InstalledDistribution -eq 'debian13' -and $UserName -eq 'remote' -and $IpAddress -eq '172.19.1.101' -and
+                [string]::IsNullOrWhiteSpace($UserPwd)
+            }
+            Should -Invoke Invoke-Debian13NodeHardening -Times 1 -Exactly -ParameterFilter { $Stage -eq 'prepare' }
+            Should -Invoke Invoke-Debian13NodeHardening -Times 1 -Exactly -ParameterFilter { $Stage -eq 'cleanup' }
+        }
+    }
+
+    It 'passes the detected distribution to the shared no-op guard for other workers' {
+        InModuleScope $moduleName {
+            Add-LinuxWorkerNode -NodeName worker -UserName remote -IpAddress '172.19.1.101' -WindowsHostIpAddress '172.19.1.1' -installedDistributionOnRemoteComputer debian12 -NodeType VM-EXISTING
+
+            Should -Invoke Invoke-Debian13NodeHardening -Times 2 -Exactly -ParameterFilter { $InstalledDistribution -eq 'debian12' }
+            Should -Invoke Join-LinuxNode -Times 1 -Exactly
+        }
+    }
+
+    It 'does not repair registries or join after remote <Stage> failure' -ForEach @(
+        @{ Stage = 'prepare'; Expected = 'config,prepare' }
+        @{ Stage = 'cleanup'; Expected = 'config,prepare,provision,packages,cleanup' }
+    ) {
+        InModuleScope $moduleName -Parameters @{ Stage = $Stage; Expected = $Expected } {
+            param($Stage, $Expected)
+            $script:failedHardeningStage = $Stage
+
+            { Add-LinuxWorkerNode -NodeName worker -UserName remote -IpAddress '172.19.1.101' -WindowsHostIpAddress '172.19.1.1' -installedDistributionOnRemoteComputer debian13 -NodeType VM-EXISTING } |
+                Should -Throw '*unsafe hardening refused*'
+
+            ($script:hardeningEvents -join ',') | Should -Be $Expected
+            Should -Invoke Repair-LinuxWorkerNodeRegistriesConfig -Times 0 -Exactly
+            Should -Invoke Join-LinuxNode -Times 0 -Exactly
+            if ($Stage -eq 'prepare') {
+                Should -Invoke Set-UpComputerBeforeProvisioning -Times 0 -Exactly
+                Should -Invoke Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -Times 0 -Exactly
             }
         }
     }

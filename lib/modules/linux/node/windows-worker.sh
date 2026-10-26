@@ -478,7 +478,10 @@ catch {
 EOF
   scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
-  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || return 1
+  # Best-effort: the worker's disk is a fresh qcow2 overlay on every install, so a stale
+  # marker from a previous run cannot actually exist here. Do not abort the join over a
+  # transient hiccup in this throwaway cleanup call.
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || true
   # The SSH session may die mid-run if the worker's NIC gets rebound; that is expected.
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\JoinWorker.ps1' || true
   k2s_windows_worker_wait_for_join_result
@@ -561,7 +564,10 @@ catch {
 EOF
   scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
-  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || return 1
+  # Best-effort: the worker's disk is a fresh qcow2 overlay on every install, so a stale
+  # marker from a previous run cannot actually exist here. Do not abort the start over a
+  # transient hiccup in this throwaway cleanup call.
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || true
   # The SSH session is expected to die mid-run, so its exit status says nothing.
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\StartWorker.ps1' || true
   k2s_windows_worker_wait_for_start_result

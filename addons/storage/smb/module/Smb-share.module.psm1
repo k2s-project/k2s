@@ -630,6 +630,7 @@ function Restore-SmbShareAndFolderWindowsHost {
         Write-Log "No access to shared folder '$($Config.WinMountPath)' yet, establishing it.."
     }
 
+    Install-DebianPackages -addon 'storage' -implementation 'smb' -packages 'cifs-utils'
     New-SmbHostOnWindowsIfNotExisting -Config $Config
     New-SharedFolderMountOnLinuxClient -Config $Config
     Wait-ForSharedFolderMountOnLinuxClient -Config $Config

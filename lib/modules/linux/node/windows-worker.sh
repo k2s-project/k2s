@@ -366,12 +366,15 @@ k2s_windows_worker_diagnose_node() {
   printf '===== end of Windows worker node diagnostics =====\n'
 }
 
+k2s_windows_worker_join_result_file() { printf '%s' 'C:\ProgramData\K2s\JoinWorker.result'; }
+
 k2s_windows_worker_join_cluster() {
-  local join_command join_script escaped_join gateway worker_ip
+  local join_command join_script escaped_join gateway worker_ip result_file
   join_command=$(kubeadm token create --ttl 30m --print-join-command) || return 1
   escaped_join=${join_command//\'/\'\'}
   gateway=$(k2s_windows_worker_gateway) || return 1
   worker_ip=$(k2s_windows_worker_ip) || return 1
+  result_file=$(k2s_windows_worker_join_result_file)
   join_script=$(mktemp)
   cat > "$join_script" <<EOF
 Import-Module 'C:\\k2s\\lib\\modules\\windows\\infra\\k2s.infra.module\\k2s.infra.module.psm1' -Force
@@ -387,6 +390,12 @@ Initialize-Logging -ShowLogs
 # modules are written and tested against 'Continue'. Forcing 'Stop' here turns
 # their benign non-terminating errors into fatal ones.
 \$ErrorActionPreference = 'Continue'
+
+# Whatever inside Add-WindowsWorkerNodeOnWindowsHost rebinds the worker's NIC (loopback
+# adapter install, VFP rules, HNS) can drop this SSH session the same way starting the
+# node does. Record the outcome so the host can pick it up after reconnecting instead of
+# depending on the SSH exit status.
+try {
 
 \$installationPath = Get-KubePath
 Set-Location \$installationPath
@@ -437,10 +446,21 @@ Copy-Item "\$installationPath\config" -Destination "\$kubeConfigDir\config" -For
 \$env:KUBECONFIG = "\$installationPath\config"
 [Environment]::SetEnvironmentVariable('KUBECONFIG', "\$installationPath\config", [System.EnvironmentVariableTarget]::Machine)
 
+# Add-WindowsWorkerNodeOnWindowsHost requires this path (it reads kubeletOverrides.windowsWorker
+# from it). The native Linux control-plane install does not stage an effective-install-config.json
+# anywhere the worker could fetch it, so provide an empty one: Get-K2sKubeletOverrideContent treats
+# a config with no 'kubeletOverrides' key as "no overrides" rather than an error. Per-worker kubelet
+# overrides are therefore not yet supported for a managed KVM Windows worker.
+\$effectiveInstallConfigPath = 'C:\ProgramData\K2s\effective-install-config.json'
+if (!(Test-Path \$effectiveInstallConfigPath)) {
+    '{}' | Set-Content -Path \$effectiveInstallConfigPath -Encoding ascii
+}
+
 \$workerNodeParams = @{
-    Proxy               = 'http://$gateway:8181'
-    PodSubnetworkNumber = '1'
-    JoinCommand         = '$escaped_join'
+    Proxy                      = 'http://$gateway:8181'
+    PodSubnetworkNumber        = '1'
+    JoinCommand                = '$escaped_join'
+    EffectiveInstallConfigPath = \$effectiveInstallConfigPath
 }
 Add-WindowsWorkerNodeOnWindowsHost @workerNodeParams
 
@@ -449,10 +469,44 @@ Write-Log 'Adding mirror registries'
 foreach (\$registry in (Get-MirrorRegistries)) {
     Set-Registry -Name \$registry.registry -Https -SkipVerify -Mirror \$registry.mirror -Server \$registry.server
 }
+    'OK' | Set-Content -Path '$result_file' -Encoding ascii
+}
+catch {
+    "FAILED: \$_" | Set-Content -Path '$result_file' -Encoding ascii
+    throw
+}
 EOF
   scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
-  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\JoinWorker.ps1'
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || return 1
+  # The SSH session may die mid-run if the worker's NIC gets rebound; that is expected.
+  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\JoinWorker.ps1' || true
+  k2s_windows_worker_wait_for_join_result
+}
+
+# Polls for the marker JoinWorker.ps1 writes, reconnecting as needed while the worker's
+# networking settles after a NIC rebind. Mirrors k2s_windows_worker_wait_for_start_result.
+k2s_windows_worker_wait_for_join_result() {
+  local result_file outcome deadline=$((SECONDS + 900))
+  result_file=$(k2s_windows_worker_join_result_file)
+  while :; do
+    outcome=$(k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Get-Content -Path '$result_file' -Raw }\"" 2>/dev/null | tr -d '\r\n')
+    case "$outcome" in
+      OK)
+        k2s_log INFO 'Windows worker joined the cluster.'
+        return 0
+        ;;
+      FAILED*)
+        k2s_log ERROR "Joining the Windows worker reported: $outcome"
+        return 1
+        ;;
+    esac
+    if (( SECONDS >= deadline )); then
+      k2s_log ERROR 'Timed out waiting for the Windows worker to report the result of its join.'
+      return 1
+    fi
+    sleep 15
+  done
 }
 
 # Mirrors lib/scripts/windows/worker/windows-host/Start.ps1. Installing the worker

@@ -349,6 +349,11 @@ function Install-DebianPackages {
 				-Timeout 2 `
 				-CmdToExecute "cd .${dirName}/${package} && sudo DEBIAN_FRONTEND=noninteractive apt-get --reinstall install -y --no-install-recommends --no-install-suggests --simulate ./${package}*.deb | grep 'Inst ' | cut -d ' ' -f 2 | sort -u | xargs sudo apt-get download" `
 				-RepairCmd 'sudo dpkg --configure -a; sudo apt --fix-broken install').Output | Write-Log
+
+			if (!(Get-DebianPackageAvailableOffline -addon $addon -implementation $implementation -package $package)) {
+				(Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "rm -rf .${dirName}/${package}" -IgnoreErrors).Output | Write-Log
+				throw "Download of Debian package '$package' failed, no .deb files found."
+			}
 		}
 
 		Write-Log "Installing $package offline."
@@ -372,7 +377,8 @@ function Get-DebianPackageAvailableOffline {
 	}
 
 	# TODO: NOTE: DO NOT USE `ExecCmdMaster` here to get the return value.
-	ssh.exe -n -o StrictHostKeyChecking=no -i (Get-SSHKeyControlPlane) (Get-ControlPlaneRemoteUser) "[ -d .${dirName}/${package} ]"
+	# An existing but empty directory (e.g. left over from an aborted download) must not count as available.
+	ssh.exe -n -o StrictHostKeyChecking=no -i (Get-SSHKeyControlPlane) (Get-ControlPlaneRemoteUser) "ls .${dirName}/${package}/*.deb > /dev/null 2>&1"
 	if (!$?) {
 		return $false
 	}

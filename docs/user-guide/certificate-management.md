@@ -13,6 +13,13 @@ When you enable an **ingress addon** (`nginx`, `traefik`, or `nginx-gw`) or the 
 
 For production deployments, you should replace the default self-signed CA with certificates issued by your organization's trusted Certificate Authority. The `--omitCertMgr` flag on ingress addons enables exactly this workflow.
 
+Internal webhook certificates are separate from ingress TLS. The KServe addon
+owns its webhook CA, TLS Secret and mutating/validating webhook CA bundles,
+without requiring cert-manager or an ingress addon. Its existing cluster-start
+hook checks and renews certificates as needed; `k2s system certificate renew`
+does not rotate KServe's certificate.
+See the [KServe addon](addons.md#kserve) for configuration and lifecycle details.
+
 ```mermaid
 flowchart LR
     A[Install K2s] --> B{Certificate Strategy}

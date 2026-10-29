@@ -23,6 +23,7 @@ The following addons will be deployed with **K2s**:
 | [ingress nginx](./ingress/nginx/README.md) | Ingress Controller for external access that uses nginx as a reverse proxy | 
 | [ingress traefik](./ingress/traefik/README.md) | Ingress Controller for external access that uses traefik as a reverse proxy | 
 | [ingress nginx-gw](./ingress/nginx-gw/README.md) | Ingress Controller for external access that uses NGINX Gateway Fabric | 
+| [kserve](./kserve/README.md) | Standard-mode model serving with KServe and optional CPU or GPU LLM examples |
 | [kubevirt](./kubevirt/README.md) | Manage VM workloads with k2s | 
 | [logging](./logging/README.md) | Dashboard for Kubernetes container logs | 
 | [metrics](./metrics/README.md) | Kubernetes metrics server for API Access to service metrics | 

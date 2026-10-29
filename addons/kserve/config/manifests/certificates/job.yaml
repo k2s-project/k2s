@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k2s-kserve-certgen
+  namespace: kserve
+  labels:
+    app.kubernetes.io/managed-by: k2s-kserve
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 180
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: k2s-kserve
+    spec:
+      serviceAccountName: k2s-kserve-certgen
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: create
+          image: registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.6.9
+          imagePullPolicy: IfNotPresent
+          args:
+            - create
+            - --host=kserve-webhook-server-service,kserve-webhook-server-service.kserve,kserve-webhook-server-service.kserve.svc,kserve-webhook-server-service.kserve.svc.cluster.local
+            - --namespace=kserve
+            - --secret-name=k2s-kserve-webhook-next
+            - --cert-name=tls.crt
+            - --key-name=tls.key
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

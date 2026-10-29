@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-FileCopyrightText: (c) 2026 Siemens Healthineers AG
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-small
+  namespace: kserve-models
+  labels:
+    app.kubernetes.io/managed-by: k2s-kserve
+  annotations:
+    serving.kserve.io/deploymentMode: Standard
+    serving.kserve.io/autoscalerClass: external
+spec:
+  predictor:
+    serviceAccountName: model-server
+    minReplicas: 1
+    maxReplicas: 1
+    nodeSelector:
+      kubernetes.io/os: linux
+      kubernetes.io/arch: amd64
+    model:
+      runtime: k2s-vllm
+      modelFormat:
+        name: vLLM
+      storageUri: hf://Qwen/Qwen2.5-0.5B-Instruct:7ae557604adf67be50417f59c2c2f167def9a775
+      args:
+        - --dtype=half
+        - --max-model-len=2048
+        - --gpu-memory-utilization=0.8
+        - --enforce-eager
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "4"
+          memory: 8Gi
+          nvidia.com/gpu: "1"

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-FileCopyrightText: (c) 2026 Siemens Healthineers AG
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferenceservice-config
+  namespace: kserve
+data:
+  deploy: |-
+    {
+      "defaultDeploymentMode": "Standard"
+    }
+  # KServe v0.21.0 validates ingressGateway even though Standard mode does not use it.
+  ingress: |-
+    {
+      "enableGatewayApi": false,
+      "ingressGateway": "knative-serving/knative-ingress-gateway",
+      "ingressClassName": "nginx",
+      "ingressDomain": "k2s.cluster.local",
+      "domainTemplate": "{{ .Name }}-{{ .Namespace }}.{{ .IngressDomain }}",
+      "urlScheme": "http",
+      "disableIstioVirtualHost": true,
+      "disableIngressCreation": true
+    }
+  security: |-
+    {
+      "autoMountServiceAccountToken": false
+    }

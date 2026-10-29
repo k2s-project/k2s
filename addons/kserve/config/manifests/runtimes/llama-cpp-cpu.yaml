@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-FileCopyrightText: (c) 2026 Siemens Healthineers AG
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
+metadata:
+  name: k2s-llama-cpp-cpu
+  labels:
+    app.kubernetes.io/managed-by: k2s-kserve
+spec:
+  nodeSelector:
+    kubernetes.io/os: linux
+  supportedModelFormats:
+    - name: gguf
+      autoSelect: false
+  containers:
+    - name: kserve-container
+      # Versioned tag keeps compatibility with the K2s offline image exporter.
+      image: ghcr.io/ggml-org/llama.cpp:server-b11977
+      imagePullPolicy: IfNotPresent
+      command:
+        - /app/llama-server
+      args:
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8080"
+        - --alias
+        - "{{.Name}}"
+        - --threads
+        - "4"
+        - --n-gpu-layers
+        - "0"
+        - --parallel
+        - "1"
+        - --offline
+        - --no-webui
+      env:
+        - name: HOME
+          value: /tmp
+      ports:
+        - name: http1
+          containerPort: 8080
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+        limits:
+          cpu: "4"
+          memory: 8Gi
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        periodSeconds: 10
+        timeoutSeconds: 5
+      startupProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        periodSeconds: 10
+        failureThreshold: 90
+        timeoutSeconds: 5
+  hostIPC: false

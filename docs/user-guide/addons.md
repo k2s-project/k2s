@@ -48,6 +48,7 @@ Deploying individual workloads (e.g., manually installing an ingress controller,
 | **dicom** | DICOM server based on Orthanc |
 | **gpu-node** | GPU access for the control plane node |
 | **ingress** | Ingress controllers (nginx, nginx-gw, traefik implementations) |
+| **kserve** | Standard-mode model serving with optional CPU/GPU LLM examples (Windows hosts) |
 | **kubevirt** | VM workload management on Kubernetes |
 | **logging** | Container log dashboard |
 | **metrics** | Kubernetes metrics server for API access to service metrics |
@@ -89,6 +90,35 @@ k2s addons enable ingress nginx --omitCertMgr
 ```
 
 Only one ingress implementation can be active at a time. By default, cert-manager is installed with a self-signed CA. See [Certificate Management](certificate-management.md) for details on using external certificate authorities.
+
+### kserve
+
+Standard-mode KServe model serving for Windows-hosted K2s clusters, without
+Knative or Istio. No model is started by default.
+
+| Enable Flag | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `--model` | string | `none` | Optional `qwen-cpu` or `qwen-gpu` example; explicitly downloads public weights |
+| `--proxy` | string | `auto` | Model download proxy: K2s host proxy, an HTTP(S) URL, or `none` for direct access |
+| `--ca-bundle` | string | empty | Approved public PEM CA bundle for model download HTTPS |
+
+```console
+k2s addons enable kserve
+k2s addons status kserve
+k2s addons disable kserve
+```
+
+Requires Kubernetes 1.32+, a Linux node, and additional CPU/RAM capacity for
+model workloads. The GPU example also requires compatible NVIDIA drivers,
+container runtime integration and an advertised GPU resource.
+Webhook certificates are addon-owned and independent of cert-manager, ingress and
+security. Certificate checks and renewal use the addon's existing cluster-start
+hook; `k2s system certificate renew` does not rotate KServe's webhook certificate.
+Disable retains CRDs, namespaces and model storage, and refuses while custom model
+workloads still require the controller. Offline export includes images, not model
+weights; pre-stage weights on a PVC for disconnected inference.
+See the [KServe addon README](https://github.com/k2s-project/k2s/blob/main/addons/kserve/README.md)
+for model access, proxy/CA setup and prerequisites.
 
 ### dashboard
 

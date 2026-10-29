@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: AddonManifest
+metadata:
+  name: kserve
+  description: Standard-mode model serving with KServe and optional CPU or GPU LLM examples
+spec:
+  implementations:
+    - name: kserve
+      description: Standard-mode model serving with KServe and optional CPU or GPU LLM examples
+      offline_usage:
+        linux:
+          repos: []
+          deb: []
+          curl: []
+          additionalImages:
+            - docker.io/kserve/storage-initializer:v0.21.0
+          additionalImagesFiles:
+            - config/manifests/controller/kserve.yaml
+            - config/manifests/runtimes/llama-cpp-cpu.yaml
+            - config/manifests/runtimes/vllm.yaml
+            - config/manifests/certificates/job.yaml
+        windows:
+          curl: []
+      commands:
+        enable:
+          cli:
+            flags:
+              - name: model
+                default: none
+                description: Optional example to start (downloads public weights when enabled)
+                constraints:
+                  kind: validation-set
+                  validationSet:
+                    - none
+                    - qwen-cpu
+                    - qwen-gpu
+              - name: proxy
+                default: auto
+                description: Model download proxy URL, auto for the K2s host proxy, or none for direct access
+              - name: ca-bundle
+                default: ""
+                description: Path to an approved PEM CA bundle for model downloads (public certificates only)
+            examples:
+              - cmd: k2s addons enable kserve
+                comment: Install KServe and runtime definitions without starting a model
+              - cmd: k2s addons enable kserve --model qwen-cpu
+                comment: Also start the small CPU Qwen example and download its weights
+              - cmd: k2s addons enable kserve --model qwen-gpu
+                comment: Also start the GPU example on a node exposing an available NVIDIA GPU
+          script:
+            subPath: Enable.ps1
+            parameterMappings:
+              - cliFlagName: model
+                scriptParameterName: Model
+              - cliFlagName: proxy
+                scriptParameterName: Proxy
+              - cliFlagName: ca-bundle
+                scriptParameterName: CaBundle
+        disable:
+          cli:
+            examples:
+              - cmd: k2s addons disable kserve
+                comment: Remove KServe and its example workloads, retaining CRDs and model data
+          script:
+            subPath: Disable.ps1

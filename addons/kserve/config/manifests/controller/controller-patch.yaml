@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-FileCopyrightText: (c) 2026 Siemens Healthineers AG
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kserve-controller-manager
+  namespace: kserve
+spec:
+  replicas: 1
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: manager
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+        - name: kube-rbac-proxy
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

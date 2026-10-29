@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: (c) 2026 The K2s Authors
+# SPDX-FileCopyrightText: (c) 2026 Siemens Healthineers AG
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
+metadata:
+  name: k2s-vllm
+  labels:
+    app.kubernetes.io/managed-by: k2s-kserve
+  annotations:
+    serving.kserve.io/server-type: vllmserver
+spec:
+  nodeSelector:
+    kubernetes.io/os: linux
+    kubernetes.io/arch: amd64
+  supportedModelFormats:
+    - name: vLLM
+      version: "1"
+      autoSelect: false
+  containers:
+    - name: kserve-container
+      image: docker.io/vllm/vllm-openai:v0.11.0
+      imagePullPolicy: IfNotPresent
+      command:
+        - python
+        - -m
+        - vllm.entrypoints.openai.api_server
+      args:
+        - --port=8080
+        - --served-model-name={{.Name}}
+        - --model=/mnt/models
+      env:
+        - name: HF_HOME
+          value: /tmp/huggingface
+        - name: VLLM_CONFIG_ROOT
+          value: /tmp/vllm
+        - name: VLLM_WORKER_MULTIPROC_METHOD
+          value: spawn
+        - name: HF_HUB_OFFLINE
+          value: "1"
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
+        limits:
+          cpu: "4"
+          memory: 8Gi
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: 8080
+        periodSeconds: 10
+        timeoutSeconds: 5
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        failureThreshold: 60
+        timeoutSeconds: 10
+      volumeMounts:
+        - name: devshm
+          mountPath: /dev/shm
+  volumes:
+    - name: devshm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 1Gi
+  hostIPC: false

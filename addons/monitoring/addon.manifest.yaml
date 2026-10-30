@@ -30,6 +30,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Hard node selector for central monitoring services, excluding node exporters
               - name: ingress
                 shorthand: i
                 default: none
@@ -51,6 +54,8 @@ spec:
             examples:
               - cmd: k2s addons enable monitoring
                 comment: Enable monitoring in k2s
+              - cmd: k2s addons enable monitoring --infra-node-selector kubernetes.io/hostname=kubemaster --ingress none --omitGrafana=true
+                comment: Run central monitoring services on kubemaster without Grafana; node exporters remain distributed
               - cmd: k2s addons enable monitoring -o
                 comment: Enable monitoring with detailed logs
               - cmd: k2s addons enable monitoring --ingress traefik
@@ -60,6 +65,8 @@ spec:
           script:
             subPath: Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: ingress
                 scriptParameterName: Ingress
               - cliFlagName: omitGrafana

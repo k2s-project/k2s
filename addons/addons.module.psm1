@@ -74,7 +74,25 @@ function Enable-AddonFromConfig {
 
 	Write-Log "Re-enabling addon '$addonName'.."
 
-	& $enableCmdPath 
+	$enableParameters = @{}
+	$selectorProperty = $Config.PSObject.Properties['InfraNodeSelector']
+	if ($null -ne $selectorProperty -and -not [string]::IsNullOrWhiteSpace([string]$selectorProperty.Value)) {
+		# Saved options are replayed only together with a saved selector; configs without one re-enable exactly as before.
+		$replayProperties = switch ($Config.Name) {
+			'monitoring' { @('OmitGrafana', 'Ingress') }
+			'logging' { @('OmitOpensearch', 'StorageNode', 'Ingress') }
+			'registry' { @('StorageNode', 'Ingress') }
+			'ingress' { @('OmitCertMgr') }
+			default { @() }
+		}
+		foreach ($propertyName in $replayProperties) {
+			$property = $Config.PSObject.Properties[$propertyName]
+			if ($null -ne $property) { $enableParameters[$propertyName] = $property.Value }
+		}
+		$enableParameters['InfraNodeSelector'] = [string]$selectorProperty.Value
+		if ($Config.Name -eq 'registry') { $enableParameters['Ingress'] = 'none' }
+	}
+	& $enableCmdPath @enableParameters
 
 	Write-Log "Addon '$addonName' re-enabled."
 }
@@ -232,6 +250,10 @@ function Add-AddonToSetupJson() {
 
 	$filePath = Get-SetupConfigFilePath
 	$parsedSetupJson = Get-Content -Raw $filePath | ConvertFrom-Json
+	$placementIntent = @($parsedSetupJson.AddonPlacementIntents) | Where-Object { $null -ne $_ -and $_.Name -eq $Addon.Name -and [string]$_.Implementation -eq [string]$Addon.Implementation } | Select-Object -First 1
+	if ($placementIntent -and -not $Addon.PSObject.Properties['InfraNodeSelector']) {
+		$Addon | Add-Member -NotePropertyName InfraNodeSelector -NotePropertyValue $placementIntent.InfraNodeSelector
+	}
 
 	$enabledAddonMemberExists = Get-Member -InputObject $parsedSetupJson -Name $ConfigKey_EnabledAddons -MemberType Properties
 	if (!$enabledAddonMemberExists) {
@@ -252,6 +274,485 @@ function Add-AddonToSetupJson() {
 		$parsedSetupJson.EnabledAddons += $Addon
 		$parsedSetupJson | ConvertTo-Json -Depth 100 | Set-Content -Force $filePath -Confirm:$false
 	}
+	if ($placementIntent) { Set-AddonPlacementIntent -Addon $Addon -Clear }
+}
+
+function New-AddonPlacementManifest {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$AddonName,
+		[Parameter(Mandatory = $true)]
+		[string]$ManifestDirectory,
+		[Parameter(Mandatory = $true)]
+		[string]$Selector,
+		[switch]$SelectorsOnly
+	)
+
+	$k2sExe = Join-Path (Split-Path $PSScriptRoot -Parent) 'k2s.exe'
+	if (-not (Test-Path -LiteralPath $k2sExe)) {
+		throw "K2s executable was not found at '$k2sExe'."
+	}
+	$outputPath = Join-Path ([System.IO.Path]::GetTempPath()) "k2s-placement-$([System.Guid]::NewGuid().ToString('N')).yaml"
+	try {
+		$renderOptions = @()
+		if ($SelectorsOnly) { $renderOptions += '--selectors-only' }
+		if ($SelectorsOnly -and $AddonName -eq 'dashboard') { $renderOptions += @('--helm-path', (Join-Path (Get-KubeBinPath) 'helm.exe')) }
+		if ($AddonName -eq 'dashboard') {
+			& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file (Join-Path $ManifestDirectory 'values.yaml') --selector $Selector --output $outputPath @renderOptions
+		}
+		else {
+			& $k2sExe addons __render-placement-manifests --addon-name $AddonName --manifest-directory $ManifestDirectory --selector $Selector --output $outputPath @renderOptions
+		}
+		if ($LASTEXITCODE -ne 0) { throw "Could not render addon '$AddonName' for infrastructure placement." }
+		return $outputPath
+	}
+	catch {
+		Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+		throw
+	}
+}
+
+function New-AddonPlacementInput {
+	param ([string]$AddonName, [string]$Path, [string]$Selector, [switch]$Kustomize, [string]$StorageNode = '')
+	$inputPath = $Path
+	$temporaryInput = $null
+	$outputPath = [System.IO.Path]::GetTempFileName()
+	try {
+		if ($Kustomize) {
+			$built = Invoke-Kubectl -Params 'kustomize', $Path
+			if (-not $built.Success) { throw "Could not build owning Kustomize input '$Path': $($built.Output)" }
+			$temporaryInput = [System.IO.Path]::GetTempFileName()
+			Set-Content -LiteralPath $temporaryInput -Value $built.Output -Encoding UTF8
+			$inputPath = $temporaryInput
+		}
+		$k2sExe = Join-Path (Split-Path $PSScriptRoot -Parent) 'k2s.exe'
+		& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file $inputPath --selector $Selector --storage-node $StorageNode --output $outputPath
+		if ($LASTEXITCODE -ne 0) { throw "Could not render owning placement input for '$AddonName'." }
+		$selectorsPath = [System.IO.Path]::GetTempFileName()
+		try {
+			& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file $inputPath --selector $Selector --storage-node $StorageNode --output $selectorsPath --selectors-only
+			if ($LASTEXITCODE -ne 0) { throw "Could not inspect effective selectors for '$AddonName'." }
+			$hasMatchingNodes = $true
+			foreach ($effectiveSelector in @(Get-Content -Raw -LiteralPath $selectorsPath | ConvertFrom-Json)) {
+				$nodes = Invoke-Kubectl -Params 'get', 'nodes', '-l', $effectiveSelector, '-o', 'name'
+				if (-not $nodes.Success) { throw "Could not check nodes for '$effectiveSelector': $($nodes.Output)" }
+				if ([string]::IsNullOrWhiteSpace([string]$nodes.Output)) { $hasMatchingNodes = $false }
+			}
+		}
+		finally { Remove-Item -LiteralPath $selectorsPath -Force -ErrorAction SilentlyContinue }
+		return [pscustomobject]@{ Path = $outputPath; HasMatchingNodes = $hasMatchingNodes }
+	}
+	catch { Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue; throw }
+	finally { if ($temporaryInput) { Remove-Item -LiteralPath $temporaryInput -Force -ErrorAction SilentlyContinue } }
+}
+
+function Assert-AddonPlacementHost {
+	param ([string]$Selector, [string]$NodeName, [string]$Reason)
+	if ([string]::IsNullOrWhiteSpace($Selector)) { return }
+	$nodeResult = Invoke-Kubectl -Params 'get', 'node', $NodeName, '-o', 'json'
+	if (-not $nodeResult.Success) { throw "Could not validate required host '$NodeName': $($nodeResult.Output)" }
+	$node = $nodeResult.Output | ConvertFrom-Json
+	$requirements = ConvertFrom-AddonInfrastructureSelector -Selector $Selector
+	foreach ($entry in $requirements.GetEnumerator()) {
+		$label = $node.metadata.labels.PSObject.Properties | Where-Object { $_.Name -ceq $entry.Key }
+		if ($null -eq $label -or [string]$label.Value -cne $entry.Value) {
+			throw "Infrastructure selector '$Selector' excludes required host '$NodeName' ($Reason). Choose compatible labels; placement does not migrate data or host prerequisites."
+		}
+	}
+}
+
+function Assert-SharedInfrastructurePlacement {
+	param ([string]$Name, [string]$Selector, [string]$Namespace, [string]$Deployment)
+	$owners = @(Get-ConfigValue -Path (Get-SetupConfigFilePath) -Key 'SharedInfrastructurePlacement')
+	$owner = $owners | Where-Object { $null -ne $_ -and $_.Name -eq $Name } | Select-Object -First 1
+	if (-not $Selector -and -not $owner) { return }
+	$deploymentNames = @($Deployment)
+	if ($Name -eq 'cert-manager') { $deploymentNames += @('cert-manager-cainjector', 'cert-manager-webhook') }
+	$existing = Invoke-Kubectl -Params (@('get', 'deployment') + $deploymentNames + @('-n', $Namespace, '--ignore-not-found', '-o', 'json'))
+	if (-not $existing.Success) { throw "Cannot inspect shared infrastructure '$Name': $($existing.Output)" }
+	$workloads = @()
+	if (-not [string]::IsNullOrWhiteSpace([string]$existing.Output)) {
+		$resource = $existing.Output | ConvertFrom-Json -ErrorAction Stop
+		$workloads = if ($resource.PSObject.Properties['items']) { @($resource.items) } else { @($resource) }
+	}
+	if ($owner -and (ConvertTo-CanonicalAddonSelector $owner.InfraNodeSelector) -cne (ConvertTo-CanonicalAddonSelector $Selector)) {
+		$consumers = @(Get-AddonsConfig | Where-Object { $_.Name -in @('ingress', 'security') })
+		if ($workloads.Count -or $consumers.Count) { throw "Shared infrastructure '$Name' already owns selector '$($owner.InfraNodeSelector)'; requested '$Selector'. Use the same selector or explicitly uninstall all consumers and the shared service before changing placement." }
+		Set-SharedInfrastructurePlacement -Name $Name -Selector $Selector
+	}
+	foreach ($workload in $workloads) {
+		if (-not $Selector) { continue }
+		$drift = @(Get-AddonSelectorDrift -RequestedSelector $Selector -EffectiveNodeSelector $workload.spec.template.spec.nodeSelector)
+		if ($drift.Count) { throw "Shared infrastructure '$Name' exists without compatible placement. Explicitly uninstall its consumers before enabling '$Selector'." }
+	}
+}
+
+function Invoke-AddonStorageProof {
+	param ([string]$VolumeJson, [string]$NodeJson)
+	$volumePath = [System.IO.Path]::GetTempFileName()
+	$nodePath = [System.IO.Path]::GetTempFileName()
+	try {
+		Set-Content -LiteralPath $volumePath -Value $VolumeJson -Encoding utf8
+		Set-Content -LiteralPath $nodePath -Value $NodeJson -Encoding utf8
+		$k2sExe = Join-Path (Split-Path $PSScriptRoot -Parent) 'k2s.exe'
+		& $k2sExe addons __render-placement-manifests --existing-volume $volumePath --storage-host $nodePath
+		if ($LASTEXITCODE -ne 0) { throw 'Existing PV topology is incompatible with the required storage host. Placement does not migrate data.' }
+	}
+	finally { Remove-Item -LiteralPath $volumePath, $nodePath -Force -ErrorAction SilentlyContinue }
+}
+
+function Assert-AddonStoragePlacement {
+	param ([string]$Namespace, [string[]]$VolumeNames, [string]$NodeName)
+	$node = Invoke-Kubectl -Params 'get', 'node', $NodeName, '-o', 'json'
+	if (-not $node.Success) { throw "Cannot inspect storage host '$NodeName': $($node.Output)" }
+	$claims = Invoke-Kubectl -Params 'get', 'pvc', '-n', $Namespace, '--ignore-not-found', '-o', 'json'
+	if (-not $claims.Success) { throw "Cannot inspect existing storage claims in '$Namespace': $($claims.Output)" }
+	$claimList = $claims.Output | ConvertFrom-Json -ErrorAction Stop
+	$names = @($VolumeNames) + @($claimList.items | ForEach-Object { $_.spec.volumeName } | Where-Object { $_ })
+	foreach ($volumeName in @($names | Select-Object -Unique)) {
+		$volume = Invoke-Kubectl -Params 'get', 'pv', $volumeName, '--ignore-not-found', '-o', 'json'
+		if (-not $volume.Success) { throw "Cannot inspect PV '$volumeName': $($volume.Output)" }
+		if (-not [string]::IsNullOrWhiteSpace([string]$volume.Output)) { Invoke-AddonStorageProof -VolumeJson $volume.Output -NodeJson $node.Output }
+	}
+}
+
+function Set-SharedInfrastructurePlacement {
+	param ([string]$Name, [string]$Selector)
+	$filePath = Get-SetupConfigFilePath
+	$config = Get-Content -LiteralPath $filePath -Raw | ConvertFrom-Json
+	$owners = @($config.SharedInfrastructurePlacement | Where-Object { $null -ne $_ -and $_.Name -ne $Name })
+	$owners += [pscustomobject]@{Name = $Name; InfraNodeSelector = $Selector}
+	$config | Add-Member -NotePropertyName SharedInfrastructurePlacement -NotePropertyValue $owners -Force
+	$config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $filePath -Force
+}
+
+function Invoke-AddonOwnedApply {
+	param ([string]$AddonName, [string]$Path, [string]$Selector = '', [switch]$Kustomize, [switch]$ServerSide)
+	$placement = $null
+	$params = @('apply')
+	if ($ServerSide) { $params += '--server-side', '--force-conflicts' }
+	try {
+		if ($Selector) {
+			$placement = New-AddonPlacementInput -AddonName $AddonName -Path $Path -Selector $Selector -Kustomize:$Kustomize
+			$params += @('-f', $placement.Path)
+		} else {
+			$inputMode = if ($Kustomize) { '-k' } else { '-f' }
+			$params += @($inputMode, $Path)
+		}
+		$result = Invoke-Kubectl -Params $params
+		if (-not $result.Success) {
+			# Without a selector the original apply only logged its output; strictness applies to placement-constrained applies.
+			if ($Selector) { throw "Addon '$AddonName' owning apply failed: $($result.Output)" }
+			Write-Log "[Placement] WARNING Addon '$AddonName' apply failed, continuing: $($result.Output)"
+		}
+		return $result
+	}
+	finally { if ($placement) { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue } }
+}
+
+function Test-AddonPlacementIntent {
+	param ([string]$Name, [string]$Implementation = '', [string]$Selector)
+	if (-not $Selector) { return $false }
+	$intents = @(Get-ConfigValue -Path (Get-SetupConfigFilePath) -Key 'AddonPlacementIntents')
+	$intent = $intents | Where-Object { $null -ne $_ -and $_.Name -eq $Name -and [string]$_.Implementation -eq $Implementation } | Select-Object -First 1
+	return ($null -ne $intent -and (ConvertTo-CanonicalAddonSelector $intent.InfraNodeSelector) -ceq (ConvertTo-CanonicalAddonSelector $Selector))
+}
+
+function Get-AddonPlacementOwnerOptions {
+	param ([string]$Name, [string]$Implementation = '', [System.Collections.IDictionary]$BoundParameters, [hashtable]$Defaults)
+	$schemas = @{
+		'ingress/nginx' = @{OmitCertMgr = 'bool'}
+		'ingress/nginx-gw' = @{OmitCertMgr = 'bool'}
+		'ingress/traefik' = @{OmitCertMgr = 'bool'}
+		'registry/' = @{StorageNode = 'string'; Ingress = 'ingress'}
+		'logging/' = @{StorageNode = 'string'; Ingress = 'ingress'; OmitOpensearch = 'bool'}
+		'monitoring/' = @{OmitGrafana = 'bool'; Ingress = 'ingress'}
+	}
+	$schema = $schemas["$Name/$Implementation"]
+	$result = @{}
+	foreach ($key in $Defaults.Keys) { $result[$key] = $Defaults[$key] }
+	if ($null -eq $schema) { throw "No placement owner option schema for '$Name/$Implementation'." }
+	$saved = Get-AddonConfig -Name $Name -Implementation $Implementation
+	$isIntent = $null -eq $saved
+	if ($isIntent) {
+		$saved = @(Get-ConfigValue -Path (Get-SetupConfigFilePath) -Key 'AddonPlacementIntents') |
+			Where-Object { $null -ne $_ -and $_.Name -eq $Name -and [string]$_.Implementation -eq $Implementation } | Select-Object -First 1
+	}
+	if ($null -eq $saved) { return $result }
+	foreach ($key in $schema.Keys) {
+		$property = $saved.PSObject.Properties[$key]
+		if ($null -eq $property) {
+			if ($isIntent -and $Name -eq 'monitoring' -and $key -eq 'OmitGrafana' -and -not $BoundParameters.ContainsKey($key)) {
+				throw "Addon 'monitoring' OmitGrafana is missing from incomplete installation intent. Retry with the original --omitGrafana=true or --omitGrafana=false, or disable monitoring before changing it."
+			}
+			continue
+		}
+		$value = $property.Value
+		if ($schema[$key] -eq 'bool') {
+			if ($value -isnot [bool]) { throw "Addon '$Name' saved $key must be a boolean. Disable the addon to clean up incomplete installation intent before retrying." }
+		} else {
+			if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) { throw "Addon '$Name' saved $key is invalid. Disable the addon before retrying." }
+			if ($schema[$key] -eq 'ingress') {
+				$value = $value.ToLowerInvariant()
+				if ($value -notin @('none', 'nginx', 'nginx-gw', 'traefik')) { throw "Addon '$Name' saved $key mode is invalid. Disable the addon before retrying." }
+			}
+		}
+		$explicit = $BoundParameters.ContainsKey($key)
+		$requested = $BoundParameters[$key]
+		if ($BoundParameters.ContainsKey('Config') -and $null -ne $BoundParameters['Config']) {
+			$configProperty = $BoundParameters['Config'].PSObject.Properties[$key]
+			if ($null -ne $configProperty) { $explicit = $true; $requested = $configProperty.Value }
+		}
+		if ($explicit) {
+			if ($schema[$key] -eq 'bool') {
+				if ($requested -isnot [bool] -and $requested -isnot [System.Management.Automation.SwitchParameter]) { throw "Addon '$Name' explicit $key must be a boolean." }
+				$requested = [bool]$requested
+			}
+			elseif ($schema[$key] -eq 'ingress') { $requested = ([string]$requested).ToLowerInvariant() }
+			if ($requested -cne $value) { throw "Addon '$Name' $key conflicts with incomplete installation intent or saved owner configuration. Retry with the saved option or disable the addon before changing it." }
+		}
+		$result[$key] = $value
+	}
+	return $result
+}
+
+function Get-AddonEffectiveInfrastructureSelector {
+	param ([string]$Name, [string]$Selector = '', [string]$Implementation = '')
+	$config = Get-AddonConfig -Name $Name -Implementation $Implementation
+	if ($null -eq $config) {
+		$intents = @(Get-ConfigValue -Path (Get-SetupConfigFilePath) -Key 'AddonPlacementIntents') | Where-Object { $null -ne $_ -and $_.Name -eq $Name }
+		if ($Implementation -and @($intents | Where-Object { [string]$_.Implementation -ne $Implementation }).Count) {
+			throw "Addon '$Name' has incomplete installation intent for another implementation. Disable that implementation before changing it."
+		}
+		$intent = $intents | Where-Object { [string]$_.Implementation -eq $Implementation } | Select-Object -First 1
+		if ($intent) {
+			if ($Selector -and (ConvertTo-CanonicalAddonSelector $Selector) -cne (ConvertTo-CanonicalAddonSelector $intent.InfraNodeSelector)) { throw "Addon '$Name' has incomplete installation intent '$($intent.InfraNodeSelector)'. Retry with that selector or disable the addon before changing it." }
+			return [string]$intent.InfraNodeSelector
+		}
+		return $Selector
+	}
+	if (-not [string]::IsNullOrWhiteSpace($Selector)) {
+		$conflict = Get-AddonPlacementSelectorConflictMessage -Name $Name -Implementation $Implementation -RequestedSelector $Selector
+		if ($conflict) { throw $conflict }
+		return $Selector
+	}
+	$property = $config.PSObject.Properties['InfraNodeSelector']
+	if ($null -ne $property) { return [string]$property.Value }
+	return ''
+}
+
+function ConvertTo-CanonicalAddonSelector {
+	param ([string]$Selector)
+	$requirements = ConvertFrom-AddonInfrastructureSelector -Selector $Selector
+	return ($requirements.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ','
+}
+
+function Set-AddonPlacementIntent {
+	param ([pscustomobject]$Addon, [switch]$Clear)
+	$filePath = Get-SetupConfigFilePath
+	$config = Get-Content -Raw -LiteralPath $filePath | ConvertFrom-Json
+	$intents = @($config.AddonPlacementIntents | Where-Object { $null -ne $_ -and -not ($_.Name -eq $Addon.Name -and [string]$_.Implementation -eq [string]$Addon.Implementation) })
+	if (-not $Clear) { $intents += $Addon }
+	$config | Add-Member -NotePropertyName AddonPlacementIntents -NotePropertyValue $intents -Force
+	$config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $filePath -Force
+}
+
+function Invoke-AddonEnableTransaction {
+	param (
+		[Parameter(Mandatory = $true)]
+		[pscustomobject]$Addon,
+		[Parameter(Mandatory = $false)]
+		[string]$Selector = '',
+		[Parameter(Mandatory = $false)]
+		[bool]$HasMatchingNodes = $true,
+		[Parameter(Mandatory = $true)]
+	[scriptblock]$Apply,
+		[Parameter(Mandatory = $true)]
+		[scriptblock]$Wait,
+		[Parameter(Mandatory = $true)]
+		[scriptblock]$Update,
+		[scriptblock]$ConfigurePending = {},
+		[Parameter(Mandatory = $true)]
+		[scriptblock]$Rollback
+	)
+
+	if ($Selector) { Set-AddonPlacementIntent -Addon $Addon }
+	try {
+		$applyResult = & $Apply
+		if ($null -eq $applyResult -or $applyResult.Success -ne $true) {
+			$applyOutput = if ($null -ne $applyResult) { [string]$applyResult.Output } else { 'no result returned' }
+			throw "Manifest apply failed: $applyOutput"
+		}
+		if ($HasMatchingNodes -and (& $Wait) -ne $true) {
+			throw 'Required addon workloads did not become Ready.'
+		}
+		if (-not $HasMatchingNodes) {
+			& $ConfigurePending
+			Write-Log "[Placement] Addon '$($Addon.Name)' was enabled with selector '$Selector'; no nodes currently match, so its Pods will remain Pending until a matching node is available." -Console
+		}
+		else {
+			& $Update
+		}
+		Add-AddonToSetupJson -Addon $Addon
+		if ($Selector) { Set-AddonPlacementIntent -Addon $Addon -Clear }
+	}
+	catch {
+		$failure = $_.Exception.Message
+		try {
+			$rollbackResult = & $Rollback
+		}
+		catch {
+			$rollbackResult = [pscustomobject]@{ Success = $false; Output = $_.Exception.Message }
+		}
+		if ($null -ne $rollbackResult -and $rollbackResult.Success -eq $true) {
+			try {
+				Remove-AddonFromSetupJson -Addon $Addon
+				if ($Selector) { Set-AddonPlacementIntent -Addon $Addon }
+			}
+			catch {
+				throw "$failure Rollback completed, but addon state cleanup failed: $($_.Exception.Message)"
+			}
+			throw $failure
+		}
+
+		$rollbackOutput = if ($null -ne $rollbackResult) { [string]$rollbackResult.Output } else { 'no result returned' }
+		if (-not [string]::IsNullOrWhiteSpace($Selector)) {
+			try {
+				Set-AddonPlacementIntent -Addon $Addon
+			}
+			catch {
+				throw "$failure Rollback failed, and selector state could not be retained: $($_.Exception.Message)"
+			}
+			throw "$failure Rollback failed; infrastructure placement was retained as incomplete installation intent in setup.json to protect remaining workloads. $rollbackOutput"
+		}
+		throw "$failure Rollback failed; remaining workload cleanup is required before retrying. $rollbackOutput"
+	}
+}
+
+function ConvertFrom-AddonInfrastructureSelector {
+	param ([string]$Selector)
+	$requirements = [System.Collections.Generic.SortedDictionary[string,string]]::new([System.StringComparer]::Ordinal)
+	if (-not [string]::IsNullOrWhiteSpace($Selector)) {
+		foreach ($requirement in $Selector.Split(',')) {
+			$separator = $requirement.IndexOf('=')
+			if ($separator -lt 1) { throw "Invalid infrastructure selector requirement '$requirement'." }
+			$key = $requirement.Substring(0, $separator).Trim()
+			$value = $requirement.Substring($separator + 1).Trim()
+			if ($key.Length -eq 0 -or $value.Contains('=')) { throw "Invalid infrastructure selector requirement '$requirement'." }
+			if ($requirements.ContainsKey($key) -and $requirements[$key] -cne $value) { throw "Conflicting infrastructure selector requirement '$key'." }
+			$requirements[$key] = $value
+		}
+	}
+	return ,$requirements
+}
+
+function Get-AddonPlacementSelectorConflictMessage {
+	param (
+		[string]$Implementation = '',
+		[Parameter(Mandatory = $true)]
+		[string]$Name,
+		[Parameter(Mandatory = $true)]
+		[AllowEmptyString()]
+		[string]$RequestedSelector
+	)
+	if ([string]::IsNullOrWhiteSpace($RequestedSelector)) {
+		return ''
+	}
+	$addonConfig = Get-AddonConfig -Name $Name -Implementation $Implementation
+	$savedProperty = if ($null -ne $addonConfig) { $addonConfig.PSObject.Properties['InfraNodeSelector'] } else { $null }
+	$savedSelector = if ($null -ne $savedProperty) { [string]$savedProperty.Value } else { '' }
+	if ([string]::IsNullOrWhiteSpace($savedSelector)) {
+		return "Addon '$Name' is already enabled without saved infrastructure placement. Disable it and re-enable it with the requested selector; placement changes are not applied in place."
+	}
+	$savedRequirements = ConvertFrom-AddonInfrastructureSelector -Selector $savedSelector
+	$requestedRequirements = ConvertFrom-AddonInfrastructureSelector -Selector $RequestedSelector
+	$savedCanonical = ($savedRequirements.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ','
+	$requestedCanonical = ($requestedRequirements.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ','
+	if ($savedCanonical -ceq $requestedCanonical) {
+		return ''
+	}
+	return "Addon '$Name' is already enabled with infrastructure node selector '$savedSelector'. Disable it and re-enable it with the new selector; placement changes are not applied in place."
+}
+
+function Get-AddonBackupInfrastructureSelector {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$BackupDir
+	)
+	if ([string]::IsNullOrWhiteSpace($BackupDir)) {
+		return ''
+	}
+	$manifestPath = Join-Path $BackupDir 'backup.json'
+	if (-not (Test-Path -LiteralPath $manifestPath)) {
+		return ''
+	}
+	$manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json -ErrorAction Stop
+	$selectorProperty = $manifest.PSObject.Properties['infraNodeSelector']
+	if ($null -eq $selectorProperty) {
+		$selectorProperty = $manifest.PSObject.Properties['InfraNodeSelector']
+	}
+	if ($null -eq $selectorProperty) {
+		return ''
+	}
+	return [string]$selectorProperty.Value
+}
+
+function Test-AddonInfrastructureSelectorOnCluster {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$Name,
+		[Parameter(Mandatory = $true)]
+		[string]$Selector
+	)
+	if ([string]::IsNullOrWhiteSpace($Selector)) {
+		return $true
+	}
+	$manifestDirectory = Join-Path $PSScriptRoot "$Name/manifests"
+	if ($Name -eq 'dashboard') { $manifestDirectory = Join-Path $manifestDirectory 'chart' }
+	$selectorPath = New-AddonPlacementManifest -AddonName $Name -ManifestDirectory $manifestDirectory -Selector $Selector -SelectorsOnly
+	try {
+		$effectiveSelectors = @(Get-Content -LiteralPath $selectorPath -Raw | ConvertFrom-Json)
+		if ($effectiveSelectors.Count -eq 0) { throw "No effective infrastructure workload selectors were rendered for '$Name'." }
+		foreach ($effectiveSelector in $effectiveSelectors) {
+			$nodes = Invoke-Kubectl -Params 'get', 'nodes', '-l', $effectiveSelector, '-o', 'name'
+			if (-not $nodes.Success) {
+				throw "Could not validate infrastructure selector '$effectiveSelector' against the destination cluster: $($nodes.Output)"
+			}
+			if ([string]::IsNullOrWhiteSpace([string]$nodes.Output)) {
+				Write-Log "[Placement] No destination nodes currently match '$effectiveSelector'; matching infrastructure Pods will remain Pending until a node is available." -Console
+				return $false
+			}
+		}
+		return $true
+	}
+	finally {
+		Remove-Item -LiteralPath $selectorPath -Force -ErrorAction SilentlyContinue
+	}
+}
+
+function Get-AddonSelectorDrift {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$RequestedSelector,
+		[Parameter(Mandatory = $false)]
+		$EffectiveNodeSelector
+	)
+
+	$effectiveRequirements = [System.Collections.Generic.Dictionary[string,string]]::new([System.StringComparer]::Ordinal)
+	if ($null -ne $EffectiveNodeSelector) {
+		foreach ($property in $EffectiveNodeSelector.PSObject.Properties) {
+			$effectiveRequirements[$property.Name] = [string]$property.Value
+		}
+	}
+
+	$drift = @()
+	$requestedRequirements = ConvertFrom-AddonInfrastructureSelector -Selector $RequestedSelector
+	foreach ($requirement in $requestedRequirements.GetEnumerator()) {
+		if (-not $effectiveRequirements.ContainsKey($requirement.Key) -or $effectiveRequirements[$requirement.Key] -cne $requirement.Value) {
+			$drift += "$($requirement.Key)=$($requirement.Value)"
+		}
+	}
+	return $drift
 }
 
 <#
@@ -281,6 +782,10 @@ function Remove-AddonFromSetupJson {
 
 	$filePath = Get-SetupConfigFilePath
 	$parsedSetupJson = Get-Content -Raw $filePath | ConvertFrom-Json
+	if ($parsedSetupJson.PSObject.Properties['AddonPlacementIntents']) {
+		$parsedSetupJson.AddonPlacementIntents = @($parsedSetupJson.AddonPlacementIntents | Where-Object { $null -ne $_ -and -not ($_.Name -eq $Addon.Name -and [string]$_.Implementation -eq [string]$Addon.Implementation) })
+		$parsedSetupJson | ConvertTo-Json -Depth 100 | Set-Content -Force $filePath -Confirm:$false
+	}
 
 	$addonsMember = Get-Member -InputObject $parsedSetupJson -Name $ConfigKey_EnabledAddons -MemberType Properties
 	if ($null -eq $addonsMember) {
@@ -546,15 +1051,139 @@ function Remove-ScriptsFromHooksDir {
 function Get-AddonConfig {
 	param (
 		[parameter(Mandatory = $false)]
-		[string] $Name = $(throw 'Name not specified')
+		[string] $Name = $(throw 'Name not specified'),
+		[string] $Implementation = ''
 	)
 	$addons = Get-AddonsConfig
 	foreach ($addon in $addons) {
-		if ($addon.Name -eq $Name) {
+		if ($addon.Name -eq $Name -and (-not $Implementation -or $addon.Implementation -eq $Implementation)) {
 			return $addon
 		}
 	}
 	return $null
+}
+
+function Get-AddonInfrastructurePlacementStatus {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string]$Name
+	)
+
+	$addonConfig = Get-AddonConfig -Name $Name
+	if ($null -eq $addonConfig) {
+		$addonConfig = @(Get-ConfigValue -Path (Get-SetupConfigFilePath) -Key 'AddonPlacementIntents') | Where-Object { $null -ne $_ -and $_.Name -eq $Name } | Select-Object -First 1
+		if ($null -eq $addonConfig) { return @() }
+	}
+	$selectorProperty = $addonConfig.PSObject.Properties['InfraNodeSelector']
+	if ($null -eq $selectorProperty -or [string]::IsNullOrWhiteSpace([string]$selectorProperty.Value)) {
+		return @()
+	}
+
+	$selector = [string]$selectorProperty.Value
+	$workloads = @()
+	if ($Name -eq 'metrics') {
+		$workloads = @(@{ Name = 'metrics-server'; Namespace = 'metrics' })
+	}
+	elseif ($Name -eq 'dashboard') {
+		$workloads = @(@{ Name = 'headlamp'; Namespace = 'dashboard' })
+	}
+	else {
+		return Get-AddonOwnedPlacementStatus -Name $Name -Config $addonConfig -Selector $selector
+	}
+
+	$properties = @(@{ Name = 'Infrastructure node selector'; Value = $selector; Okay = $null })
+	foreach ($workload in $workloads) {
+		$deploymentResult = Invoke-Kubectl -Params 'get', 'deployment', $workload.Name, '-n', $workload.Namespace, '-o', 'json'
+		if (-not $deploymentResult.Success) {
+			$message = "Could not inspect deployment '$($workload.Name)' to determine its effective node selector. kubectl output: $($deploymentResult.Output)"
+			$properties += @{ Name = "Infrastructure placement - $($workload.Name)"; Value = 'Unable to inspect workload selector'; Okay = $false; Message = $message }
+			continue
+		}
+
+		try {
+			$deployment = $deploymentResult.Output | ConvertFrom-Json -ErrorAction Stop
+			$nodeSelector = $deployment.spec.template.spec.nodeSelector
+			$requirements = @($nodeSelector.PSObject.Properties | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" })
+			if ($requirements.Count -eq 0) {
+				throw 'The workload Pod template has no nodeSelector.'
+			}
+			$effectiveSelector = $requirements -join ','
+		}
+		catch {
+			$message = "Could not determine the effective node selector for deployment '$($workload.Name)': $($_.Exception.Message)"
+			$properties += @{ Name = "Infrastructure placement - $($workload.Name)"; Value = 'Unable to inspect workload selector'; Okay = $false; Message = $message }
+			continue
+		}
+		$selectorDrift = @(Get-AddonSelectorDrift -RequestedSelector $selector -EffectiveNodeSelector $nodeSelector)
+		if ($selectorDrift.Count -gt 0) {
+			$message = "Deployment '$($workload.Name)' does not enforce saved selector '$selector'; missing or weakened requirements: $($selectorDrift -join ', ')."
+			$properties += @{ Name = "Infrastructure placement - $($workload.Name)"; Value = 'Incorrect placement'; Okay = $false; Message = $message }
+			continue
+		}
+
+		$nodes = Invoke-Kubectl -Params 'get', 'nodes', '-l', $effectiveSelector, '-o', 'name'
+		if ($nodes.Success) {
+			$hasMatchingNodes = -not [string]::IsNullOrWhiteSpace([string]$nodes.Output)
+			$placementValue = if ($hasMatchingNodes) { "Matching nodes for $effectiveSelector" } else { 'No matching nodes' }
+			$placementMessage = if ($hasMatchingNodes) {
+				"The actual Pod template selector for '$($workload.Name)' matches one or more nodes."
+			}
+			else {
+				"No nodes currently match '$effectiveSelector'; replacement Pods for '$($workload.Name)' will remain Pending until a matching node is available."
+			}
+			$properties += @{ Name = "Infrastructure placement - $($workload.Name)"; Value = $placementValue; Okay = [bool]$hasMatchingNodes; Message = $placementMessage }
+		}
+		else {
+			$message = "Could not check nodes for '$effectiveSelector'. kubectl output: $($nodes.Output)"
+			$properties += @{ Name = "Infrastructure placement - $($workload.Name)"; Value = 'Unable to check matching nodes'; Okay = $false; Message = $message }
+		}
+	}
+
+	return $properties
+}
+
+function Get-AddonOwnedPlacementStatus {
+	param ([string]$Name, [pscustomobject]$Config, [string]$Selector)
+	$namespaces = switch ($Name) {
+		'ingress' { switch ($Config.Implementation) { 'nginx' { 'ingress-nginx' }; 'traefik' { 'ingress-traefik' }; 'nginx-gw' { 'nginx-gw' } }; 'external-dns'; 'cert-manager' }
+		default { $Name }
+	}
+	$properties = @(@{Name = 'Infrastructure node selector'; Value = $Selector; Okay = $null})
+	foreach ($namespace in $namespaces) {
+		$kinds = @('deployment,statefulset,job,cronjob')
+		if ($Name -eq 'monitoring') { $kinds += 'prometheus,alertmanager' }
+		if ($namespace -eq 'nginx-gw') { $kinds += 'nginxproxy' }
+		foreach ($kind in $kinds) {
+			$result = Invoke-Kubectl -Params 'get', $kind, '-n', $namespace, '-o', 'json'
+			if (-not $result.Success) {
+				$properties += @{Name = "Infrastructure placement - $namespace/$kind"; Value = 'Unable to inspect owner'; Okay = $false; Message = [string]$result.Output}
+				continue
+			}
+			foreach ($owner in @((ConvertFrom-Json -InputObject $result.Output -ErrorAction Stop).items)) {
+				if ($null -eq $owner) { continue }
+				$podSpec = switch ($owner.kind) {
+					'Prometheus' { $owner.spec }; 'Alertmanager' { $owner.spec }
+					'NginxProxy' { $owner.spec.kubernetes.deployment.pod }
+					'CronJob' { $owner.spec.jobTemplate.spec.template.spec }
+					default { $owner.spec.template.spec }
+				}
+				if ($podSpec.securityContext.windowsOptions.hostProcess) { continue }
+				$identity = "$($owner.kind)/$($owner.metadata.name)"
+				$effective = @($podSpec.nodeSelector.PSObject.Properties | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ','
+				$drift = @(Get-AddonSelectorDrift -RequestedSelector $Selector -EffectiveNodeSelector $podSpec.nodeSelector)
+				$properties += @{Name = "Effective node selector - $identity"; Value = $effective; Okay = $null}
+				if ($drift.Count) {
+					$properties += @{Name = "Infrastructure placement - $identity"; Value = 'Incorrect placement'; Okay = $false; Message = "Owner does not enforce saved requirements: $($drift -join ', ')."}
+					continue
+				}
+				$nodes = Invoke-Kubectl -Params 'get', 'nodes', '-l', $effective, '-o', 'name'
+				$matching = $nodes.Success -and -not [string]::IsNullOrWhiteSpace([string]$nodes.Output)
+				$value = if (-not $nodes.Success) { 'Unable to check matching nodes' } elseif ($matching) { 'Matching nodes available' } else { 'No matching nodes' }
+				$properties += @{Name = "Infrastructure placement - $identity"; Value = $value; Okay = [bool]$matching; Message = 'Label eligibility is not readiness: taints, affinity, resources and storage can still leave Pods Pending. There is no fallback.'}
+			}
+		}
+	}
+	return $properties
 }
 
 <#
@@ -710,10 +1339,16 @@ function Get-AddonStatus {
 
 	$status.Enabled = $isEnabled
 	if ($isEnabled -ne $true) {
+		$placementProps = @(Get-AddonInfrastructurePlacementStatus -Name $Name)
+		if ($placementProps.Count -gt 0) { $status.Props = $placementProps }
 		return $status
 	}
 
 	$status.Props = Invoke-Script -FilePath $addonStatusScript
+	if ($Name -notin @('metrics', 'dashboard')) {
+		$placementProps = @(Get-AddonInfrastructurePlacementStatus -Name $Name)
+		if ($placementProps.Count -gt 0) { $status.Props = @($status.Props) + $placementProps }
+	}
 
 	return $status
 }
@@ -1732,7 +2367,21 @@ CRDs are fully established before returning. Throws on failure.
 #>
 function Install-CertManagerControllers {
     [CmdletBinding()]
-    param()
+	param([string]$InfraNodeSelector = '')
+
+	Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector $InfraNodeSelector -Namespace 'cert-manager' -Deployment 'cert-manager'
+	if ($InfraNodeSelector) {
+		$placement = New-AddonPlacementInput -AddonName 'certmanager' -Path (Get-CertManagerConfig) -Selector $InfraNodeSelector
+		try {
+			Set-SharedInfrastructurePlacement -Name 'cert-manager' -Selector $InfraNodeSelector
+			$result = Invoke-Kubectl -Params 'apply', '--server-side', '-f', $placement.Path
+			if (-not $result.Success) { throw "cert-manager apply failed: $($result.Output)" }
+			if (-not $placement.HasMatchingNodes) { return $false }
+			if (-not (Wait-ForCertManagerAvailable)) { throw 'cert-manager is not ready; shared placement is retained for retry.' }
+			return $true
+		}
+		finally { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue }
+	}
 
     # Pre-pull cert-manager images on the control-plane node before applying
     # manifests so all pods start from cache and never race against a readiness
@@ -2086,6 +2735,7 @@ Enable-CertManager -Proxy 'http://proxy.example.com:8080'
 function Enable-CertManager {
     [CmdletBinding()]
     param(
+		[string] $InfraNodeSelector = '',
         [Parameter(Mandatory = $false)]
         [string] $Proxy,
         [Parameter(Mandatory = $false)]
@@ -2099,7 +2749,8 @@ function Enable-CertManager {
         $k2sRoot = "$PSScriptRoot\.."
         
         Install-CmctlCli -ManifestPath $manifestPath -K2sRoot $k2sRoot -Proxy $Proxy
-        Install-CertManagerControllers
+		$controllersReady = Install-CertManagerControllers -InfraNodeSelector $InfraNodeSelector
+		if ($InfraNodeSelector -and $controllersReady -eq $false) { return }
         
         Initialize-CACertificateIssuer
         
@@ -2535,7 +3186,8 @@ function Get-AddonSetupJsonProperty {
 	return "$($matchingEntry.$PropertyName)"
 }
 
-Export-ModuleMember -Function Enable-AddonFromConfig, Get-EnabledAddons, Add-AddonToSetupJson, Remove-AddonFromSetupJson, Set-AddonSetupJsonProperty, Get-AddonSetupJsonProperty,
+Export-ModuleMember -Function Assert-AddonStoragePlacement, Assert-SharedInfrastructurePlacement, Set-SharedInfrastructurePlacement, Invoke-AddonOwnedApply, Set-AddonPlacementIntent, Enable-AddonFromConfig, Get-EnabledAddons, Add-AddonToSetupJson, Remove-AddonFromSetupJson, Set-AddonSetupJsonProperty, Get-AddonSetupJsonProperty,
+Get-AddonPlacementOwnerOptions, New-AddonPlacementInput, Assert-AddonPlacementHost, New-AddonPlacementManifest, Test-AddonPlacementIntent, Get-AddonEffectiveInfrastructureSelector, Get-AddonInfrastructurePlacementStatus, Invoke-AddonEnableTransaction, Get-AddonPlacementSelectorConflictMessage, Get-AddonBackupInfrastructureSelector, Test-AddonInfrastructureSelectorOnCluster,
 Install-DebianPackages, Get-DebianPackageAvailableOffline, Test-IsAddonEnabled, Invoke-AddonsHooks, Copy-ScriptsToHooksDir,
 Remove-ScriptsFromHooksDir, Get-AddonConfig, Backup-Addons, Restore-Addons, Get-AddonStatus, Find-AddonManifests,
 Get-ErrCodeAddonAlreadyDisabled, Get-ErrCodeAddonAlreadyEnabled, Get-ErrCodeAddonEnableFailed, Get-ErrCodeAddonNotFound, Get-ErrCodeInvalidParameter,

@@ -11,15 +11,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pterm/pterm"
-	"github.com/samber/lo"
 	ac "github.com/k2s-project/k2s/cmd/k2s/cmd/addons/common"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
+	"github.com/k2s-project/k2s/internal/core/addonplacement"
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/provider"
+	"github.com/pterm/pterm"
+	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -226,7 +227,6 @@ func addOmitNote(cmd *cobra.Command) {
 	cmd.Long += "\n\n" + omitEnableNote
 }
 
-
 func addFlags(flags []addons.CliFlag, cmd *cobra.Command) error {
 	exclusionGroups := map[string][]string{}
 
@@ -312,6 +312,15 @@ func runCmd(cmd *cobra.Command, addon addons.Addon, cmdName string, implementati
 	if err != nil {
 		return err
 	}
+	parameterValues, err := buildParameterValues(cmd.Flags(), cmdConfig)
+	if err != nil {
+		return err
+	}
+	if selector := parameterValues["InfraNodeSelector"]; selector != "" {
+		if _, err := addonplacement.ParseSelector(selector); err != nil {
+			return err
+		}
+	}
 
 	slog.Debug("Addon command prepared", "command", cmdName, "addon", addon.Metadata.Name, "params", params)
 
@@ -332,13 +341,14 @@ func runCmd(cmd *cobra.Command, addon addons.Addon, cmdName string, implementati
 	}
 
 	err = context.Providers().Addon.RunCommand(provider.AddonRunCommandConfig{
-		AddonName:      addon.Metadata.Name,
-		Implementation: implementation.Name,
-		CommandName:    cmdName,
-		AddonDirectory: addon.Directory,
-		ScriptSubPath:  cmdConfig.Script.SubPath,
-		Params:         params,
-		ShowOutput:     cmd.Flags().Lookup(common.OutputFlagName) != nil && cmd.Flags().Lookup(common.OutputFlagName).Value.String() == "true",
+		AddonName:       addon.Metadata.Name,
+		Implementation:  implementation.Name,
+		CommandName:     cmdName,
+		AddonDirectory:  addon.Directory,
+		ScriptSubPath:   cmdConfig.Script.SubPath,
+		Params:          params,
+		ParameterValues: parameterValues,
+		ShowOutput:      cmd.Flags().Lookup(common.OutputFlagName) != nil && cmd.Flags().Lookup(common.OutputFlagName).Value.String() == "true",
 	})
 	if err != nil {
 		return err
@@ -490,4 +500,24 @@ func normalizePositionalArgs(args []string) []string {
 	}
 
 	return normalized
+}
+
+func buildParameterValues(flags *pflag.FlagSet, cmdConfig addons.AddonCmd) (map[string]string, error) {
+	values := make(map[string]string)
+	var mappingErr error
+	flags.Visit(func(flag *pflag.Flag) {
+		mapping, found := lo.Find(cmdConfig.Script.ParameterMappings, func(mapping addons.ParameterMapping) bool {
+			return mapping.CliFlagName == flag.Name
+		})
+		if found {
+			if flag.Name == "infra-node-selector" {
+				values["InfraNodeSelector"] = flag.Value.String()
+			} else {
+				values[mapping.ScriptParameterName] = flag.Value.String()
+			}
+		} else if flag.Name == "infra-node-selector" {
+			mappingErr = fmt.Errorf("flag '--infra-node-selector' has no script parameter mapping in addon.manifest.yaml")
+		}
+	})
+	return values, mappingErr
 }

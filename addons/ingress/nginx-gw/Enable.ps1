@@ -17,6 +17,7 @@ powershell <installation folder>\addons\ingress\nginx-gw\Enable.ps1
 #>
 
 Param (
+    [string] $InfraNodeSelector = '',
     [parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
     [switch] $ShowLogs = $false,
     [parameter(Mandatory = $false, HelpMessage = 'JSON config object to override preceeding parameters')]
@@ -37,6 +38,10 @@ $dashboardModule = "$PSScriptRoot\..\..\dashboard\dashboard.module.psm1"
 Import-Module $infraModule, $clusterModule, $addonsModule, $gatewayModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
+trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
+$ownerOptions = Get-AddonPlacementOwnerOptions -Name 'ingress' -Implementation 'nginx-gw' -BoundParameters $PSBoundParameters -Defaults @{OmitCertMgr = $OmitCertMgr.IsPresent}
+$OmitCertMgr = [switch]$ownerOptions.OmitCertMgr
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'ingress' -Implementation 'nginx-gw' -Selector $InfraNodeSelector
 
 $windowsHostIpAddress = Get-ConfiguredKubeSwitchIP
 $Proxy = "http://$($windowsHostIpAddress):8181"
@@ -131,11 +136,22 @@ if ("$existingServices" -match '.*nginx-gw.*') {
     exit 1
 }
 
+Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector $InfraNodeSelector -Namespace 'external-dns' -Deployment 'external-dns'
+if (-not $OmitCertMgr) { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector $InfraNodeSelector -Namespace 'cert-manager' -Deployment 'cert-manager' }
+if ($InfraNodeSelector) {
+    Assert-AddonPlacementHost -Selector $InfraNodeSelector -NodeName (Get-ConfigControlPlaneNodeHostname) -Reason 'NGINX gateway external IP and local traffic policy'
+    $preflight = New-AddonPlacementInput -AddonName 'ingress' -Path "$PSScriptRoot\manifests" -Selector $InfraNodeSelector -Kustomize
+    Remove-Item -LiteralPath $preflight.Path -Force -ErrorAction SilentlyContinue
+    $proxyPreflight = New-AddonPlacementInput -AddonName 'ingress' -Path "$PSScriptRoot\manifests\nginxproxy.yaml" -Selector $InfraNodeSelector
+    Remove-Item -LiteralPath $proxyPreflight.Path -Force -ErrorAction SilentlyContinue
+    Set-AddonPlacementIntent -Addon ([pscustomobject]@{Name = 'ingress'; Implementation = 'nginx-gw'; InfraNodeSelector = $InfraNodeSelector; OmitCertMgr = $OmitCertMgr.IsPresent})
+}
 Install-GatewayApiCrds
 
 Write-Log 'Installing ExternalDNS' -Console
 $externalDnsConfig = Get-ExternalDnsConfigDir
-(Invoke-Kubectl -Params 'apply' , '-k', $externalDnsConfig).Output | Write-Log
+(Invoke-AddonOwnedApply -AddonName 'externaldns' -Path $externalDnsConfig -Selector $InfraNodeSelector -Kustomize).Output | Write-Log
+if ($InfraNodeSelector) { Set-SharedInfrastructurePlacement -Name 'external-dns' -Selector $InfraNodeSelector }
 
 $kustomization = @"
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -146,7 +162,7 @@ resources:
 
 if (-not $OmitCertMgr) {
     Write-Log 'Installing cert-manager' -Console
-    Enable-CertManager -Proxy $Proxy -EncodeStructuredOutput:$EncodeStructuredOutput -MessageType:$MessageType
+    Enable-CertManager -Proxy $Proxy -EncodeStructuredOutput:$EncodeStructuredOutput -MessageType:$MessageType -InfraNodeSelector $InfraNodeSelector
 }
 else {
     Write-Log '[ingress nginx-gw] WARNING: cert-manager omitted. TLS certificates must be provided manually for HTTPS to function.' -Console
@@ -193,7 +209,8 @@ if (-not $ngfDiscoveryReady) {
     Write-Log '[nginx-gw] WARNING: kubectl discovery cache did not refresh within 60s' -Console
 }
 
-(Invoke-Kubectl -Params 'apply' , '-k', $kustomizationDir).Output | Write-Log
+if ($InfraNodeSelector -and (-not $ngfDiscoveryReady -or -not $ngfCrdWait.Success)) { throw 'NGINX gateway CRDs must be established before applying infrastructure owners.' }
+(Invoke-AddonOwnedApply -AddonName 'ingress' -Path $kustomizationDir -Selector $InfraNodeSelector -Kustomize -ServerSide:([bool]$InfraNodeSelector)).Output | Write-Log
 
 # # delete the temporary directory
 Remove-Item -Path $kustomizationDir -Recurse
@@ -206,7 +223,14 @@ $controlPlaneIp = Get-ConfiguredIPControlPlane
 Write-Log "Preparing NginxProxy resource and nginx-gw-controller service with external IP $controlPlaneIp" -Console
 $nginxProxyTemplate = Get-Content "$PSScriptRoot\manifests\nginxproxy.yaml" -Raw
 $nginxProxyYaml = $nginxProxyTemplate.Replace('__CONTROL_PLANE_IP__', $controlPlaneIp)
-$nginxProxyYaml | & kubectl apply --server-side --force-conflicts -f -
+if ($InfraNodeSelector) {
+    $proxyInputPath = [System.IO.Path]::GetTempFileName()
+    try {
+        Set-Content -LiteralPath $proxyInputPath -Value $nginxProxyYaml -Encoding UTF8
+        (Invoke-AddonOwnedApply -AddonName 'ingress' -Path $proxyInputPath -Selector $InfraNodeSelector -ServerSide).Output | Write-Log
+    }
+    finally { Remove-Item -LiteralPath $proxyInputPath -Force -ErrorAction SilentlyContinue }
+} else { $nginxProxyYaml | & kubectl apply --server-side --force-conflicts -f - }
 
 $allPodsAreUp = (Wait-ForPodCondition -Condition Ready -Label 'app.kubernetes.io/name=nginx-gw' -Namespace 'nginx-gw' -TimeoutSeconds 300)
 
@@ -249,7 +273,9 @@ Start-Sleep -Seconds 5
 
 Write-Log 'All nginx gateway pods are up and ready.'
 
-Add-AddonToSetupJson -Addon ([pscustomobject] @{Name = 'ingress'; Implementation = 'nginx-gw' })
+$addonConfig = [pscustomobject] @{Name = 'ingress'; Implementation = 'nginx-gw' }
+if ($InfraNodeSelector) { $addonConfig | Add-Member -NotePropertyName OmitCertMgr -NotePropertyValue $OmitCertMgr.IsPresent }
+Add-AddonToSetupJson -Addon $addonConfig
 
 &"$PSScriptRoot\Update.ps1"
 

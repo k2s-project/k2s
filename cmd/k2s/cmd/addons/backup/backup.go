@@ -25,6 +25,7 @@ import (
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/internal/core/config"
+	"github.com/k2s-project/k2s/internal/definitions"
 	k2sos "github.com/k2s-project/k2s/internal/os"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 	"github.com/spf13/cobra"
@@ -104,6 +105,11 @@ func runBackup(cmd *cobra.Command, args []string) error {
 	if err := executeBackupScript(psScriptPath, stagingDir, outputFlag); err != nil {
 		return err
 	}
+	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
+	configPath := filepath.Join(context.Config().Host().K2sSetupConfigDir(), definitions.K2sRuntimeConfigFileName)
+	if err := addPlacementMetadata(filepath.Join(stagingDir, "backup.json"), configPath, addon.Metadata.Name, impl.Name); err != nil {
+		return err
+	}
 
 	manifest, err := readAndValidateManifest(filepath.Join(stagingDir, "backup.json"))
 	if err != nil {
@@ -129,6 +135,65 @@ func runBackup(cmd *cobra.Command, args []string) error {
 	slog.Info("Addon backup created", "addon", addon.Metadata.Name, "implementation", impl.Name, "file", zipPath)
 	cmdSession.Finish()
 	return nil
+}
+
+func addPlacementMetadata(manifestPath, configPath, addonName, implementation string) error {
+	// Best effort: a missing or unreadable runtime config must not fail a backup.
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		slog.Warn("Skipping addon placement metadata; runtime config unreadable", "path", configPath, "error", err)
+		return nil
+	}
+	var config struct {
+		EnabledAddons []struct {
+			Name              string
+			Implementation    string
+			InfraNodeSelector string
+		}
+	}
+	if err := json.Unmarshal(bytes.TrimPrefix(configData, []byte{0xEF, 0xBB, 0xBF}), &config); err != nil {
+		slog.Warn("Skipping addon placement metadata; runtime config invalid", "path", configPath, "error", err)
+		return nil
+	}
+	selector := ""
+	for _, addon := range config.EnabledAddons {
+		if addon.Name == addonName && addon.Implementation == implementation {
+			selector = addon.InfraNodeSelector
+			break
+		}
+	}
+	if selector == "" && addonName == implementation {
+		for _, addon := range config.EnabledAddons {
+			if addon.Name == addonName && addon.Implementation == "" {
+				selector = addon.InfraNodeSelector
+				break
+			}
+		}
+	}
+	if selector == "" {
+		return nil
+	}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	var manifest map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), &manifest); err != nil {
+		return err
+	}
+	if manifest == nil {
+		return errors.New("invalid backup.json: expected an object")
+	}
+	encodedSelector, err := json.Marshal(selector)
+	if err != nil {
+		return err
+	}
+	manifest["infraNodeSelector"] = encodedSelector
+	data, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath, data, 0o600)
 }
 
 func loadAddonAndImpl(args []string) (allAddons addons.Addons, addon addons.Addon, impl addons.Implementation, err error) {

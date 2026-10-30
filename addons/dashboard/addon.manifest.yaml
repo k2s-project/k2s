@@ -29,6 +29,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Constrain Headlamp infrastructure to nodes matching all label requirements
               - name: ingress
                 default: none
                 description: Ingress controller to use for exposing dashboard
@@ -45,6 +48,8 @@ spec:
             examples:
               - cmd: k2s addons enable dashboard
                 comment: Enable Headlamp dashboard in k2s
+              - cmd: k2s addons enable dashboard --infra-node-selector kubernetes.io/hostname=kubemaster --ingress none --enable-metrics=false
+                comment: Run Headlamp on kubemaster without enabling ingress or metrics
               - cmd: k2s addons enable dashboard --ingress traefik
                 comment: Enable Headlamp dashboard in k2s with ingress traefik
               - cmd: k2s addons enable dashboard --ingress nginx-gw
@@ -54,6 +59,8 @@ spec:
           script:
             subPath: Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: ingress
                 scriptParameterName: Ingress
               - cliFlagName: enable-metrics

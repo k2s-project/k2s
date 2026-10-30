@@ -15,6 +15,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Hard node selector for OpenSearch services, excluding Fluent Bit node agents
               - name: ingress
                 default: none
                 description: Ingress controller to use for exposing logging dashboards
@@ -40,6 +43,8 @@ spec:
               - cmd: k2s addons enable logging
               - cmd: k2s addons enable logging --snode worker1
                 comment: Enable logging in k2s
+              - cmd: k2s addons enable logging --infra-node-selector kubernetes.io/hostname=kubemaster --ingress none --snode kubemaster
+                comment: Windows host only; run OpenSearch services on kubemaster with compatible existing PV storage; Fluent Bit remains distributed; no data migration
               - cmd: k2s addons enable logging --ingress traefik
                 comment: Enable logging in k2s with ingress traefik
               - cmd: k2s addons enable logging --omitOpensearch
@@ -47,6 +52,8 @@ spec:
           script:
             subPath: Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: snode
                 scriptParameterName: StorageNode
               - cliFlagName: ingress

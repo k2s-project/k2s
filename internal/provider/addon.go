@@ -112,11 +112,12 @@ type AddonImportConfig struct {
 // pre-formatted script parameters (PowerShell-style) which the Windows provider
 // passes through to PS, and the Linux provider ignores for native operations.
 type AddonRunCommandConfig struct {
-	AddonName      string   // Addon metadata name (e.g., "dashboard")
-	Implementation string   // Addon implementation name (e.g., "nginx")
-	CommandName    string   // Command name from manifest (e.g., "enable", "disable", "update")
-	AddonDirectory string   // Full path to addon directory
-	ScriptSubPath  string   // Script path relative to addon directory (e.g., "Enable.ps1")
-	Params         []string // Pre-formatted script parameters from CLI flag mapping
-	ShowOutput     bool
+	AddonName       string            // Addon metadata name (e.g., "dashboard")
+	Implementation  string            // Selected implementation for multi-implementation addons
+	CommandName     string            // Command name from manifest (e.g., "enable", "disable", "update")
+	AddonDirectory  string            // Full path to addon directory
+	ScriptSubPath   string            // Script path relative to addon directory (e.g., "Enable.ps1")
+	Params          []string          // Pre-formatted script parameters for Windows
+	ParameterValues map[string]string // Raw mapped values for native provider operations
+	ShowOutput      bool
 }

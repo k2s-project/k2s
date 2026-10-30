@@ -33,6 +33,7 @@ Describe 'Find-AddonManifests' -Tag 'unit', 'ci', 'addon' {
             }
         }
     }
+
 }
 
 Describe 'Get-EnabledAddons' -Tag 'unit', 'ci', 'addon' {
@@ -472,6 +473,794 @@ Describe 'Get-AddonConfig' -Tag 'unit', 'ci', 'addon' {
     }
 }
 
+Describe 'Get-AddonInfrastructurePlacementStatus' -Tag 'unit', 'ci', 'addon' {
+    Context 'selector is not configured' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonConfig { return $null }
+            Mock -ModuleName $moduleName Invoke-Kubectl { throw 'Invoke-Kubectl should not be called without a saved selector.' }
+        }
+
+        It 'returns no placement properties' {
+            InModuleScope -ModuleName $moduleName {
+                Get-AddonInfrastructurePlacementStatus -Name 'metrics' | Should -BeNullOrEmpty
+                Should -Invoke Invoke-Kubectl -Times 0 -Scope It
+            }
+        }
+    }
+
+    Context 'selector is configured but no nodes match' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ InfraNodeSelector = 'kubernetes.io/hostname=infra-1' } }
+            Mock -ModuleName $moduleName Invoke-Kubectl {
+                if ($Params -contains 'deployment') {
+                    return [pscustomobject]@{ Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"infra-1","kubernetes.io/os":"linux"}}}}}' }
+                }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+        }
+
+        It 'reports the effective hard selector and Pending behavior' {
+            InModuleScope -ModuleName $moduleName {
+                $properties = Get-AddonInfrastructurePlacementStatus -Name 'metrics'
+                $properties[0].Value | Should -Be 'kubernetes.io/hostname=infra-1'
+                $properties[1].Name | Should -Be 'Infrastructure placement - metrics-server'
+                $properties[1].Value | Should -Be 'No matching nodes'
+                $properties[1].Okay | Should -BeFalse
+                $properties[1].Message | Should -Match 'remain Pending'
+                Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '-l' -and $Params -contains 'kubernetes.io/hostname=infra-1,kubernetes.io/os=linux' }
+            }
+        }
+    }
+
+    Context 'node query fails' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ InfraNodeSelector = 'kubernetes.io/hostname=infra-1' } }
+            Mock -ModuleName $moduleName Invoke-Kubectl {
+                if ($Params -contains 'deployment') {
+                    return [pscustomobject]@{ Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"infra-1","kubernetes.io/os":"linux"}}}}}' }
+                }
+                return [pscustomobject]@{ Success = $false; Output = 'cluster is unreachable' }
+            }
+        }
+
+        It 'reports that placement could not be checked instead of claiming no nodes match' {
+            InModuleScope -ModuleName $moduleName {
+                $properties = Get-AddonInfrastructurePlacementStatus -Name 'metrics'
+                $properties[1].Value | Should -Be 'Unable to check matching nodes'
+                $properties[1].Okay | Should -BeFalse
+                $properties[1].Message | Should -Match 'cluster is unreachable'
+            }
+        }
+    }
+
+    Context 'live workload selector no longer enforces the saved selector' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ InfraNodeSelector = 'kubernetes.io/hostname=infra-1' } }
+            Mock -ModuleName $moduleName Invoke-Kubectl {
+                if ($Params -contains 'deployment') {
+                    return [pscustomobject]@{ Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux"}}}}}' }
+                }
+                return [pscustomobject]@{ Success = $true; Output = 'node/infra-1' }
+            }
+        }
+
+        It 'reports incorrect placement even if the weaker selector matches nodes' {
+            InModuleScope -ModuleName $moduleName {
+                $properties = Get-AddonInfrastructurePlacementStatus -Name 'metrics'
+                $placement = $properties | Where-Object { $_.Name -eq 'Infrastructure placement - metrics-server' }
+                $placement.Value | Should -Be 'Incorrect placement'
+                $placement.Okay | Should -BeFalse
+                $placement.Message | Should -Match 'kubernetes.io/hostname=infra-1'
+                Should -Invoke Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params -contains '-l' }
+            }
+        }
+    }
+}
+
+Describe 'Infrastructure placement owning preflight' -Tag 'unit', 'ci', 'addon' {
+    BeforeEach {
+        Mock -ModuleName $moduleName Get-ConfigValue { @() }
+        Mock -ModuleName $moduleName Get-AddonsConfig { @() }
+        Mock -ModuleName $moduleName Set-SharedInfrastructurePlacement {}
+        Mock -ModuleName $moduleName Get-SetupConfigFilePath { 'unused' }
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
+    }
+
+    It 'rejects a conflicting shared-service selector without applying resources' {
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=infra'}) }
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"items":[{"spec":{"template":{"spec":{"nodeSelector":{"pool":"infra"}}}}}]}'} }
+        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=other' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*already owns selector*'
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params[0] -ne 'get' }
+    }
+
+    It 'reconciles stale ownership only after shared workloads and consumers are absent' {
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=old'}) }
+        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=new' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Not -Throw
+        Should -Invoke -ModuleName $moduleName Set-SharedInfrastructurePlacement -Times 1 -Scope It -ParameterFilter { $Selector -eq 'pool=new' }
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'cert-manager-webhook' -and $Params -contains 'cert-manager-cainjector' -and $Params -contains '--ignore-not-found' }
+    }
+
+    It 'does not release a shared owner still referenced by an enabled consumer' {
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'external-dns'; InfraNodeSelector = 'pool=old'}) }
+        Mock -ModuleName $moduleName Get-AddonsConfig { @([pscustomobject]@{Name = 'ingress'; Implementation = 'nginx'}) }
+        { Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector 'pool=new' -Namespace 'external-dns' -Deployment 'external-dns' } | Should -Throw
+        Should -Invoke -ModuleName $moduleName Set-SharedInfrastructurePlacement -Times 0 -Scope It
+    }
+
+    It 'fails closed on forbidden instead of treating it as not found' {
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=old'}) }
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $false; Output = 'Forbidden'} }
+        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=new' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*Cannot inspect*Forbidden*'
+        Should -Invoke -ModuleName $moduleName Set-SharedInfrastructurePlacement -Times 0 -Scope It
+    }
+
+    It 'accepts the same canonical shared selector without reinstalling it' {
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'external-dns'; InfraNodeSelector = 'pool=infra,zone=a'}) }
+        { Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector 'zone=a,pool=infra' -Namespace 'external-dns' -Deployment 'external-dns' } | Should -Not -Throw
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params[0] -eq 'get' }
+    }
+
+    It 'rejects actual shared drift even when saved ownership is compatible' {
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=infra'}) }
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"pool":"other"}}}}}'} }
+        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=infra' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*exists without compatible placement*'
+    }
+
+    It 'checks actual bound PVs before allowing storage mutation' {
+        Mock -ModuleName $moduleName Invoke-Kubectl {
+            if ($Params[1] -eq 'pvc') { return [pscustomobject]@{Success = $true; Output = '{"items":[{"spec":{"volumeName":"retained-data"}}]}'} }
+            return [pscustomobject]@{Success = $true; Output = '{"metadata":{"name":"existing"}}'}
+        }
+        Mock -ModuleName $moduleName Invoke-AddonStorageProof { throw 'actual PV conflict' }
+        { Assert-AddonStoragePlacement -Namespace 'logging' -VolumeNames @() -NodeName 'kubemaster' } | Should -Throw -ExpectedMessage '*actual PV conflict*'
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params[1] -eq 'pv' -and $Params[2] -eq 'retained-data' }
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params[0] -ne 'get' }
+    }
+
+    It 'rejects a legacy shared Deployment with incompatible actual placement' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux"}}}}}'} }
+        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=infra' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*exists without compatible placement*'
+    }
+
+    It 'rejects an incompatible storage or prerequisite host before mutation' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"metadata":{"labels":{"kubernetes.io/hostname":"kubemaster","kubernetes.io/os":"linux"}}}'} }
+        { Assert-AddonPlacementHost -Selector 'kubernetes.io/hostname=worker' -NodeName 'kubemaster' -Reason 'local PV' } | Should -Throw -ExpectedMessage '*excludes required host*'
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params[0] -eq 'get' }
+    }
+
+    It 'accepts compatible host labels without labeling or tainting nodes' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"metadata":{"labels":{"kubernetes.io/hostname":"kubemaster","kubernetes.io/os":"linux"}}}'} }
+        { Assert-AddonPlacementHost -Selector 'kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux' -NodeName 'kubemaster' -Reason 'local PV' } | Should -Not -Throw
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params[0] -ne 'get' }
+    }
+}
+
+Describe 'Typed infrastructure owner placement status' -Tag 'unit', 'ci', 'addon' {
+    It 'reports drift at the Prometheus CR owner instead of accepting a weaker live selector' {
+        Mock -ModuleName $moduleName Get-AddonConfig { [pscustomobject]@{Name = 'monitoring'; InfraNodeSelector = 'pool=infra'} }
+        Mock -ModuleName $moduleName Invoke-Kubectl {
+            if ($Params[1] -eq 'prometheus,alertmanager') { return [pscustomobject]@{Success = $true; Output = '{"items":[{"kind":"Prometheus","metadata":{"name":"main"},"spec":{"nodeSelector":{"kubernetes.io/os":"linux"}}}]}'} }
+            return [pscustomobject]@{Success = $true; Output = '{"items":[]}'}
+        }
+        $status = Get-AddonInfrastructurePlacementStatus -Name 'monitoring'
+        ($status | Where-Object Name -eq 'Infrastructure placement - Prometheus/main').Value | Should -Be 'Incorrect placement'
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params[1] -eq 'nodes' }
+    }
+}
+
+Describe 'Owning placement apply boundary' -Tag 'unit', 'ci', 'addon' {
+    BeforeEach {
+        Mock -ModuleName $moduleName New-AddonPlacementInput { [pscustomobject]@{Path = 'rendered-owner.yaml'; HasMatchingNodes = $true} }
+        Mock -ModuleName $moduleName Remove-Item {}
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = 'applied'} }
+    }
+    It 'applies built rendered input without an unconstrained Kustomize apply' {
+        (Invoke-AddonOwnedApply -AddonName 'ingress' -Path 'owning-overlay' -Selector 'pool=infra' -Kustomize -ServerSide).Success | Should -BeTrue
+        Should -Invoke -ModuleName $moduleName New-AddonPlacementInput -Times 1 -Scope It -ParameterFilter { $Kustomize -and $Selector -eq 'pool=infra' }
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '--server-side' -and $Params -contains 'rendered-owner.yaml' -and $Params -notcontains '-k' }
+    }
+    It 'propagates apply failure and cleans its temporary owner input' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $false; Output = 'admission rejected'} }
+        { Invoke-AddonOwnedApply -AddonName 'ingress' -Path 'controller.yaml' -Selector 'pool=infra' } | Should -Throw -ExpectedMessage '*admission rejected*'
+        Should -Invoke -ModuleName $moduleName Remove-Item -Times 1 -Scope It -ParameterFilter { $LiteralPath -eq 'rendered-owner.yaml' }
+    }
+    It 'preserves the original owner apply on omission' {
+        Invoke-AddonOwnedApply -AddonName 'ingress' -Path 'owning-overlay' -Kustomize | Out-Null
+        Should -Invoke -ModuleName $moduleName New-AddonPlacementInput -Times 0 -Scope It
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '-k' -and $Params -contains 'owning-overlay' }
+    }
+    It 'logs and continues on apply failure without a selector, as the original apply did' {
+        Mock -ModuleName $moduleName Write-Log {}
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $false; Output = 'client-side apply failed'} }
+        $result = Invoke-AddonOwnedApply -AddonName 'ingress' -Path 'owning-overlay' -Kustomize -ServerSide
+        $result.Success | Should -BeFalse
+        Should -Invoke -ModuleName $moduleName Write-Log -Times 1 -Scope It -ParameterFilter { "$Messages" -like '*WARNING*ingress*client-side apply failed*' }
+    }
+    It 'forces server-side conflicts with and without a selector' {
+        Invoke-AddonOwnedApply -AddonName 'ingress' -Path 'proxy.yaml' -ServerSide | Out-Null
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '--server-side' -and $Params -contains '--force-conflicts' -and $Params -contains '-f' }
+        Invoke-AddonOwnedApply -AddonName 'ingress' -Path 'proxy.yaml' -Selector 'pool=infra' -ServerSide | Out-Null
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '--server-side' -and $Params -contains '--force-conflicts' -and $Params -contains 'rendered-owner.yaml' }
+    }
+}
+
+Describe 'Owner call sites keep the original apply flags without a selector' -Tag 'unit', 'ci', 'addon' {
+    AfterEach { Remove-Variable -Name ownedApplyParams -Scope Global -ErrorAction SilentlyContinue }
+    It 'applies <Owner> <Marker> with expected flags for selector <Selector>' -ForEach @(
+        @{Owner = 'ingress/nginx-gw'; Marker = '$kustomizationDir'; Selector = ''; Expected = @('-k'); Forbidden = @('--server-side', '--force-conflicts')}
+        @{Owner = 'ingress/nginx-gw'; Marker = '$kustomizationDir'; Selector = 'pool=infra'; Expected = @('--server-side', '--force-conflicts', 'rendered-owner.yaml'); Forbidden = @('-k')}
+    ) {
+        $tokens = $null; $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "$Owner/Enable.ps1"), [ref]$tokens, [ref]$parseErrors)
+        $call = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-AddonOwnedApply' -and $node.Extent.Text.Contains($Marker) }, $true)
+        $call | Should -Not -BeNullOrEmpty
+        $probe = [scriptblock]::Create('param($InfraNodeSelector, $kustomizationDir) ' + $call.Extent.Text)
+        Mock -ModuleName $moduleName New-AddonPlacementInput { [pscustomobject]@{Path = 'rendered-owner.yaml'; HasMatchingNodes = $true} }
+        Mock -ModuleName $moduleName Remove-Item {}
+        Mock -ModuleName $moduleName Invoke-Kubectl { $global:ownedApplyParams = $Params; [pscustomobject]@{Success = $true; Output = 'applied'} }
+        & $probe $Selector 'owner-path' | Out-Null
+        foreach ($flag in $Expected) { $global:ownedApplyParams | Should -Contain $flag }
+        foreach ($flag in $Forbidden) { $global:ownedApplyParams | Should -Not -Contain $flag }
+    }
+}
+
+Describe 'Owning placement structured errors' -Tag 'unit', 'ci', 'addon' {
+    It 'encodes terminating preflight failure without continuing enable' -ForEach @(
+        @{Owner = 'monitoring'}, @{Owner = 'logging'},
+        @{Owner = 'registry'},
+        @{Owner = 'ingress/nginx'}, @{Owner = 'ingress/traefik'}, @{Owner = 'ingress/nginx-gw'}
+    ) {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "$Owner/Enable.ps1"), [ref]$tokens, [ref]$parseErrors)
+        $trapText = $ast.Find({param($node) $node -is [System.Management.Automation.Language.TrapStatementAst]}, $false).Extent.Text
+        $trapText | Should -Not -BeNullOrEmpty
+        Mock -ModuleName $moduleName Send-ToCli {}
+        InModuleScope -ModuleName $moduleName -Parameters @{TrapText = $trapText} {
+            $probe = [scriptblock]::Create('param([switch]$EncodeStructuredOutput, [string]$MessageType) ' + $TrapText + "; throw 'placement preflight rejected'; 'must not continue'")
+            $output = & $probe -EncodeStructuredOutput -MessageType 'CmdResult'
+            $output | Should -BeNullOrEmpty
+            Should -Invoke Send-ToCli -Times 1 -Scope It -ParameterFilter { $MessageType -eq 'CmdResult' -and $Message.Error.Code -eq 'addon-enable-failed' -and $Message.Error.Message -eq 'placement preflight rejected' }
+        }
+    }
+}
+
+Describe 'Nginx partial service retry guard' -Tag 'unit', 'ci', 'addon' {
+    It 'allows only the matching recorded implementation to resume after a partial service apply' -ForEach @(
+        @{Implementation = 'nginx'; IntentSelector = 'pool=infra'; Allowed = $true},
+        @{Implementation = 'traefik'; IntentSelector = 'pool=infra'; Allowed = $false},
+        @{Implementation = 'nginx'; IntentSelector = 'pool=other'; Allowed = $false},
+        @{Implementation = ''; IntentSelector = ''; Allowed = $false}
+    ) {
+        $source = Get-Content -Raw (Join-Path $PSScriptRoot 'ingress/nginx/Enable.ps1')
+        $start = $source.IndexOf('$existingServices =')
+        $finish = $source.IndexOf("Write-Log 'Installing ExternalDNS'", $start)
+        InModuleScope -ModuleName $moduleName -Parameters @{Source = $source.Substring($start, $finish - $start); Implementation = $Implementation; IntentSelector = $IntentSelector; Allowed = $Allowed} {
+            Mock Get-SetupConfigFilePath { 'unused' }
+            $script:nginxRecordedIntent = [pscustomobject]@{Name = 'ingress'; Implementation = $Implementation; InfraNodeSelector = $IntentSelector}
+            Mock Get-ConfigValue { @($script:nginxRecordedIntent) }
+            Mock Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = 'ingress-nginx-controller'} }
+            Mock Send-ToCli {}
+            $result = & ([scriptblock]::Create('param([string]$InfraNodeSelector, [bool]$EncodeStructuredOutput, [string]$MessageType) ' + $Source + "; 'resumed'")) 'pool=infra' $true 'CmdResult'
+            if ($Allowed) { $result | Should -Be 'resumed' } else { $result | Should -BeNullOrEmpty }
+        }
+    }
+}
+
+Describe 'Metrics retained intent retries' -Tag 'unit', 'ci', 'addon' {
+    It 'renders retained intent after <Failure> failure for <Owner> with requested selector <Requested>' -ForEach @(
+        @{Owner = 'metrics'; Requested = ''; Failure = 'apply'}, @{Owner = 'metrics'; Requested = 'pool=infra'; Failure = 'apply'},
+        @{Owner = 'metrics'; Requested = ''; Failure = 'readiness'}, @{Owner = 'metrics'; Requested = 'pool=infra'; Failure = 'readiness'}
+    ) {
+        Mock -ModuleName $moduleName Get-AddonConfig { $null }
+        Mock -ModuleName $moduleName Get-SetupConfigFilePath { 'unused' }
+        Mock -ModuleName $moduleName New-AddonPlacementManifest { 'retained-intent.yaml' }
+        Mock -ModuleName $moduleName Test-AddonInfrastructureSelectorOnCluster { $true }
+        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
+        $source = Get-Content -Raw (Join-Path $PSScriptRoot "$Owner/Enable.ps1")
+        $start = $source.IndexOf('$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector')
+        $finish = $source.IndexOf('$wait =', $start)
+        InModuleScope -ModuleName $moduleName -Parameters @{Source = $source.Substring($start, $finish - $start); Owner = $Owner; Requested = $Requested; Failure = $Failure} {
+            function Get-MetricsServerConfig { 'baseline.yaml' }
+            $script:retainedMetricsIntent = $null
+            Mock Get-ConfigValue { @($script:retainedMetricsIntent) }
+            Mock Set-AddonPlacementIntent { if ($Clear) { $script:retainedMetricsIntent = $null } else { $script:retainedMetricsIntent = $Addon } }
+            Mock Remove-AddonFromSetupJson {}
+            Mock Add-AddonToSetupJson {}
+            $initialApply = { [pscustomobject]@{Success = ($Failure -ne 'apply'); Output = 'initial apply'} }
+            $initialWait = { $false }
+            $initialUpdate = { throw 'must not update a failed installation' }
+            $successfulRollback = { [pscustomobject]@{Success = $true} }
+            { Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{Name = $Owner; InfraNodeSelector = 'pool=infra'}) -Selector 'pool=infra' -Apply $initialApply -Wait $initialWait -Update $initialUpdate -Rollback $successfulRollback } | Should -Throw
+            $script:retainedMetricsIntent.InfraNodeSelector | Should -Be 'pool=infra'
+            . ([scriptblock]::Create('param([string]$InfraNodeSelector, [string]$TestOwnerRoot) ' + $Source.Replace('$PSScriptRoot', '$TestOwnerRoot'))) -InfraNodeSelector $Requested -TestOwnerRoot 'unused'
+            (& $apply).Success | Should -BeTrue
+            $addonConfig.InfraNodeSelector | Should -Be 'pool=infra'
+            Should -Invoke New-AddonPlacementManifest -Times 1 -Scope It -ParameterFilter { $Selector -eq 'pool=infra' }
+            Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'retained-intent.yaml' }
+            Should -Invoke Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params -contains 'baseline.yaml' }
+        }
+    }
+}
+
+Describe 'Monitoring retained option retries' -Tag 'unit', 'ci', 'addon' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $ownerAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'monitoring/Enable.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $ownerTrap = $ownerAst.EndBlock.Traps[0]
+        $placementBranch = $ownerAst.EndBlock.Statements | Where-Object { $_.Extent.Text.StartsWith('if ($placement)') } | Select-Object -First 1
+        $unpinnedApply = $ownerAst.EndBlock.Statements | Where-Object { $_.Extent.StartOffset -gt $placementBranch.Extent.EndOffset } | Select-Object -First 1
+        $ownerSource = $ownerAst.Extent.Text.Substring($ownerTrap.Extent.EndOffset, $unpinnedApply.Extent.EndOffset - $ownerTrap.Extent.EndOffset)
+        $monitoringRetryProbe = [scriptblock]::Create($ownerAst.ParamBlock.Extent.Text + ";`n" + '$OwnerRoot = ''monitoring-owner''' + "`n" + $ownerSource.Replace('$PSScriptRoot', '$OwnerRoot'))
+    }
+
+    It 'resolves <Case> before monitoring renders or applies' -ForEach @(
+        @{Case = 'omitted true after apply failure'; Saved = $true; Explicit = $null; Expected = $true; Conflict = $false; Failure = 'apply'},
+        @{Case = 'omitted true after readiness failure'; Saved = $true; Explicit = $null; Expected = $true; Conflict = $false; Failure = 'readiness'},
+        @{Case = 'omitted false'; Saved = $false; Explicit = $null; Expected = $false; Conflict = $false},
+        @{Case = 'matching true'; Saved = $true; Explicit = $true; Expected = $true; Conflict = $false},
+        @{Case = 'matching explicit false'; Saved = $false; Explicit = $false; Expected = $false; Conflict = $false},
+        @{Case = 'conflicting explicit false'; Saved = $true; Explicit = $false; Expected = $true; Conflict = $true},
+        @{Case = 'conflicting explicit true'; Saved = $false; Explicit = $true; Expected = $false; Conflict = $true},
+        @{Case = 'no intent default'; Saved = $null; Explicit = $null; Expected = $false; Conflict = $false},
+        @{Case = 'no intent explicit true'; Saved = $null; Explicit = $true; Expected = $true; Conflict = $false},
+        @{Case = 'mixed case identity and property'; Saved = $true; Explicit = $null; Expected = $true; Conflict = $false; MixedCase = $true},
+        @{Case = 'unrelated owner'; Saved = $true; Explicit = $null; Expected = $false; Conflict = $false; OtherOwner = $true},
+        @{Case = 'unrelated implementation'; Saved = $true; Explicit = $null; Expected = $false; Conflict = $false; OtherImplementation = $true},
+        @{Case = 'legacy intent without option'; Saved = $null; Explicit = $null; Expected = $false; Conflict = $true; Legacy = $true},
+        @{Case = 'legacy intent explicit false'; Saved = $null; Explicit = $false; Expected = $false; Conflict = $false; Legacy = $true},
+        @{Case = 'legacy intent explicit true'; Saved = $null; Explicit = $true; Expected = $true; Conflict = $false; Legacy = $true}
+    ) {
+        InModuleScope -ModuleName $moduleName -Parameters @{Probe = $monitoringRetryProbe; Saved = $Saved; Explicit = $Explicit; Expected = $Expected; Conflict = $Conflict; MixedCase = $MixedCase; OtherOwner = $OtherOwner; OtherImplementation = $OtherImplementation; Legacy = $Legacy; Failure = $Failure} {
+            $script:monitoringIntent = $null
+            if ($null -ne $Saved -or $Legacy) {
+                $script:monitoringIntent = [pscustomobject]@{Name = 'monitoring'; InfraNodeSelector = 'kubernetes.io/hostname=kubemaster'}
+                if (-not $Legacy) { $script:monitoringIntent | Add-Member -NotePropertyName 'OmitGrafana' -NotePropertyValue $Saved }
+                if ($MixedCase) { $script:monitoringIntent = [pscustomobject]@{NAME = 'MONITORING'; OMITGRAFANA = $Saved; INFRANODESELECTOR = 'kubernetes.io/hostname=kubemaster'} }
+                if ($OtherOwner) { $script:monitoringIntent.Name = 'other' }
+                if ($OtherImplementation) { $script:monitoringIntent | Add-Member -NotePropertyName Implementation -NotePropertyValue 'other' }
+            }
+            $script:retriedMonitoring = $null
+            function Enable-IngressAddon { param($Ingress) throw 'must not enable ingress' }
+            function Clear-KubectlDiscoveryCache {}
+            Mock Get-AddonConfig { $null }
+            Mock Get-SetupConfigFilePath { 'unused' }
+            Mock Get-ConfigValue { @($script:monitoringIntent) }
+            Mock Write-Log {}
+            Mock Test-SystemAvailability { $null }
+            Mock Get-SetupInfo { [pscustomobject]@{Name = 'k2s'} }
+            Mock Test-IsAddonEnabled { $false }
+            Mock New-AddonPlacementInput { [pscustomobject]@{Path = 'rendered-monitoring.yaml'; HasMatchingNodes = $true} }
+            Mock Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
+            Mock Remove-Item {}
+            if ($Failure) {
+                $initialAddon = $script:monitoringIntent
+                $script:monitoringIntent = $null
+                Mock Set-AddonPlacementIntent { $script:monitoringIntent = $Addon }
+                Mock Remove-AddonFromSetupJson {}
+                $initialApply = { [pscustomobject]@{Success = ($Failure -ne 'apply'); Output = 'initial monitoring apply'} }
+                { Invoke-AddonEnableTransaction -Addon $initialAddon -Selector $initialAddon.InfraNodeSelector -Apply $initialApply -Wait { $false } -Update { throw 'must not update' } -Rollback { [pscustomobject]@{Success = $false; Output = 'operator resources may remain'} } } | Should -Throw
+                $script:monitoringIntent.OmitGrafana | Should -BeTrue
+            }
+            Mock Invoke-AddonEnableTransaction {
+                $script:retriedMonitoring = $Addon
+                & $Apply | Out-Null
+            }
+            $parameters = @{}
+            if ($null -ne $Explicit) { $parameters['omitgrafana'] = $Explicit }
+            if ($Conflict) {
+                { & $Probe @parameters } | Should -Throw -ExpectedMessage '*OmitGrafana*incomplete installation intent*'
+                Should -Invoke Test-SystemAvailability -Times 0 -Scope It
+                Should -Invoke New-AddonPlacementInput -Times 0 -Scope It
+                Should -Invoke Invoke-Kubectl -Times 0 -Scope It
+                Should -Invoke Invoke-AddonEnableTransaction -Times 0 -Scope It
+            } else {
+                & $Probe @parameters
+                $overlay = if ($Expected) { '*\monitoring-no-grafana' } else { '*\monitoring' }
+                if ($null -ne $Saved -and -not $OtherOwner -and -not $OtherImplementation -or $Legacy) {
+                    Should -Invoke New-AddonPlacementInput -Times 1 -Scope It -ParameterFilter { $Path -like $overlay -and $Selector -eq 'kubernetes.io/hostname=kubemaster' }
+                    $script:retriedMonitoring.OmitGrafana | Should -Be $Expected
+                    $script:retriedMonitoring.OmitGrafana | Should -BeOfType ([bool])
+                    Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'rendered-monitoring.yaml' }
+                } else {
+                    Should -Invoke New-AddonPlacementInput -Times 0 -Scope It
+                    Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '-k' -and $Params[-1] -like $overlay }
+                }
+            }
+        }
+    }
+}
+
+Describe 'Placement owner retry caller sequencing' -Tag 'unit', 'ci', 'addon' {
+    It 'recovers <Option> for <Owner>/<Implementation> before preflight' -ForEach @(
+        @{Owner = 'registry'; Implementation = ''; Option = 'StorageNode'; Saved = 'worker-1'},
+        @{Owner = 'logging'; Implementation = ''; Option = 'StorageNode'; Saved = 'worker-1'},
+        @{Owner = 'ingress'; Implementation = 'nginx'; Option = 'OmitCertMgr'; Saved = $true},
+        @{Owner = 'ingress'; Implementation = 'nginx-gw'; Option = 'OmitCertMgr'; Saved = $true},
+        @{Owner = 'ingress'; Implementation = 'traefik'; Option = 'OmitCertMgr'; Saved = $true}
+    ) {
+        $relativePath = if ($Implementation) { "$Owner/$Implementation/Enable.ps1" } else { "$Owner/Enable.ps1" }
+        $tokens = $null; $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $relativePath), [ref]$tokens, [ref]$parseErrors)
+        $start = $ast.Extent.Text.IndexOf('$ownerOptions =')
+        $endStatement = $ast.EndBlock.Statements | Where-Object { $_.Extent.Text.StartsWith('$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector') } | Select-Object -First 1
+        $probe = [scriptblock]::Create($ast.ParamBlock.Extent.Text + "`n" + $ast.Extent.Text.Substring($start, $endStatement.Extent.EndOffset - $start) + "`n" + '$ownerOptions')
+        InModuleScope -ModuleName $moduleName -Parameters @{Probe = $probe; Owner = $Owner; Implementation = $Implementation; Option = $Option; Saved = $Saved} {
+            $script:retryOwner = [pscustomobject]@{Name = $Owner; Implementation = $Implementation; InfraNodeSelector = 'zone=A,pool=infra'}
+            $script:retryOwner | Add-Member -NotePropertyName $Option -NotePropertyValue $Saved
+            Mock Get-AddonConfig { $null }
+            Mock Get-SetupConfigFilePath { 'unused' }
+            Mock Get-ConfigValue { @($script:retryOwner) }
+            $result = & $Probe
+            $result[$Option] | Should -BeExactly $Saved
+            $matching = @{$Option = $Saved; InfraNodeSelector = 'pool=infra, zone=A'}
+            (& $Probe @matching)[$Option] | Should -BeExactly $Saved
+            $conflicting = if ($Saved -is [bool]) { -not $Saved } else { 'other-host' }
+            $conflictingParameters = @{$Option = $conflicting}
+            { & $Probe @conflictingParameters } | Should -Throw '*disable*before changing*'
+            $script:retryOwner = $null
+            $baseline = & $Probe
+            $expected = switch ($Option) { 'OmitCertMgr' { $false } default { '' } }
+            $baseline[$Option] | Should -Be $expected
+        }
+        $sourceTail = $ast.Extent.Text.Substring($endStatement.Extent.EndOffset)
+        $sourceTail | Should -Match 'New-AddonPlacementInput|Test-SystemAvailability'
+
+        $trapEnd = $ast.EndBlock.Traps[0].Extent.EndOffset
+        $caller = [scriptblock]::Create($ast.ParamBlock.Extent.Text + "`n" + $ast.Extent.Text.Substring($trapEnd).Replace('$PSScriptRoot', "'owner-root'"))
+        InModuleScope -ModuleName $moduleName -Parameters @{Caller = $caller; Owner = $Owner; Implementation = $Implementation; Option = $Option; Saved = $Saved} {
+            $script:retryOwner = [pscustomobject]@{Name = $Owner; Implementation = $Implementation; InfraNodeSelector = 'pool=infra'}
+            $script:retryOwner | Add-Member -NotePropertyName $Option -NotePropertyValue $Saved
+            $script:ownerBoundaryValues = $null
+            function Get-IngressNginxConfig { 'nginx-owner' }
+            Mock Get-AddonConfig { $null }
+            Mock Get-SetupConfigFilePath { 'unused' }
+            Mock Get-ConfigValue { @($script:retryOwner) }
+            Mock Write-Log {}
+            Mock Test-SystemAvailability { $null }
+            Mock Get-SetupInfo { [pscustomobject]@{Name = 'k2s'} }
+            Mock Test-IsAddonEnabled { $false }
+            Mock Get-ConfiguredKubeSwitchIP { 'unused' }
+            Mock Get-AddonNameFromFolderPath { $Owner }
+            Mock Get-ConfigControlPlaneNodeHostname { throw 'must retain saved storage host' }
+            Mock Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
+            Mock Assert-SharedInfrastructurePlacement {}
+            Mock Assert-AddonPlacementHost {
+                $script:ownerBoundaryValues = @{Node = $NodeName; Selector = $Selector}
+                throw 'owner-boundary-reached'
+            }
+            if ($Owner -eq 'ingress') { Mock Get-ConfigControlPlaneNodeHostname { 'local-host' } }
+            Mock New-AddonPlacementInput {
+                $script:ownerBoundaryValues = @{Selector = $Selector}
+                throw 'owner-boundary-reached'
+            }
+            { & $Caller } | Should -Throw '*owner-boundary-reached*'
+            $script:ownerBoundaryValues.Selector | Should -BeExactly 'pool=infra'
+            if ($Option -eq 'StorageNode') { $script:ownerBoundaryValues.Node | Should -BeExactly $Saved }
+            if ($Owner -eq 'ingress') { Should -Invoke Assert-SharedInfrastructurePlacement -Times 0 -Scope It -ParameterFilter { $Name -eq 'cert-manager' } }
+            Should -Invoke Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params[0] -in @('apply', 'create', 'patch', 'delete') }
+            $conflictingParameters = @{$Option = $(if ($Saved -is [bool]) { -not $Saved } else { 'other-host' })}
+            { & $Caller @conflictingParameters } | Should -Throw '*disable*before changing*'
+            Should -Invoke Test-SystemAvailability -Times 1 -Scope It
+        }
+    }
+}
+
+Describe 'Update script parameter binding and effective placement' -Tag 'unit', 'ci', 'addon' {
+    It 'validates stored owner option types and canonical modes' {
+        InModuleScope -ModuleName $moduleName {
+            $script:typedOwnerIntent = [pscustomobject]@{Name = 'ingress'; Implementation = 'nginx'; OmitCertMgr = 'false'}
+            Mock Get-AddonConfig { $null }
+            Mock Get-SetupConfigFilePath { 'unused' }
+            Mock Get-ConfigValue { @($script:typedOwnerIntent) }
+            { Get-AddonPlacementOwnerOptions -Name 'ingress' -Implementation 'nginx' -BoundParameters @{} -Defaults @{OmitCertMgr = $false} } | Should -Throw '*must be a boolean*'
+            $script:typedOwnerIntent = [pscustomobject]@{Name = 'registry'; StorageNode = 'worker-1'; Ingress = 'TRAEFIK'; UntrustedParameter = 'never-forward'}
+            $options = Get-AddonPlacementOwnerOptions -Name 'registry' -BoundParameters @{Ingress = 'traefik'} -Defaults @{StorageNode = ''; Ingress = 'none'}
+            $options.Ingress | Should -BeExactly 'traefik'
+            $options.StorageNode | Should -BeExactly 'worker-1'
+            $options.ContainsKey('UntrustedParameter') | Should -BeFalse
+            $script:typedOwnerIntent.Ingress = 'unrecognized'
+            { Get-AddonPlacementOwnerOptions -Name 'registry' -BoundParameters @{} -Defaults @{StorageNode = ''; Ingress = 'none'} } | Should -Throw '*mode is invalid*'
+        }
+    }
+
+    It 'keeps Update.ps1 free of public-command parameters' {
+        $tokens = $null; $parseErrors = $null
+        $dashboardAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'dashboard/Update.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $parseErrors | Should -BeNullOrEmpty
+        @($dashboardAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) | Should -Be @('PreferredIngress', 'InfraNodeSelector', 'SkipReadiness')
+        $metricsAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'metrics/Update.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $metricsAst.ParamBlock | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-AddonEnableTransaction' -Tag 'unit', 'ci', 'addon' {
+    BeforeEach {
+    Mock -ModuleName $moduleName Set-AddonPlacementIntent {}
+        Mock -ModuleName $moduleName Add-AddonToSetupJson {}
+        Mock -ModuleName $moduleName Remove-AddonFromSetupJson {}
+    }
+
+    It 'registers addon state only after apply, readiness, and update' {
+        InModuleScope -ModuleName $moduleName {
+            $state = [pscustomobject]@{ Applied = $false; Ready = $false; Updated = $false }
+            $apply = { $state.Applied = $true; [pscustomobject]@{ Success = $true; Output = '' } }
+            $wait = { $state.Applied | Should -BeTrue; $state.Ready = $true; return $true }
+            $update = { $state.Ready | Should -BeTrue; $state.Updated = $true }
+            $rollback = { [pscustomobject]@{ Success = $true; Output = '' } }
+
+            Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{ Name = 'metrics' }) -Apply $apply -Wait $wait -Update $update -Rollback $rollback
+            $state.Updated | Should -BeTrue
+            Should -Invoke Add-AddonToSetupJson -Times 1 -Scope It
+            Should -Invoke Remove-AddonFromSetupJson -Times 0 -Scope It
+        }
+    }
+
+    It 'rolls back after apply failure without registering enabled state' {
+        InModuleScope -ModuleName $moduleName {
+            $rollbackState = [pscustomobject]@{ Called = $false }
+            $apply = { [pscustomobject]@{ Success = $false; Output = 'apply failed' } }
+            $wait = { throw 'readiness must not run' }
+            $update = { throw 'update must not run' }
+            $rollback = { $rollbackState.Called = $true; [pscustomobject]@{ Success = $true; Output = '' } }
+
+            { Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{ Name = 'metrics' }) -Selector 'kubernetes.io/hostname=infra-1' -Apply $apply -Wait $wait -Update $update -Rollback $rollback } | Should -Throw -ExpectedMessage '*Manifest apply failed*'
+            $rollbackState.Called | Should -BeTrue
+            Should -Invoke Add-AddonToSetupJson -Times 0 -Scope It
+            Should -Invoke Remove-AddonFromSetupJson -Times 1 -Scope It
+        }
+    }
+
+    It 'retains selector state when rollback fails' {
+        InModuleScope -ModuleName $moduleName {
+            $apply = { [pscustomobject]@{ Success = $false; Output = 'apply failed' } }
+            $wait = { throw 'readiness must not run' }
+            $update = { throw 'update must not run' }
+            $rollback = { [pscustomobject]@{ Success = $false; Output = 'deployment delete failed' } }
+
+            { Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{ Name = 'metrics'; InfraNodeSelector = 'kubernetes.io/hostname=infra-1' }) -Selector 'kubernetes.io/hostname=infra-1' -Apply $apply -Wait $wait -Update $update -Rollback $rollback } | Should -Throw -ExpectedMessage '*placement was retained*'
+            Should -Invoke Add-AddonToSetupJson -Times 0 -Scope It
+            Should -Invoke Set-AddonPlacementIntent -Times 2 -Scope It -ParameterFilter { -not $Clear }
+            Should -Invoke Remove-AddonFromSetupJson -Times 0 -Scope It
+        }
+    }
+
+    It 'saves selector state without updating or rolling back when no nodes match' {
+        InModuleScope -ModuleName $moduleName {
+            $state = [pscustomobject]@{ Updated = $false }
+            $apply = { [pscustomobject]@{ Success = $true; Output = '' } }
+            $wait = { throw 'readiness must be skipped when no nodes match' }
+            $update = { $state.Updated = $true; throw 'update must be skipped while Pods are Pending' }
+            $rollback = { throw 'rollback must not run when no nodes match' }
+
+            Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{ Name = 'metrics'; InfraNodeSelector = 'kubernetes.io/hostname=infra-1' }) -Selector 'kubernetes.io/hostname=infra-1' -HasMatchingNodes:$false -Apply $apply -Wait $wait -Update $update -Rollback $rollback
+            $state.Updated | Should -BeFalse
+            Should -Invoke Add-AddonToSetupJson -Times 1 -Scope It
+            Should -Invoke Add-AddonToSetupJson -Times 1 -Scope It -ParameterFilter { $Addon.InfraNodeSelector -eq 'kubernetes.io/hostname=infra-1' }
+            Should -Invoke Remove-AddonFromSetupJson -Times 0 -Scope It
+        }
+    }
+
+    It 'preserves rollback when matching nodes exist but readiness fails' {
+        InModuleScope -ModuleName $moduleName {
+            $rollbackState = [pscustomobject]@{ Called = $false }
+            $apply = { [pscustomobject]@{ Success = $true; Output = '' } }
+            $wait = { return $false }
+            $update = { throw 'update must not run' }
+            $rollback = { $rollbackState.Called = $true; [pscustomobject]@{ Success = $true; Output = '' } }
+
+            { Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{ Name = 'metrics' }) -Selector 'kubernetes.io/hostname=infra-1' -HasMatchingNodes:$true -Apply $apply -Wait $wait -Update $update -Rollback $rollback } | Should -Throw -ExpectedMessage '*did not become Ready*'
+            $rollbackState.Called | Should -BeTrue
+        }
+    }
+
+    It 'completes pending owner configuration without waiting before registration' {
+        InModuleScope -ModuleName $moduleName {
+            $state = [pscustomobject]@{ Configured = $false }
+            $apply = { [pscustomobject]@{ Success = $true } }
+            $configure = { $state.Configured = $true }
+            $wait = { throw 'must not wait' }
+            $update = { throw 'must not run readiness-dependent updates' }
+            $rollback = { throw 'must not roll back Pending workloads' }
+            Invoke-AddonEnableTransaction -Addon ([pscustomobject]@{ Name = 'dashboard'; InfraNodeSelector = 'pool=infra' }) -Selector 'pool=infra' -HasMatchingNodes:$false -Apply $apply -Wait $wait -Update $update -ConfigurePending $configure -Rollback $rollback
+            $state.Configured | Should -BeTrue
+            Should -Invoke Add-AddonToSetupJson -Times 1 -Scope It
+        }
+    }
+}
+
+Describe 'Get-AddonPlacementSelectorConflictMessage' -Tag 'unit', 'ci', 'addon' {
+    It 'normalizes ordering and whitespace while preserving empty label values' {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ InfraNodeSelector = 'pool=infra,node-role.kubernetes.io/control-plane=' } }
+        Get-AddonPlacementSelectorConflictMessage -Name 'metrics' -RequestedSelector ' node-role.kubernetes.io/control-plane = , pool = infra ' | Should -BeNullOrEmpty
+    }
+
+    It 'rejects case changes in label keys or values' -ForEach @(
+        @{ Requested = 'pool=Infra' }
+        @{ Requested = 'Pool=infra' }
+    ) {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ InfraNodeSelector = 'pool=infra' } }
+        Get-AddonPlacementSelectorConflictMessage -Name 'metrics' -RequestedSelector $Requested | Should -Match 'Disable it and re-enable it'
+    }
+
+    It 'accepts omission for an already enabled addon' {
+        Get-AddonPlacementSelectorConflictMessage -Name 'metrics' -RequestedSelector '' | Should -BeNullOrEmpty
+    }
+    It 'rejects a changed selector with actionable guidance' {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ InfraNodeSelector = 'kubernetes.io/hostname=infra-1' } }
+        Get-AddonPlacementSelectorConflictMessage -Name 'metrics' -RequestedSelector 'kubernetes.io/hostname=infra-2' | Should -Match 'Disable it and re-enable it'
+    }
+
+    It 'rejects adding placement to an already-enabled unpinned addon' {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ Name = 'metrics' } }
+        Get-AddonPlacementSelectorConflictMessage -Name 'metrics' -RequestedSelector 'kubernetes.io/hostname=infra-1' | Should -Match 'without saved infrastructure placement'
+    }
+}
+
+Describe 'Get-AddonSelectorDrift' -Tag 'unit', 'ci', 'addon' {
+    It 'detects case-sensitive label drift' -ForEach @(
+        @{ Effective = [pscustomobject]@{ pool = 'Infra' } }
+        @{ Effective = [pscustomobject]@{ Pool = 'infra' } }
+    ) {
+        InModuleScope -ModuleName $moduleName -Parameters @{ Effective = $Effective } {
+            @(Get-AddonSelectorDrift -RequestedSelector 'pool=infra' -EffectiveNodeSelector $Effective).Count | Should -Be 1
+        }
+    }
+
+    It 'distinguishes an empty value from an absent key' {
+        InModuleScope -ModuleName $moduleName {
+            Get-AddonSelectorDrift -RequestedSelector 'pool=infra,role=' -EffectiveNodeSelector ([pscustomobject]@{ role = ''; pool = 'infra' }) | Should -BeNullOrEmpty
+            @(Get-AddonSelectorDrift -RequestedSelector 'role=' -EffectiveNodeSelector ([pscustomobject]@{})).Count | Should -Be 1
+        }
+    }
+}
+
+Describe 'Get-AddonBackupInfrastructureSelector' -Tag 'unit', 'ci', 'addon' {
+    It 'accepts an optional selector and leaves legacy backup metadata unpinned' {
+        $legacyDirectory = Join-Path $TestDrive 'legacy-addon-backup'
+        $selectorDirectory = Join-Path $TestDrive 'selector-addon-backup'
+        New-Item -Path $legacyDirectory, $selectorDirectory -ItemType Directory -Force | Out-Null
+        '{"addon":"metrics","files":[]}' | Set-Content -LiteralPath (Join-Path $legacyDirectory 'backup.json')
+        '{"addon":"metrics","files":[],"infraNodeSelector":"kubernetes.io/hostname=infra-1"}' | Set-Content -LiteralPath (Join-Path $selectorDirectory 'backup.json')
+
+        Get-AddonBackupInfrastructureSelector -BackupDir $legacyDirectory | Should -BeNullOrEmpty
+        Get-AddonBackupInfrastructureSelector -BackupDir $selectorDirectory | Should -Be 'kubernetes.io/hostname=infra-1'
+    }
+}
+
+Describe 'Test-AddonInfrastructureSelectorOnCluster' -Tag 'unit', 'ci', 'addon' {
+    BeforeEach {
+        Mock -ModuleName $moduleName New-AddonPlacementManifest { return 'TestDrive:\effective-selectors.json' }
+        '["kubernetes.io/hostname=infra-1,kubernetes.io/os=linux"]' | Set-Content 'TestDrive:\effective-selectors.json'
+    }
+    It 'includes mandatory Linux placement for the dashboard owner' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $true; Output = '' } }
+        Mock -ModuleName $moduleName Write-Log { }
+        '["kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux"]' | Set-Content 'TestDrive:\effective-selectors.json'
+        Test-AddonInfrastructureSelectorOnCluster -Name 'dashboard' -Selector 'kubernetes.io/hostname=kubemaster' | Should -BeFalse
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux' }
+    }
+
+    It 'requires matches for every rendered central workload constraint' {
+        '["pool=infra,kubernetes.io/os=linux","pool=infra,kubernetes.io/os=linux,zone=b"]' | Set-Content 'TestDrive:\effective-selectors.json'
+        Mock -ModuleName $moduleName Write-Log { }
+        Mock -ModuleName $moduleName Invoke-Kubectl {
+            if ($Params -contains 'pool=infra,kubernetes.io/os=linux') { return [pscustomobject]@{ Success = $true; Output = 'node/linux' } }
+            return [pscustomobject]@{ Success = $true; Output = '' }
+        }
+        Test-AddonInfrastructureSelectorOnCluster -Name 'monitoring' -Selector 'pool=infra' | Should -BeFalse
+        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 2 -Scope It
+    }
+    It 'queries the effective metrics selector and allows no matches' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $true; Output = '' } }
+        Mock -ModuleName $moduleName Write-Log {}
+
+        InModuleScope -ModuleName $moduleName {
+            Test-AddonInfrastructureSelectorOnCluster -Name 'metrics' -Selector 'kubernetes.io/hostname=infra-1' | Should -BeFalse
+            Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '-l' -and $Params -contains 'kubernetes.io/hostname=infra-1,kubernetes.io/os=linux' }
+        }
+    }
+
+    It 'fails when the destination cluster cannot evaluate the selector' {
+        Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $false; Output = 'cluster unavailable' } }
+
+        InModuleScope -ModuleName $moduleName {
+            { Test-AddonInfrastructureSelectorOnCluster -Name 'metrics' -Selector 'kubernetes.io/hostname=infra-1' } | Should -Throw -ExpectedMessage '*cluster unavailable*'
+        }
+    }
+}
+
+Describe 'Get-AddonEffectiveInfrastructureSelector' -Tag 'unit', 'ci', 'addon' {
+    It 'rejects case changes in retained intent before rendering' -ForEach @(
+        @{RequestedSelector = 'Pool=infra'}, @{RequestedSelector = 'pool=Infra'}
+    ) {
+        Mock -ModuleName $moduleName Get-AddonConfig { $null }
+        Mock -ModuleName $moduleName Get-SetupConfigFilePath { 'unused' }
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'metrics'; InfraNodeSelector = 'pool=infra'}) }
+        { Get-AddonEffectiveInfrastructureSelector -Name 'metrics' -Selector $RequestedSelector } | Should -Throw -ExpectedMessage '*incomplete installation intent*'
+    }
+
+    It 'rejects switching an incomplete multi-implementation owner before apply' {
+        Mock -ModuleName $moduleName Get-AddonConfig { $null }
+        Mock -ModuleName $moduleName Get-SetupConfigFilePath { 'unused' }
+        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{ Name = 'ingress'; Implementation = 'nginx'; InfraNodeSelector = 'pool=infra' }) }
+        { Get-AddonEffectiveInfrastructureSelector -Name 'ingress' -Implementation 'traefik' } | Should -Throw -ExpectedMessage '*another implementation*'
+        Get-AddonEffectiveInfrastructureSelector -Name 'ingress' -Implementation 'nginx' | Should -Be 'pool=infra'
+    }
+
+    It 'clears only the intended implementation retry identity' {
+        $path = Join-Path $TestDrive 'placement-identities.json'
+        '{"AddonPlacementIntents":[{"Name":"ingress","Implementation":"nginx","InfraNodeSelector":"pool=infra"},{"Name":"ingress","Implementation":"traefik","InfraNodeSelector":"pool=infra"}]}' | Set-Content -LiteralPath $path
+        Mock -ModuleName $moduleName Get-SetupConfigFilePath { $path }.GetNewClosure()
+        Set-AddonPlacementIntent -Addon ([pscustomobject]@{ Name = 'ingress'; Implementation = 'nginx' }) -Clear
+        $config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        @($config.AddonPlacementIntents).Count | Should -Be 1
+        $config.AddonPlacementIntents[0].Implementation | Should -Be 'traefik'
+    }
+
+    It 'replays saved placement when omitted by an update owner' {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ Name = 'metrics'; InfraNodeSelector = 'kubernetes.io/hostname=kubemaster' } }
+        Get-AddonEffectiveInfrastructureSelector -Name 'metrics' | Should -Be 'kubernetes.io/hostname=kubemaster'
+    }
+
+    It 'rejects changed placement before an update owner applies' {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ Name = 'dashboard'; InfraNodeSelector = 'kubernetes.io/hostname=kubemaster' } }
+        { Get-AddonEffectiveInfrastructureSelector -Name 'dashboard' -Selector 'kubernetes.io/hostname=other' } | Should -Throw '*Disable it and re-enable it*'
+    }
+
+    It 'keeps omission unpinned for legacy installations' {
+        Mock -ModuleName $moduleName Get-AddonConfig { return [pscustomobject]@{ Name = 'metrics' } }
+        Get-AddonEffectiveInfrastructureSelector -Name 'metrics' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Dashboard owner update configuration while Pending' -Tag 'unit', 'ci', 'addon' {
+    BeforeAll {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('UseDeclaredVarsMoreThanAssignments', '', Justification = 'Pester cross-scope module reference')]
+        $dashboardUpdateModule = (Import-Module "$PSScriptRoot\dashboard\dashboard.module.psm1" -Force -PassThru).Name
+    }
+
+    AfterAll {
+        Remove-Module $dashboardUpdateModule -Force
+        Import-Module "$PSScriptRoot\addons.module.psm1" -Global
+    }
+
+    It 'configures dashboard ingress and mesh before a matching node joins (mesh=<Mesh>)' -ForEach @(
+        @{ Mesh = $true }
+        @{ Mesh = $false }
+    ) {
+        $scriptPath = Join-Path $PSScriptRoot 'dashboard\Update.ps1'
+        InModuleScope -ModuleName $dashboardUpdateModule -Parameters @{ Mesh = $Mesh; ScriptPath = $scriptPath } {
+            Mock Get-AddonEffectiveInfrastructureSelector { return 'pool=infra' }
+            Mock Test-AddonInfrastructureSelectorOnCluster { return $false }
+            Mock Update-IngressForAddon { }
+            Mock Test-LinkerdServiceAvailability { return $Mesh }
+            Mock Write-Log { }
+            Mock Start-Sleep { throw 'Pending owner must not wait' }
+            $meshState = [pscustomobject]@{ Patched = $false }
+            Mock Invoke-Kubectl {
+                if ($Params -contains 'status' -or $Params -contains 'pods') { throw 'Pending owner must not wait for Pods' }
+                if ($Params[0] -eq 'get') {
+                    $annotations = if ($Mesh -or -not $meshState.Patched) { @{ 'linkerd.io/inject' = 'enabled' } } else { @{} }
+                    return [pscustomobject]@{ Success = $true; Output = (@{ spec = @{ template = @{ metadata = @{ annotations = $annotations } } } } | ConvertTo-Json -Depth 10) }
+                }
+                if ($Params[0] -eq 'patch') { $meshState.Patched = $true }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+            Mock Install-HeadlampViaHelm { }
+            Mock Sync-HeadlampPlugins { }
+            $scriptContent = (Get-Content -LiteralPath $ScriptPath | Where-Object { $_ -notmatch '^#Requires\b' -and $_ -notmatch '^\s*Import-Module\b' }) -join [Environment]::NewLine
+            & ([scriptblock]::Create($scriptContent)) -InfraNodeSelector 'pool=infra'
+            Should -Invoke Update-IngressForAddon -Times 1 -Scope It
+            Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params[0] -eq 'patch' -and $Params[1] -eq 'deployment' }
+            Should -Invoke Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params -contains 'status' -or $Params -contains 'pods' }
+            Should -Invoke Install-HeadlampViaHelm -Times 0 -Scope It
+            Should -Invoke Sync-HeadlampPlugins -Times 1 -Scope It -ParameterFilter { $SkipReadiness }
+        }
+    }
+}
+
 Describe 'Backup-Addons' -Tag 'unit', 'ci', 'addon' {
     Context 'no addons config existing' {
         BeforeAll {
@@ -864,6 +1653,66 @@ Describe 'Enable-AddonFromConfig' -Tag 'unit', 'ci', 'addon' {
             }
         }
     }  
+
+    Context 'saved infrastructure placement is replayed without forwarding addon-specific properties' {
+        BeforeAll {
+            $previousPlacementCapture = $env:K2S_PLACEMENT_CAPTURE
+            $replayRoot = Join-Path $TestDrive 'placement-replay'
+            $enableDirectory = Join-Path $replayRoot 'metrics'
+            New-Item -Path $enableDirectory -ItemType Directory -Force | Out-Null
+            $capturePath = Join-Path $TestDrive 'placement-parameters.json'
+            @'
+param([string]$InfraNodeSelector, [string]$StorageUsage)
+@{ InfraNodeSelector = $InfraNodeSelector; StorageUsage = $StorageUsage } | ConvertTo-Json | Set-Content -LiteralPath $env:K2S_PLACEMENT_CAPTURE
+'@ | Set-Content -LiteralPath (Join-Path $enableDirectory 'Enable.ps1')
+            $env:K2S_PLACEMENT_CAPTURE = $capturePath
+            $ingressDirectory = Join-Path $replayRoot 'ingress\nginx'
+            New-Item -Path $ingressDirectory -ItemType Directory -Force | Out-Null
+            @'
+param([string]$InfraNodeSelector, [bool]$OmitCertMgr)
+@{ Keys = @($PSBoundParameters.Keys | Sort-Object) } | ConvertTo-Json | Set-Content -LiteralPath $env:K2S_PLACEMENT_CAPTURE
+'@ | Set-Content -LiteralPath (Join-Path $ingressDirectory 'Enable.ps1')
+            Mock -ModuleName $moduleName Write-Log { }
+        }
+
+        AfterAll {
+            if ($null -eq $previousPlacementCapture) {
+                Remove-Item Env:K2S_PLACEMENT_CAPTURE -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:K2S_PLACEMENT_CAPTURE = $previousPlacementCapture
+            }
+        }
+
+        It 'passes the saved selector only' {
+            InModuleScope -ModuleName $moduleName -Parameters @{ replayRoot = $replayRoot } {
+                $config = [pscustomobject]@{
+                    Name = 'metrics'
+                    InfraNodeSelector = 'kubernetes.io/hostname=infra-1'
+                    StorageUsage = 'existing-addon-setting'
+                }
+                Enable-AddonFromConfig -Config $config -Root $replayRoot
+            }
+
+            $savedParams = Get-Content -Raw -LiteralPath $capturePath | ConvertFrom-Json
+            $savedParams.InfraNodeSelector | Should -Be 'kubernetes.io/hostname=infra-1'
+            $savedParams.StorageUsage | Should -BeNullOrEmpty
+        }
+
+        It 'replays owner options only together with a saved selector' -ForEach @(
+            @{ Selector = 'kubernetes.io/hostname=infra-1'; Expected = 'InfraNodeSelector,OmitCertMgr' }
+            @{ Selector = ''; Expected = '' }
+        ) {
+            InModuleScope -ModuleName $moduleName -Parameters @{ replayRoot = $replayRoot; Selector = $Selector } {
+                $config = [pscustomobject]@{ Name = 'ingress'; Implementation = 'nginx'; OmitCertMgr = $true }
+                if ($Selector) { $config | Add-Member -NotePropertyName InfraNodeSelector -NotePropertyValue $Selector }
+                Enable-AddonFromConfig -Config $config -Root $replayRoot
+            }
+
+            $captured = Get-Content -Raw -LiteralPath $capturePath | ConvertFrom-Json
+            (@($captured.Keys) -join ',') | Should -Be $Expected
+        }
+    }
 }
 
 Describe 'Get-AddonsConfig' -Tag 'unit', 'ci', 'addon' {
@@ -2368,5 +3217,53 @@ Describe 'Remove-IngressForNginxGateway' -Tag 'unit', 'ci', 'addon' {
                 }
             }
         }
+    }
+}
+
+Describe 'Get-AddonStatus without infrastructure placement' -Tag 'unit', 'ci', 'addon' {
+    BeforeEach {
+        Mock -ModuleName $moduleName Test-Path { $true }
+        Mock -ModuleName $moduleName Test-SystemAvailability { $null }
+        Mock -ModuleName $moduleName Get-AddonInfrastructurePlacementStatus { @() }
+    }
+
+    It 'leaves the status script output untouched for an enabled addon' {
+        $scriptOutput = @{ Name = 'IsRegistryRunning'; Value = $true; Okay = $true }
+        Mock -ModuleName $moduleName Test-IsAddonEnabled { $true }
+        Mock -ModuleName $moduleName Invoke-Script { $scriptOutput }
+        $status = Get-AddonStatus -Name 'registry' -Directory 'registry-dir'
+        $status.Props | Should -Be $scriptOutput
+    }
+
+    It 'adds no Props for a disabled addon' {
+        Mock -ModuleName $moduleName Test-IsAddonEnabled { $false }
+        $status = Get-AddonStatus -Name 'registry' -Directory 'registry-dir'
+        $status.Enabled | Should -BeFalse
+        $status.ContainsKey('Props') | Should -BeFalse
+    }
+}
+
+Describe 'Addon scripts parse without errors' -Tag 'unit', 'ci', 'addon' {
+    BeforeDiscovery {
+        $addonsRoot = $PSScriptRoot
+        $scriptNames = @('Enable.ps1', 'Update.ps1', 'Restore.ps1', 'EnableForRestore.ps1', 'Backup.ps1', 'Get-Status.ps1')
+        $parseCases = @(Get-ChildItem -Path $addonsRoot -Recurse -File | Where-Object {
+                $_.Extension -eq '.psm1' -or ($_.Extension -eq '.ps1' -and $scriptNames -contains $_.Name)
+            } | Sort-Object FullName | ForEach-Object {
+                @{ Path = $_.FullName; Relative = $_.FullName.Substring($addonsRoot.Length).TrimStart('\', '/') }
+            })
+    }
+
+    It 'finds addon scripts to check' {
+        $parseCases = @(Get-ChildItem -Path $PSScriptRoot -Recurse -Filter '*.psm1' -File)
+        $parseCases.Count | Should -BeGreaterThan 0
+    }
+
+    It '<Relative> has no parse errors' -ForEach $parseCases {
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+        $details = ($parseErrors | ForEach-Object { "line $($_.Extent.StartLineNumber): $($_.Message)" }) -join '; '
+        @($parseErrors).Count | Should -Be 0 -Because "'$Relative' must be parseable PowerShell, but has: $details"
     }
 }

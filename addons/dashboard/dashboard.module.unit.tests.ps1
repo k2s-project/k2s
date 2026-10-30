@@ -58,6 +58,28 @@ Describe 'Get-HeadlampChartPath' -Tag 'unit', 'ci', 'addon', 'dashboard' {
 }
 
 Describe 'Install-HeadlampViaHelm' -Tag 'unit', 'ci', 'addon', 'dashboard' {
+    BeforeAll {
+        Mock -ModuleName $moduleName Get-AddonEffectiveInfrastructureSelector { return $Selector }
+    }
+    Context 'saved placement is set' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonEffectiveInfrastructureSelector { return 'kubernetes.io/hostname=kubemaster' }
+            Mock -ModuleName $moduleName Get-HeadlampChartDirectory { return 'TestDrive:\chart' }
+            Mock -ModuleName $moduleName Get-HeadlampChartPath { return 'TestDrive:\chart\headlamp-0.40.1.tgz' }
+            Mock -ModuleName $moduleName Test-Path { return $true }
+            Mock -ModuleName $moduleName New-AddonPlacementManifest { return 'TestDrive:\headlamp-placement.yaml' }
+            Mock -ModuleName $moduleName Remove-Item { }
+            Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $true; Output = 'namespace/dashboard' } }
+            Mock -ModuleName $moduleName Invoke-Helm { return [pscustomobject]@{ Success = $true; Output = '' } }
+            Mock -ModuleName $moduleName Write-Log { }
+        }
+
+        It 'passes merged owning values into the initial Helm upgrade' {
+            Install-HeadlampViaHelm
+            Should -Invoke -ModuleName $moduleName New-AddonPlacementManifest -Times 1 -Scope It -ParameterFilter { $AddonName -eq 'dashboard' -and $Selector -eq 'kubernetes.io/hostname=kubemaster' }
+            Should -Invoke -ModuleName $moduleName Invoke-Helm -Times 1 -Scope It -ParameterFilter { $Params -contains 'TestDrive:\headlamp-placement.yaml' -and $Params -contains '--install' }
+        }
+    }
     Context 'chart and values file exist, helm succeeds' {
         BeforeAll {
             Mock -ModuleName $moduleName Get-HeadlampChartDirectory { return 'TestDrive:\chart' }
@@ -1464,6 +1486,16 @@ Describe 'Remove-HeadlampPluginPatch' -Tag 'unit', 'ci', 'addon', 'dashboard', '
 }
 
 Describe 'Sync-HeadlampPlugins' -Tag 'unit', 'ci', 'addon', 'dashboard', 'plugin' {
+    It 'applies desired plugins while Pending without waiting for rollout' {
+        Mock -ModuleName $moduleName Test-IsAddonEnabled { return $true }
+        Mock -ModuleName $moduleName Get-RegisteredHeadlampPlugins { return @() }
+        Mock -ModuleName $moduleName Apply-HeadlampPluginPatch { return $true }
+        Mock -ModuleName $moduleName Write-Log { }
+        Mock -ModuleName $moduleName Wait-ForHeadlampRollout { throw 'must not wait while Pending' }
+        Sync-HeadlampPlugins -SkipReadiness
+        Should -Invoke -ModuleName $moduleName Apply-HeadlampPluginPatch -Times 1 -Scope It
+        Should -Invoke -ModuleName $moduleName Wait-ForHeadlampRollout -Times 0 -Scope It
+    }
     BeforeAll {
         # Sync-HeadlampPlugins ends with 'Wait-ForHeadlampRollout | Out-Null' (rollout
         # observability). That helper shells out to kubectl, so stub it here to keep these
@@ -1681,3 +1713,54 @@ Describe 'Sync-HeadlampPlugins' -Tag 'unit', 'ci', 'addon', 'dashboard', 'plugin
     }
 }
 
+
+Describe 'Dashboard Enable.ps1 selector with side-effect addons' -Tag 'unit', 'ci', 'addon', 'dashboard' {
+    BeforeAll {
+        $tokens = $null
+        $parseErrors = $null
+        $enableAst = [System.Management.Automation.Language.Parser]::ParseFile("$PSScriptRoot\Enable.ps1", [ref]$tokens, [ref]$parseErrors)
+        $trapAst = $enableAst.EndBlock.Traps[0]
+        $guardAst = $enableAst.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -match 'throw' } | Select-Object -First 1
+        $firstSideEffectOffset = ($enableAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Test-SystemAvailability', 'Enable-IngressAddon', 'Enable-MetricsServer') }, $true) | Measure-Object -Property { $_.Extent.StartOffset } -Minimum).Minimum
+        $guardOffset = $guardAst.Extent.StartOffset
+        $probe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + $trapAst.Extent.Text + "`n" + $guardAst.Extent.Text + "`n'continued'")
+        $guardOnlyProbe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + $guardAst.Extent.Text + "`n'continued'")
+    }
+
+    BeforeEach {
+        $script:cliMessages = [System.Collections.Generic.List[object]]::new()
+        function Send-ToCli { param($MessageType, $Message) $script:cliMessages.Add($Message) }
+        function New-Error { param($Code, $Message) [pscustomobject]@{ Code = $Code; Message = $Message } }
+        function Get-ErrCodeAddonEnableFailed { 'addon-enable-failed' }
+    }
+
+    It 'places the guard before cluster checks and nested addon enablement' {
+        $guardAst | Should -Not -BeNull
+        $guardOffset | Should -BeLessThan $firstSideEffectOffset
+    }
+
+    It 'rejects a selector combined with <Case> before continuing' -ForEach @(
+        @{ Case = 'ingress'; Arguments = @{ InfraNodeSelector = 'pool=infra'; Ingress = 'nginx' } }
+        @{ Case = 'metrics server'; Arguments = @{ InfraNodeSelector = 'pool=infra'; EnableMetricsServer = $true } }
+    ) {
+        $arguments = $Arguments
+        { & $guardOnlyProbe @arguments } | Should -Throw '*separately before enabling dashboard with infrastructure placement*'
+    }
+
+    It 'encodes the rejection as a structured error' {
+        $output = & $probe -InfraNodeSelector 'pool=infra' -Ingress 'traefik' -EncodeStructuredOutput -MessageType 'CmdResult'
+        $output | Should -BeNullOrEmpty
+        $script:cliMessages.Count | Should -Be 1
+        $script:cliMessages[0].Error.Code | Should -Be 'addon-enable-failed'
+        $script:cliMessages[0].Error.Message | Should -BeLike '*separately*'
+    }
+
+    It 'allows a selector alone and the side-effect options without a selector' -ForEach @(
+        @{ Arguments = @{ InfraNodeSelector = 'pool=infra' } }
+        @{ Arguments = @{ Ingress = 'nginx'; EnableMetricsServer = $true } }
+        @{ Arguments = @{ InfraNodeSelector = ' '; Ingress = 'nginx' } }
+    ) {
+        $arguments = $Arguments
+        & $probe @arguments | Should -Be 'continued'
+    }
+}

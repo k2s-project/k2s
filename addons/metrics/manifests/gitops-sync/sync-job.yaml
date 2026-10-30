@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Addon sync processor Job — embedded in the OCI addon artifact's manifests layer.
+#
+# Runs as a Windows HostProcess container to access the host filesystem directly.
+# Pulls the full OCI addon artifact via oras, validates the OCI layout, and extracts
+# layers 0-3 (config, manifests, helm charts, scripts) to the K2s addons/ directory.
+# Image/package layers (4-6) are skipped — images are pulled at enable time.
+#
+# Applied by the per-addon FluxCD Kustomization (addon-sync-<name>) when its
+# OCIRepository detects a new selected revision via semver tag selection.
+#
+# Placeholders replaced by Export.ps1 during export:
+#   2026-10-29T10:32:46Z  → actual export timestamp (triggers Job recreation by Flux force:true)
+#   metrics        → addon folder name (e.g. monitoring, rollout)
+#
+# References two ConfigMaps from the one-time cluster setup:
+#   addon-sync-config  → registry base URL, K2s install dir, insecure flag
+#   addon-sync-script  → Sync-Addons.ps1 processor script
+#
+## exclude-from-export
+# The pause-win image is the containerd sandbox image, pre-loaded on every K2s
+# Windows node. It must not be packaged as part of addon exports.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: addon-sync-metrics
+  namespace: k2s-addon-sync
+  labels:
+    app.kubernetes.io/name: addon-sync
+    app.kubernetes.io/component: processor
+    app.kubernetes.io/part-of: k2s
+  annotations:
+    # Replaced by Export.ps1 — ensures Job spec changes each export so Flux (force: true) recreates it.
+    k2s.io/export-timestamp: "2026-10-29T10:32:46Z"
+spec:
+  ttlSecondsAfterFinished: 300
+  activeDeadlineSeconds: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: addon-sync
+        app.kubernetes.io/component: processor
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: addon-sync-processor
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+      hostNetwork: true
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\SYSTEM"
+      hostPID: true
+      containers:
+        - name: addon-sync
+          image: shsk2s.azurecr.io/pause-win:v1.8.0
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          # Kubernetes substitutes $(VAR_NAME) from env vars defined in the same container spec.
+          command:
+            - powershell.exe
+            - -ExecutionPolicy
+            - Bypass
+            - -NonInteractive
+            - -File
+            - C:\scripts\Sync-Addons.ps1
+            - -RegistryUrl
+            - $(REGISTRY_URL)
+            - -K2sInstallDir
+            - $(K2S_INSTALL_DIR)
+            - -OrasExe
+            - $(K2S_INSTALL_DIR)\bin\oras.exe
+            - -Insecure
+            - $(INSECURE)
+            - -AddonName
+            - metrics
+          env:
+            - name: CONTAINER_SANDBOX_MOUNT_POINT
+              value: "C:\\"
+            - name: REGISTRY_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: addon-sync-config
+                  key: REGISTRY_URL
+            - name: K2S_INSTALL_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: addon-sync-config
+                  key: K2S_INSTALL_DIR
+            - name: INSECURE
+              valueFrom:
+                configMapKeyRef:
+                  name: addon-sync-config
+                  key: INSECURE
+          volumeMounts:
+            - name: sync-script
+              mountPath: C:\scripts
+              readOnly: true
+      volumes:
+        - name: sync-script
+          configMap:
+            name: addon-sync-script

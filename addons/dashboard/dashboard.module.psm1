@@ -28,6 +28,8 @@ function Get-HeadlampChartPath {
 }
 
 function Install-HeadlampViaHelm {
+    param ([string]$InfraNodeSelector = '')
+    $selector = Get-AddonEffectiveInfrastructureSelector -Name 'dashboard' -Selector $InfraNodeSelector
     $chartDir = Get-HeadlampChartDirectory
     $chartPath = Get-HeadlampChartPath
     if ($null -eq $chartPath) {
@@ -38,6 +40,12 @@ function Install-HeadlampViaHelm {
         throw "[Dashboard] values.yaml not found at '$valuesPath'"
     }
 
+    $renderedValues = $null
+    try {
+    if (-not [string]::IsNullOrWhiteSpace($selector)) {
+        $renderedValues = New-AddonPlacementManifest -AddonName 'dashboard' -ManifestDirectory $chartDir -Selector $selector
+        $valuesPath = $renderedValues
+    }
     $nsExists = (Invoke-Kubectl -Params 'get', 'namespace', 'dashboard', '--ignore-not-found').Output
     if (-not $nsExists) {
         Write-Log '[Dashboard] Creating dashboard namespace' -Console
@@ -54,6 +62,10 @@ function Install-HeadlampViaHelm {
     $helmResult.Output | Write-Log
     if (-not $helmResult.Success) {
         throw '[Dashboard] helm upgrade --install failed. See log for details.'
+    }
+    }
+    finally {
+        if ($renderedValues) { Remove-Item -LiteralPath $renderedValues -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -620,6 +632,7 @@ function Sync-HeadlampPlugins {
 
     Skips silently when the dashboard addon is not enabled.
     #>
+    param ([switch]$SkipReadiness)
     Write-Log '[Dashboard][Plugin] Syncing Headlamp plugins' -Console
 
     if (-not (Test-IsAddonEnabled -Addon ([pscustomobject]@{ Name = 'dashboard' }))) {
@@ -643,7 +656,7 @@ function Sync-HeadlampPlugins {
     # steady-state addon operations (the common case where plugin state is already
     # converged) don't block the caller or emit a misleading "Waiting for rollout" log.
     # Non-fatal by design.
-    if ($patched) {
+    if ($patched -and -not $SkipReadiness) {
         Wait-ForHeadlampRollout | Out-Null
     }
 

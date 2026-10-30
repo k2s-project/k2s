@@ -34,6 +34,35 @@ func TestGenericPkg(t *testing.T) {
 	RunSpecs(t, "generic addons cmd Unit Tests", Label("unit", "ci", "generic", "addons"))
 }
 
+func TestProviderParametersPreserveOmissionAndExplicitFalse(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		flags := pflag.NewFlagSet("addon", pflag.ContinueOnError)
+		flags.Bool("addon-sync", true, "")
+		flags.Bool("omitgrafana", false, "")
+		flags.String("infra-node-selector", "", "")
+		if explicit {
+			if err := flags.Set("addon-sync", "false"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		values, err := buildParameterValues(flags, addons.AddonCmd{Script: addons.ScriptConfig{ParameterMappings: []addons.ParameterMapping{
+			{CliFlagName: "addon-sync", ScriptParameterName: "AddonSync"},
+			{CliFlagName: "omitgrafana", ScriptParameterName: "OmitGrafana"},
+			{CliFlagName: "infra-node-selector", ScriptParameterName: "InfraNodeSelector"},
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if explicit {
+			if len(values) != 1 || values["AddonSync"] != "false" {
+				t.Fatalf("explicit false lost: %v", values)
+			}
+		} else if len(values) != 0 {
+			t.Fatalf("omitted flags became explicit provider values: %v", values)
+		}
+	}
+}
+
 var _ = BeforeSuite(func() {
 	slog.SetDefault(slog.New(logr.ToSlogHandler(GinkgoLogr)))
 })
@@ -948,6 +977,51 @@ var _ = Describe("generic pkg", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result).To(Equal("&'test-dir\\test.script'"))
 				Expect(params).To(ConsistOf("-p1 'v1'", "-p2 'v2'"))
+			})
+		})
+
+		When("mapped values are needed by native providers", func() {
+			It("returns raw values under their script parameter names", func() {
+				flagSet := &pflag.FlagSet{}
+				flagSet.String("infra-node-selector", "", "")
+				Expect(flagSet.Set("infra-node-selector", "kubernetes.io/hostname=infra-1")).To(Succeed())
+
+				values, err := buildParameterValues(flagSet, addons.AddonCmd{
+					Script: addons.ScriptConfig{ParameterMappings: []addons.ParameterMapping{{
+						CliFlagName:         "infra-node-selector",
+						ScriptParameterName: "InfraNodeSelector",
+					}}},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(HaveKeyWithValue("InfraNodeSelector", "kubernetes.io/hostname=infra-1"))
+			})
+
+			It("uses a canonical selector key independent of the script parameter name", func() {
+				flagSet := &pflag.FlagSet{}
+				flagSet.String("infra-node-selector", "", "")
+				Expect(flagSet.Set("infra-node-selector", "kubernetes.io/hostname=infra-1")).To(Succeed())
+
+				values, err := buildParameterValues(flagSet, addons.AddonCmd{
+					Script: addons.ScriptConfig{ParameterMappings: []addons.ParameterMapping{{
+						CliFlagName:         "infra-node-selector",
+						ScriptParameterName: "PlacementSelector",
+					}}},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(HaveKeyWithValue("InfraNodeSelector", "kubernetes.io/hostname=infra-1"))
+				Expect(values).NotTo(HaveKey("PlacementSelector"))
+			})
+
+			It("rejects a selector flag without a script mapping", func() {
+				flagSet := &pflag.FlagSet{}
+				flagSet.String("infra-node-selector", "", "")
+				Expect(flagSet.Set("infra-node-selector", "kubernetes.io/hostname=infra-1")).To(Succeed())
+
+				_, err := buildParameterValues(flagSet, addons.AddonCmd{})
+
+				Expect(err).To(MatchError(ContainSubstring("no script parameter mapping")))
 			})
 		})
 	})

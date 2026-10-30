@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# This kustomization is embedded inside the OCI addon artifact's manifests layer.
+# FluxCD Kustomization applies this directory (path: ./gitops-sync) when the
+# OCIRepository detects a new artifact revision.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - sync-job.yaml

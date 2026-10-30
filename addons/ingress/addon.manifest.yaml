@@ -32,6 +32,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Hard node selector for ingress infrastructure and compatible shared services
               - name: omitCertMgr
                 description: Omit cert-manager installation
                 default: false
@@ -41,11 +44,15 @@ spec:
             examples:
               - cmd: k2s addons enable ingress nginx
                 comment: Enable ingress nginx in k2s
+              - cmd: k2s addons enable ingress nginx --infra-node-selector kubernetes.io/hostname=kubemaster
+                comment: Run NGINX ingress infrastructure on kubemaster; shared services must have compatible placement
               - cmd: k2s addons enable ingress nginx --omitCertMgr
                 comment: Enable ingress nginx without installing cert-manager
           script:
             subPath: nginx/Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: omitCertMgr
                 scriptParameterName: OmitCertMgr
         disable:
@@ -78,6 +85,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Hard node selector for ingress infrastructure and compatible shared services
               - name: omitCertMgr
                 description: Omit cert-manager installation
                 default: false
@@ -87,11 +97,15 @@ spec:
             examples:
               - cmd: k2s addons enable ingress traefik
                 comment: Enable ingress traefik in k2s
+              - cmd: k2s addons enable ingress traefik --infra-node-selector kubernetes.io/hostname=kubemaster
+                comment: Run Traefik ingress infrastructure on kubemaster; shared services must have compatible placement
               - cmd: k2s addons enable ingress traefik --omitCertMgr
                 comment: Enable ingress traefik without installing cert-manager
           script:
             subPath: traefik/Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: omitCertMgr
                 scriptParameterName: OmitCertMgr
         disable:
@@ -125,6 +139,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Hard node selector for gateway controller and NginxProxy infrastructure
               - name: omitCertMgr
                 description: Omit cert-manager installation (TLS certificates must be provided manually)
                 default: false
@@ -134,11 +151,15 @@ spec:
             examples:
               - cmd: k2s addons enable ingress nginx-gw
                 comment: Enable ingress nginx-gw in k2s
+              - cmd: k2s addons enable ingress nginx-gw --infra-node-selector kubernetes.io/hostname=kubemaster
+                comment: Run gateway controller and NginxProxy infrastructure on kubemaster; shared services must have compatible placement
               - cmd: k2s addons enable ingress nginx-gw --omitCertMgr
                 comment: Enable ingress nginx-gw without installing cert-manager
           script:
             subPath: nginx-gw/Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: omitCertMgr
                 scriptParameterName: OmitCertMgr
         disable:

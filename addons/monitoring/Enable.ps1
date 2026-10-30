@@ -13,6 +13,7 @@ The "monitoring" addons enables Prometheus/Grafana monitoring features for the k
 
 #>
 Param(
+    [string] $InfraNodeSelector = '',
     [parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
     [switch] $ShowLogs = $false,
     [ValidateSet('nginx', 'nginx-gw', 'traefik', 'none')]
@@ -35,6 +36,12 @@ $dashboardModule = "$PSScriptRoot\..\dashboard\dashboard.module.psm1"
 Import-Module $infraModule, $clusterModule, $addonsModule, $monitoringModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
+
+trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
+$ownerOptions = Get-AddonPlacementOwnerOptions -Name 'monitoring' -BoundParameters $PSBoundParameters -Defaults @{OmitGrafana = $OmitGrafana.IsPresent; Ingress = $Ingress}
+$OmitGrafana = [switch]$ownerOptions.OmitGrafana
+$Ingress = $ownerOptions.Ingress
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'monitoring' -Selector $InfraNodeSelector
 
 if ($OmitGrafana) {
     Write-Log 'Enabling monitoring addon with --omitGrafana flag (Grafana web UI will not be deployed)' -Console
@@ -76,6 +83,9 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'monitoring' })) -eq 
     exit 1
 }
 
+if ($InfraNodeSelector -and $Ingress -ne 'none') {
+    throw 'Enable the requested ingress separately before enabling monitoring with infrastructure placement.'
+}
 if ($Ingress -ne 'none') {
         Enable-IngressAddon -Ingress:$Ingress
 }
@@ -92,6 +102,11 @@ if ($OmitGrafana) {
 
 $crdsPath = "$PSScriptRoot\manifests\monitoring\crds"
 $namespacePath = "$PSScriptRoot\manifests\monitoring\namespace.yaml"
+
+$placement = $null
+if ($InfraNodeSelector) {
+    $placement = New-AddonPlacementInput -AddonName 'monitoring' -Path $manifestsPath -Selector $InfraNodeSelector -Kustomize
+}
 
 (Invoke-Kubectl -Params 'apply', '-f', $namespacePath).Output | Write-Log
 # Use --server-side for CRDs to avoid oversized last-applied annotations on large CRDs
@@ -123,6 +138,23 @@ if (-not $monDiscoveryReady) {
     Write-Log '[Monitoring] WARNING: kubectl discovery cache did not refresh within 60s' -Console
 }
 
+if ($placement) {
+    try {
+        $addon = [pscustomobject]@{ Name = 'monitoring'; OmitGrafana = $OmitGrafana.IsPresent; Ingress = $Ingress; InfraNodeSelector = $InfraNodeSelector }
+        Invoke-AddonEnableTransaction -Addon $addon -Selector $InfraNodeSelector -HasMatchingNodes $placement.HasMatchingNodes -Apply {
+            Invoke-Kubectl -Params 'apply', '--server-side', '--force-conflicts', '-f', $placement.Path
+        } -Wait {
+            $controllers = Invoke-Kubectl -Params 'rollout', 'status', 'deployment', '-n', 'monitoring', '--timeout=600s'
+            $prometheus = Wait-ForPodCondition -Condition Ready -Label 'app.kubernetes.io/name=prometheus' -Namespace 'monitoring' -TimeoutSeconds 600
+            $alertmanager = Wait-ForPodCondition -Condition Ready -Label 'app.kubernetes.io/name=alertmanager' -Namespace 'monitoring' -TimeoutSeconds 600
+            return ($controllers.Success -and $prometheus -and $alertmanager)
+        } -Update { & "$PSScriptRoot\Update.ps1" -OmitGrafana:$OmitGrafana } -Rollback { [pscustomobject]@{ Success = $false; Output = 'Operator resources may remain; retry with the saved selector or disable monitoring.' } }
+        (Invoke-Kubectl -Params 'apply', '-k', "$PSScriptRoot\..\common\manifests\windows-exporter").Output | Write-Log
+        if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = $null} }
+        return
+    }
+    finally { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue }
+}
 (Invoke-Kubectl -Params 'apply', '--server-side', '--force-conflicts', '-k', $manifestsPath).Output | Write-Log
 
 Write-Log 'Deploying Windows Exporter for Windows node metrics' -Console

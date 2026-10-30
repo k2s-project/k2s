@@ -557,6 +557,39 @@ Describe 'New-StorageClassManifest' -Tag 'unit', 'ci', 'addon', 'storage smb' {
             }
         }
     }
+
+    Context 'valid template with configured mount options' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-Content { return 'name: SC_NAME', 'source: SC_SOURCE', 'reclaimPolicy: SC_RECLAIM_POLICY', 'mountOptions:', 'MOUNT_OPTIONS' } -ParameterFilter { $Path -match '\\manifests\\base\\storage-classes\\template_StorageClass.yaml' }
+            Mock -ModuleName $moduleName Write-Log {}
+            Mock -ModuleName $moduleName Convert-ToUnixPath { return 'unix-path' } -ParameterFilter { $Path -eq 'remote-path' }
+            Mock -ModuleName $moduleName Set-Content {}
+
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{
+                    SmbDialect            = '3.1.1'
+                    EnablePosixExtensions = $true
+                    UseServerInode        = $false
+                    MountOptions          = @('dir_mode=0700', 'file_mode=0600', 'uid=1001', 'gid=1001')
+                }
+                New-StorageClassManifest -RemotePath 'remote-path' -StorageClassName 'smb-postgres' -Config $config
+            }
+        }
+
+        It 'generates exactly the configured mount options as YAML list entries' {
+            InModuleScope -ModuleName $moduleName {
+                Should -Invoke Set-Content -Times 1 -Scope Context -ParameterFilter {
+                    $Value[0] -match '(?m)^mountOptions:\r?\n  - dir_mode=0700\n  - file_mode=0600\n  - uid=1001\n  - gid=1001\s*\z'
+                }
+            }
+        }
+
+        It 'does not add generated mount options' {
+            InModuleScope -ModuleName $moduleName {
+                Should -Invoke Set-Content -Times 1 -Scope Context -ParameterFilter { $Value[0] -notmatch '0777' -and $Value[0] -notmatch 'noserverino' -and $Value[0] -notmatch 'vers=' }
+            }
+        }
+    }
 }
 
 Describe 'New-StorageClassManifest mount-options injection' -Tag 'unit', 'ci', 'addon', 'storage smb' {
@@ -1324,6 +1357,42 @@ Describe 'Enable-SmbShare' -Tag 'unit', 'ci', 'addon', 'storage smb' {
                 }
             }
 
+            Context 'invalid mount options' {
+                BeforeAll {
+                    Mock -ModuleName $moduleName Get-StorageConfigFromRaw {
+                        return [pscustomobject]@{ StorageClassName = 'smb' }, [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = @('dir_mode=0700 file_mode=0600') }
+                    }
+                }
+
+                It 'returns an error identifying the StorageClass before provisioning' {
+                    InModuleScope -ModuleName $moduleName {
+                        $err = (Enable-SmbShare -SmbHostType 'windows').Error
+
+                        $err.Code | Should -Be 'invalid-mount-options'
+                        $err.Message | Should -Match "^Invalid 'mountOptions' for StorageClass 'smb-postgres': 'dir_mode=0700 file_mode=0600' is not a valid mount option"
+                        Should -Invoke Restore-SmbShareAndFolder -Times 0 -Scope It
+                        Should -Invoke New-StorageClasses -Times 0 -Scope It
+                        Should -Invoke Add-AddonToSetupJson -Times 0 -Scope It
+                    }
+                }
+            }
+
+            Context 'valid mount options' {
+                BeforeAll {
+                    Mock -ModuleName $moduleName Get-StorageConfigFromRaw {
+                        return [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = @('dir_mode=0700', 'file_mode=0600') }
+                    }
+                }
+
+                It 'continues with provisioning' {
+                    InModuleScope -ModuleName $moduleName {
+                        (Enable-SmbShare -SmbHostType 'windows').Error | Should -BeNullOrEmpty
+                        Should -Invoke Restore-SmbShareAndFolder -Times 1 -Scope It
+                        Should -Invoke New-StorageClasses -Times 1 -Scope It
+                    }
+                }
+            }
+
             It 'enables the addon passing the correct params' {
                 InModuleScope -ModuleName $moduleName {
                     $smbHostType = 'Linux'
@@ -2020,6 +2089,7 @@ Describe 'Get-StorageConfigFromRaw' -Tag 'unit', 'ci', 'addon', 'storage smb' {
                 $actual[0].SmbDialect | Should -Be 'auto'
                 $actual[0].EnablePosixExtensions | Should -BeFalse
                 $actual[0].UseServerInode | Should -BeFalse
+                $actual[0].MountOptions | Should -BeNullOrEmpty
             }
         }
 
@@ -2039,6 +2109,17 @@ Describe 'Get-StorageConfigFromRaw' -Tag 'unit', 'ci', 'addon', 'storage smb' {
                 $actual[0].SmbDialect | Should -Be '3.1.1'
                 $actual[0].EnablePosixExtensions | Should -BeTrue
                 $actual[0].UseServerInode | Should -BeTrue
+            }
+        }
+
+        It 'parses mountOptions when specified' {
+            InModuleScope -ModuleName $moduleName {
+                $config = '[{ "winMountPath": "win\\dir", "linuxMountPath": "linux/dir", "storageClassName": "smb-postgres", "mountOptions": [ "dir_mode=0700" ] }]' | ConvertFrom-Json
+
+                $actual = Get-StorageConfigFromRaw -RawConfig $config
+
+                $actual[0].MountOptions.GetType().IsArray | Should -BeTrue
+                $actual[0].MountOptions | Should -Be @('dir_mode=0700')
             }
         }
 

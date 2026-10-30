@@ -1047,6 +1047,14 @@ function Enable-SmbShare {
     }
 
     foreach ($storageEntry in $storageConfig) {
+        $mountOptionsError = Get-StorageClassMountOptionsError -Config $storageEntry
+        if ($mountOptionsError) {
+            $err = New-Error -Severity Error -Code 'invalid-mount-options' -Message $mountOptionsError
+            return @{Error = $err }
+        }
+    }
+
+    foreach ($storageEntry in $storageConfig) {
         Restore-SmbShareAndFolder -SmbHostType $SmbHostType -SkipTest -Config $storageEntry        
     }
 
@@ -1439,6 +1447,8 @@ function Get-StorageConfigFromRaw {
                 SmbDialect                = $smbDialect
                 EnablePosixExtensions     = $enablePosix
                 UseServerInode            = $useServerInode
+                # Optional; when set, replaces the generated StorageClass mount options (validated on enable).
+                MountOptions              = $_.mountOptions
             }
         }   
     )

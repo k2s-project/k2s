@@ -45,9 +45,10 @@ var _ = AfterSuite(func(ctx context.Context) {
 	suite.TearDown(ctx)
 })
 
-var _ = AfterEach(func() {
+var _ = AfterEach(func(ctx context.Context) {
 	if CurrentSpecReport().Failed() {
 		testFailed = true
+		collectExporterDiagnostics(ctx, suite.Kubectl().Path())
 	}
 })
 
@@ -231,20 +232,7 @@ var _ = Describe("Windows Exporter as HostProcess Container", Ordered, func() {
 				Skip("No Prometheus pod found")
 			}
 
-			// Poll until the up metric for windows-exporter appears.
-			Eventually(func() bool {
-				output, exitCode := suite.Kubectl().Exec(ctx,
-					"exec", promPodOutput, "-n", "monitoring", "--",
-					"wget", "-qO-", "-T", "30",
-					`http://localhost:9090/api/v1/query?query=up{job="windows-exporter"}`,
-				)
-
-				if exitCode != 0 {
-					return false
-				}
-
-				return strings.Contains(output, "\"status\":\"success\"") && strings.Contains(output, "windows-exporter")
-			}).WithTimeout(120*time.Second).WithPolling(15*time.Second).Should(BeTrue(), "Windows Exporter metrics should be queryable in Prometheus")
+			expectWindowsExporterScraping(ctx, promPodOutput)
 		})
 	})
 
@@ -299,8 +287,9 @@ var _ = Describe("Windows Exporter as HostProcess Container", Ordered, func() {
 			suite.K2sCli().MustExec(ctx, "addons", "enable", "monitoring", "-o")
 			suite.Cluster().ExpectDeploymentToBeAvailable("kube-prometheus-stack-operator", "monitoring")
 
-			// Wait for Prometheus to scrape metrics
-			time.Sleep(90 * time.Second)
+			promPod := suite.Kubectl().MustExec(ctx, "get", "pods", "-n", "monitoring", "-l", "app.kubernetes.io/name=prometheus", "-o", "jsonpath={.items[0].metadata.name}")
+			Expect(promPod).NotTo(BeEmpty(), "Prometheus pod must exist after enabling monitoring")
+			expectWindowsExporterScraping(ctx, promPod)
 		})
 
 		AfterAll(func(ctx context.Context) {
@@ -363,7 +352,7 @@ var _ = Describe("Windows Exporter as HostProcess Container", Ordered, func() {
 				output, exitCode := suite.Kubectl().Exec(ctx,
 					"exec", promPodOutput, "-n", "monitoring", "--",
 					"wget", "-qO-", "-T", "30",
-					`http://localhost:9090/api/v1/query?query=count(windows_cpu_time_total{job="windows-exporter"})`,
+					`http://localhost:9090/api/v1/query?query=count(windows_cpu_time_seconds_total{job="windows-exporter"})`,
 				)
 
 				if exitCode != 0 {
@@ -372,7 +361,7 @@ var _ = Describe("Windows Exporter as HostProcess Container", Ordered, func() {
 
 				return strings.Contains(output, "\"status\":\"success\"") &&
 					strings.Contains(output, "\"result\":[{")
-			}).WithTimeout(60*time.Second).WithPolling(10*time.Second).Should(BeTrue(), "windows_cpu_time_total metric should be available")
+			}).WithTimeout(60*time.Second).WithPolling(10*time.Second).Should(BeTrue(), "windows_cpu_time_seconds_total metric should be available")
 		})
 
 		It("exposes memory metrics from Windows nodes", func(ctx context.Context) {

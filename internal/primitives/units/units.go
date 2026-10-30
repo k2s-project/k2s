@@ -23,7 +23,7 @@ var byteUnits = []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
 func ParseBase2Bytes(input string) (BytesQuantity, error) {
 	// see https://physics.nist.gov/cuu/Units/binary.html
 	// and https://en.wikipedia.org/wiki/Byte#Multiple-byte_units
-	if strings.HasSuffix(input, "i") {
+	if strings.HasSuffix(input, "i") || isPlainNumber(input) {
 		input += "B"
 	}
 
@@ -33,6 +33,19 @@ func ParseBase2Bytes(input string) (BytesQuantity, error) {
 	}
 
 	return BytesQuantity(bytes), nil
+}
+
+// Kubernetes reports quantities without suffix (e.g. ephemeral-storage) as plain bytes.
+func isPlainNumber(input string) bool {
+	if input == "" {
+		return false
+	}
+	for _, c := range input {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (quantity BytesQuantity) String() string {

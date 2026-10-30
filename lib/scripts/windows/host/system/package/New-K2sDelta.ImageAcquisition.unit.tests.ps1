@@ -24,7 +24,7 @@ Describe 'Export-ChangedImageLayers' -Tag 'unit', 'ci', 'delta-package' {
             @{ Success = $false; ErrorMessage = 'export timed out'; ImageInfo = $null; Size = 0 }
         }
         $image = [pscustomobject]@{
-            FullName = 'registry.k8s.io/kube-apiserver:v1.36.5'
+            FullName = 'registry.k8s.io/kube-apiserver:v1.37.2'
             Platform = 'linux'
         }
         $context = [pscustomobject]@{

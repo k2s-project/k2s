@@ -144,8 +144,8 @@ Write-Log '  Deleting oauth2-proxy-config ConfigMap...' -Console
 Write-Log 'Reverting NGINX Gateway controller configuration' -Console
 $deployment = kubectl get deployment nginx-gw-controller -n nginx-gw -o json 2>$null | ConvertFrom-Json
 if ($deployment) {
-    $args = $deployment.spec.template.spec.containers[0].args
-    $flagIndex = $args.IndexOf('--snippets-filters')
+    $containerArgs = $deployment.spec.template.spec.containers[0].args
+    $flagIndex = $containerArgs.IndexOf('--snippets-filters')
     
     if ($flagIndex -ge 0) {
         Write-Log '  Removing --snippets-filters flag from controller...' -Console

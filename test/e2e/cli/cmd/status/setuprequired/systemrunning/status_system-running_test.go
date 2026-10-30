@@ -14,6 +14,8 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/types"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/k2s-project/k2s/test/framework"
 	"github.com/k2s-project/k2s/test/framework/regex"
 )
@@ -27,6 +29,14 @@ const (
 )
 
 var suite *framework.K2sTestSuite
+
+func isPositiveStorageCapacity(value string) (bool, error) {
+	quantity, err := resource.ParseQuantity(value)
+	if err != nil {
+		return false, err
+	}
+	return quantity.Sign() > 0, nil
+}
 
 func TestStatus(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -230,7 +240,7 @@ var _ = Describe("status", Ordered, func() {
 				HaveField("Capacity", SatisfyAll(
 					HaveField("Cpu", MatchRegexp("[0-9]+")),
 					HaveField("Memory", MatchRegexp("[0-9]+Ki")),
-					HaveField("Storage", MatchRegexp("[0-9]+Ki")),
+					HaveField("Storage", WithTransform(isPositiveStorageCapacity, BeTrue())),
 				)),
 			)))
 		})

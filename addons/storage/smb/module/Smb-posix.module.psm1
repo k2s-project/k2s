@@ -9,6 +9,10 @@ Import-Module $vmModule
 # Default fstab SMB dialect (vers=) used when smbDialect is 'auto' or unset.
 $script:DefaultSmbFstabDialect = '3.0'
 
+# A configured StorageClass mount option, e.g. 'dir_mode=0700' or 'vers=3.1.1'. Whitespace, commas and
+# YAML-special characters are rejected so that every option renders as exactly one plain YAML list entry.
+$script:MountOptionPattern = '^[A-Za-z0-9][A-Za-z0-9_.=/+-]*\z'
+
 function Get-FstabVersionOption {
     param (
         [string]$SmbDialect = 'auto',
@@ -24,6 +28,10 @@ function Get-FstabVersionOption {
 
 function Get-StorageClassMountOptions {
     param ([pscustomobject]$Config = $(throw 'Config not specified'))
+    if ($null -ne $Config.MountOptions) {
+        # Configured options replace the generated ones entirely, including the POSIX and dialect specific options.
+        return @($Config.MountOptions)
+    }
     if ($Config.EnablePosixExtensions) {
         # handletimeout: rejected by mount.cifs and conflicts with driver-injected nobrl (issue #2478).
         $opts = [System.Collections.ArrayList]@('dir_mode=0777','file_mode=0777','uid=1001','gid=1001','mfsymlinks','cache=strict')
@@ -36,6 +44,32 @@ function Get-StorageClassMountOptions {
         $opts.Add("vers=$($Config.SmbDialect)") | Out-Null
     }
     return $opts
+}
+
+function Get-StorageClassMountOptionsError {
+    <#
+    .SYNOPSIS
+    Validates the optional mountOptions configured for an SMB storage entry.
+    .DESCRIPTION
+    Returns $null when the entry does not configure mountOptions or when all configured options are valid.
+    Otherwise, returns an error message identifying the affected StorageClass and the offending value.
+    #>
+    param ([pscustomobject]$Config = $(throw 'Config not specified'))
+    $mountOptions = $Config.MountOptions
+    if ($null -eq $mountOptions) {
+        return $null
+    }
+
+    $errorPrefix = "Invalid 'mountOptions' for StorageClass '$($Config.StorageClassName)'"
+    if ($mountOptions -isnot [array] -or $mountOptions.Count -eq 0) {
+        return "$errorPrefix`: expected a non-empty array of mount options, e.g. [`"dir_mode=0700`", `"file_mode=0600`"]."
+    }
+    foreach ($option in $mountOptions) {
+        if ($option -isnot [string] -or $option -notmatch $script:MountOptionPattern) {
+            return "$errorPrefix`: '$option' is not a valid mount option. Each array entry must be a single option string such as 'dir_mode=0700', containing only letters, digits and the characters '_ . = / + -' (no whitespace or commas)."
+        }
+    }
+    return $null
 }
 
 function Get-SambaSharePosixConfig {
@@ -88,4 +122,4 @@ function Test-SambaPosixNegotiation {
         Start-Sleep -Seconds $RetryDelaySeconds
     }
 }
-Export-ModuleMember -Function Get-FstabVersionOption, Get-StorageClassMountOptions, Get-SambaSharePosixConfig, Test-SambaPosixNegotiation -Variable DefaultSmbFstabDialect
+Export-ModuleMember -Function Get-FstabVersionOption, Get-StorageClassMountOptions, Get-StorageClassMountOptionsError, Get-SambaSharePosixConfig, Test-SambaPosixNegotiation -Variable DefaultSmbFstabDialect

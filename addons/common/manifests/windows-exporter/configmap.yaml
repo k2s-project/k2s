@@ -12,7 +12,7 @@ data:
     web:
       listen-address: :9100
     collectors:
-      enabled: cpu,memory,logical_disk,net,os,service,system,cpu_info,thermalzone,container
+      enabled: cpu,memory,logical_disk,net,os,service,system,cpu_info,container
     collector:
       service:
         include: ^(kubelet|kubeproxy|flanneld|windows_exporter|.*docker.*)$

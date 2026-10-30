@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 Siemens Healthineers AG
 #
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 apiVersion: v1
 kind: Namespace
@@ -147,7 +147,7 @@ spec:
         - --kubelet-use-node-status-port
         - --kubelet-insecure-tls
         - --metric-resolution=15s
-        image: registry.k8s.io/metrics-server/metrics-server:v0.9.0
+        image: registry.k8s.io/metrics-server/metrics-server:v0.9.1
         imagePullPolicy: IfNotPresent
         livenessProbe:
           failureThreshold: 3

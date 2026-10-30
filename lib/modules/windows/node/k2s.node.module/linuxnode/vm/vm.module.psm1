@@ -1102,6 +1102,13 @@ function Wait-ForSshPossible {
                     Write-Log "[SSH-Routing] The route changed during SSH host-key verification. Retrying after VM networking is ready; trusted keys are unchanged. SSH diagnostic: $result" -Console
                 }
                 else {
+                    if ($LocalIPAddress -ne '' -and $hostKeyFailure) {
+                        $message = "[SSH] Control-plane host-key verification failed for '$User'. " +
+                            "The host key may be missing or changed in this Windows account's known_hosts files (profile '$env:USERPROFILE'). " +
+                            'Verify the VM host-key fingerprint through its console or another trusted channel, then add or update only the verified entry for this host and retry. ' +
+                            'Do not disable host-key checking or automatically trust ssh-keyscan output. ' +
+                            "SSH diagnostic: $result"
+                    }
                     Write-Log $message -Console
                     throw $message
                 }

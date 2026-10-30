@@ -889,7 +889,6 @@ Describe 'Control-plane SSH routing' -Tag 'unit', 'ci', 'vm' {
     }
 
     It 'still fails immediately for <Failure> on the intended route' -TestCases @(
-        @{ Failure = 'Host key verification failed.' }
         @{ Failure = 'remote@172.19.1.100: Permission denied (publickey).' }
         @{ Failure = 'WARNING: UNPROTECTED PRIVATE KEY FILE!' }
     ) {
@@ -903,6 +902,36 @@ Describe 'Control-plane SSH routing' -Tag 'unit', 'ci', 'vm' {
                     -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1' } |
                 Should -Throw '*Authentication or private-key failure*'
             Should -Invoke ssh.exe -Times 1 -Exactly
+            Should -Invoke Start-Sleep -Times 0 -Exactly
+        }
+    }
+
+    It 'reports safe trust remediation for <Case> without retrying on the intended route' -TestCases @(
+        @{
+            Case = 'a missing known host key'
+            Failure = 'No ED25519 host key is known for 172.19.1.100 and you have requested strict checking.' + "`nHost key verification failed."
+        }
+        @{
+            Case = 'a changed known host key'
+            Failure = 'WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!' + "`nHost key verification failed."
+        }
+    ) {
+        param($Failure)
+        InModuleScope $moduleName -Parameters @{ Failure = $Failure } {
+            Mock ssh.exe {
+                $global:LASTEXITCODE = 255
+                $Failure
+            }
+            { Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                    -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1' } |
+                Should -Throw '*Control-plane host-key verification failed*known_hosts*Verify the VM host-key fingerprint*SSH diagnostic:*'
+            Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter {
+                $Console -and $Messages -like "*profile '$env:USERPROFILE'*" -and
+                $Messages -like '*another trusted channel*' -and
+                $Messages -like '*Do not disable host-key checking*'
+            }
+            Should -Invoke ssh.exe -Times 1 -Exactly
+            Should -Invoke Find-NetRoute -Times 2 -Exactly
             Should -Invoke Start-Sleep -Times 0 -Exactly
         }
     }

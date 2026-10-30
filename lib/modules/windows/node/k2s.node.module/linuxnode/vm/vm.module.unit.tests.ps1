@@ -626,6 +626,341 @@ Describe 'SSH authentication failure handling' -Tag 'unit', 'ci', 'vm' {
 
 }
 
+Describe 'Control-plane SSH routing' -Tag 'unit', 'ci', 'vm' {
+    BeforeAll {
+        $startupPath = Join-Path $PSScriptRoot '..\setup\control-plane-node.module.psm1'
+        $startupAst = [System.Management.Automation.Language.Parser]::ParseFile($startupPath, [ref]$null, [ref]$null)
+        $startupFunction = $startupAst.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Start-ControlPlaneNodeOnNewVM'
+            }, $true)
+        $statements = @($startupFunction.Body.EndBlock.Statements)
+        $assignment = $startupFunction.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left.Extent.Text -eq '$sshWaitParams'
+            }, $true)
+        $assignmentIndex = [array]::IndexOf($statements, $assignment)
+        if ($assignmentIndex -lt 0) {
+            throw 'Cannot find startup SSH routing parameters.'
+        }
+        $startupSshWait = ($statements[$assignmentIndex..($assignmentIndex + 2)] |
+                ForEach-Object { $_.Extent.Text }) -join "`n"
+    }
+
+    BeforeEach {
+        InModuleScope $moduleName {
+            $script:localSshAddresses = @([pscustomobject]@{
+                    IPAddress = '172.19.1.1'; InterfaceIndex = 39; AddressState = 'Preferred'
+                })
+            $script:selectedSshRoute = @(
+                [pscustomobject]@{ IPAddress = '172.19.1.1'; InterfaceIndex = 39 }
+                [pscustomobject]@{
+                    DestinationPrefix = '172.19.1.0/24'; NextHop = '0.0.0.0'
+                    InterfaceIndex = 39; InterfaceAlias = 'vEthernet (KubeSwitch)'
+                }
+            )
+            $script:lastSshArguments = @()
+            Mock Get-NetIPAddress { $script:localSshAddresses }
+            Mock Find-NetRoute { $script:selectedSshRoute }
+            Mock Set-SshPrivateKeyPermissions {}
+            Mock Write-Log {}
+            Mock Start-Sleep {}
+            Mock Get-Random { 0 }
+            Mock Get-DurationInSeconds { 0 }
+            Mock ssh.exe {
+                $script:lastSshArguments = @($args)
+                $global:LASTEXITCODE = 0
+                '/bin/curl'
+            }
+        }
+    }
+
+    It 'accepts the preferred switch source and selected on-link route' {
+        InModuleScope $moduleName {
+            Test-SshRouteViaLocalAddress -RemoteIPAddress '172.19.1.100' -LocalIPAddress '172.19.1.1' |
+                Should -BeTrue
+            Should -Invoke Find-NetRoute -Times 1 -Exactly -ParameterFilter {
+                $RemoteIPAddress -eq '172.19.1.100'
+            }
+        }
+    }
+
+    It 'rejects <Case>' -TestCases @(
+        @{ Case = 'a missing local address' }
+        @{ Case = 'an ambiguous local address' }
+        @{ Case = 'a tentative local address' }
+        @{ Case = 'a duplicate local address' }
+        @{ Case = 'an Ethernet default route' }
+        @{ Case = 'a different source interface' }
+        @{ Case = 'a different route interface' }
+        @{ Case = 'a gateway on the switch interface' }
+        @{ Case = 'an on-link default route' }
+        @{ Case = 'a missing route' }
+    ) {
+        param($Case)
+        InModuleScope $moduleName -Parameters @{ Case = $Case } {
+            switch ($Case) {
+                'a missing local address' { $script:localSshAddresses = @() }
+                'an ambiguous local address' { $script:localSshAddresses += $script:localSshAddresses[0] }
+                'a tentative local address' { $script:localSshAddresses[0].AddressState = 'Tentative' }
+                'a duplicate local address' { $script:localSshAddresses[0].AddressState = 'Duplicate' }
+                'an Ethernet default route' {
+                    $script:selectedSshRoute[0].IPAddress = '172.29.29.130'
+                    $script:selectedSshRoute[0].InterfaceIndex = 10
+                    $script:selectedSshRoute[1].DestinationPrefix = '0.0.0.0/0'
+                    $script:selectedSshRoute[1].NextHop = '172.29.29.1'
+                    $script:selectedSshRoute[1].InterfaceIndex = 10
+                    $script:selectedSshRoute[1].InterfaceAlias = 'Ethernet'
+                }
+                'a different source interface' { $script:selectedSshRoute[0].InterfaceIndex = 10 }
+                'a different route interface' { $script:selectedSshRoute[1].InterfaceIndex = 10 }
+                'a gateway on the switch interface' { $script:selectedSshRoute[1].NextHop = '172.19.1.254' }
+                'an on-link default route' { $script:selectedSshRoute[1].DestinationPrefix = '0.0.0.0/0' }
+                'a missing route' { $script:selectedSshRoute = @() }
+            }
+
+            Test-SshRouteViaLocalAddress -RemoteIPAddress '172.19.1.100' -LocalIPAddress '172.19.1.1' |
+                Should -BeFalse
+            Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Messages -like '*SSH-Routing*' }
+        }
+    }
+
+    It 'logs route-query errors rather than attempting an unguarded connection' {
+        InModuleScope $moduleName {
+            Mock Find-NetRoute { Write-Error 'Route lookup unavailable' }
+            Test-SshRouteViaLocalAddress -RemoteIPAddress '172.19.1.100' -LocalIPAddress '172.19.1.1' |
+                Should -BeFalse
+            Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter {
+                $Messages -like '*Route lookup unavailable*'
+            }
+        }
+    }
+
+    It 'surfaces unexpected address-query failures' {
+        InModuleScope $moduleName {
+            Mock Get-NetIPAddress { throw 'Address query denied' }
+            { Test-SshRouteViaLocalAddress -RemoteIPAddress '172.19.1.100' -LocalIPAddress '172.19.1.1' } |
+                Should -Throw '*Address query denied*'
+            Should -Invoke Find-NetRoute -Times 0 -Exactly
+        }
+    }
+
+    It 'waits through Ethernet fallback and requires the trusted key without using unsupported source binding' {
+        InModuleScope $moduleName {
+            $script:routeChecks = 0
+            Mock Test-SshRouteViaLocalAddress {
+                $script:routeChecks++
+                return $script:routeChecks -gt 3
+            }
+            Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\key with spaces\id_rsa' `
+                -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1'
+
+            Should -Invoke Test-SshRouteViaLocalAddress -Times 4 -Exactly -ParameterFilter {
+                $RemoteIPAddress -eq '172.19.1.100' -and $LocalIPAddress -eq '172.19.1.1'
+            }
+            Should -Invoke ssh.exe -Times 1 -Exactly
+            Should -Invoke Start-Sleep -Times 3 -Exactly
+            $script:lastSshArguments | Should -Not -Contain '-b'
+            $script:lastSshArguments | Should -Not -Contain '-B'
+            $script:lastSshArguments | Should -Contain 'StrictHostKeyChecking=yes'
+            $script:lastSshArguments | Should -Not -Contain 'StrictHostKeyChecking=no'
+            $script:lastSshArguments | Should -Contain 'C:\key with spaces\id_rsa'
+            $script:lastSshArguments | Should -Contain 'which curl'
+            $script:lastSshArguments | Should -Contain '-n'
+        }
+    }
+
+    It 'rechecks routing after an SSH timeout and skips attempts while the route falls back again' {
+        InModuleScope $moduleName {
+            $script:routeChecks = 0
+            Mock Test-SshRouteViaLocalAddress {
+                $script:routeChecks++
+                return $script:routeChecks -eq 1 -or $script:routeChecks -eq 4
+            }
+            Mock ssh.exe {
+                if ($script:routeChecks -eq 1) {
+                    $global:LASTEXITCODE = 255
+                    'ssh: connect to host 172.19.1.100 port 22: Connection timed out'
+                }
+                else {
+                    $global:LASTEXITCODE = 0
+                    '/bin/curl'
+                }
+            }
+            Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1'
+
+            Should -Invoke Test-SshRouteViaLocalAddress -Times 4 -Exactly
+            Should -Invoke ssh.exe -Times 2 -Exactly
+            Should -Invoke Start-Sleep -Times 3 -Exactly
+        }
+    }
+
+    It 'times out explicitly without SSH or VM recovery when the switch route never becomes usable' {
+        InModuleScope $moduleName {
+            Mock Test-SshRouteViaLocalAddress { $false }
+            Mock Stop-VM {}
+            Mock Disconnect-VMNetworkAdapter {}
+            { Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                    -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1' } |
+                Should -Throw '*Unable to SSH login into VM after 80 attempts*'
+            Should -Invoke Test-SshRouteViaLocalAddress -Times 80 -Exactly
+            Should -Invoke ssh.exe -Times 0 -Exactly
+            Should -Invoke Start-Sleep -Times 79 -Exactly
+            Should -Invoke Stop-VM -Times 0 -Exactly
+            Should -Invoke Disconnect-VMNetworkAdapter -Times 0 -Exactly
+        }
+    }
+
+    It 'retries a rejected host key only when the route changed during the SSH attempt' {
+        InModuleScope $moduleName {
+            $script:routeChecks = 0
+            Mock Test-SshRouteViaLocalAddress {
+                $script:routeChecks++
+                return $script:routeChecks -ne 2
+            }
+            $script:sshAttempts = 0
+            Mock ssh.exe {
+                $script:sshAttempts++
+                if ($script:sshAttempts -eq 1) {
+                    $global:LASTEXITCODE = 255
+                    'Host key verification failed.'
+                }
+                else {
+                    $global:LASTEXITCODE = 0
+                    '/bin/curl'
+                }
+            }
+            Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1'
+
+            Should -Invoke Test-SshRouteViaLocalAddress -Times 3 -Exactly
+            Should -Invoke ssh.exe -Times 2 -Exactly
+            Should -Invoke Start-Sleep -Times 1 -Exactly
+            Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter {
+                $Console -and $Messages -like '*route changed*Host key verification failed*'
+            }
+        }
+    }
+
+    It 'bounds retries when the route keeps changing during host-key verification' {
+        InModuleScope $moduleName {
+            $script:routeChecks = 0
+            Mock Test-SshRouteViaLocalAddress {
+                $script:routeChecks++
+                return $script:routeChecks % 2 -eq 1
+            }
+            Mock ssh.exe {
+                $global:LASTEXITCODE = 255
+                'Host key verification failed.'
+            }
+            { Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                    -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1' } |
+                Should -Throw '*Unable to SSH login into VM after 80 attempts*'
+            Should -Invoke ssh.exe -Times 80 -Exactly
+            Should -Invoke Test-SshRouteViaLocalAddress -Times 160 -Exactly
+            Should -Invoke Start-Sleep -Times 79 -Exactly
+        }
+    }
+
+    It 'does not reclassify a private-key or authentication rejection when routing changes' -TestCases @(
+        @{ Failure = 'remote@172.19.1.100: Permission denied (publickey).' }
+        @{ Failure = 'WARNING: UNPROTECTED PRIVATE KEY FILE!' }
+    ) {
+        param($Failure)
+        InModuleScope $moduleName -Parameters @{ Failure = $Failure } {
+            $script:routeChecks = 0
+            Mock Test-SshRouteViaLocalAddress {
+                $script:routeChecks++
+                return $script:routeChecks -eq 1
+            }
+            Mock ssh.exe {
+                $global:LASTEXITCODE = 255
+                $Failure
+            }
+            { Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                    -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1' } |
+                Should -Throw '*Authentication or private-key failure*'
+            Should -Invoke Test-SshRouteViaLocalAddress -Times 1 -Exactly
+            Should -Invoke Start-Sleep -Times 0 -Exactly
+        }
+    }
+
+    It 'still fails immediately for <Failure> on the intended route' -TestCases @(
+        @{ Failure = 'Host key verification failed.' }
+        @{ Failure = 'remote@172.19.1.100: Permission denied (publickey).' }
+        @{ Failure = 'WARNING: UNPROTECTED PRIVATE KEY FILE!' }
+    ) {
+        param($Failure)
+        InModuleScope $moduleName -Parameters @{ Failure = $Failure } {
+            Mock ssh.exe {
+                $global:LASTEXITCODE = 255
+                $Failure
+            }
+            { Wait-ForSshPossible -User 'remote@172.19.1.100' -SshKey 'C:\id_rsa' `
+                    -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -LocalIPAddress '172.19.1.1' } |
+                Should -Throw '*Authentication or private-key failure*'
+            Should -Invoke ssh.exe -Times 1 -Exactly
+            Should -Invoke Start-Sleep -Times 0 -Exactly
+        }
+    }
+
+    It 'preserves existing unguarded behavior with Nested=<Nested>' -TestCases @(
+        @{ Nested = $false }
+        @{ Nested = $true }
+    ) {
+        param($Nested)
+        InModuleScope $moduleName -Parameters @{ Nested = $Nested } {
+            Wait-ForSshPossible -User 'remote@host' -SshKey 'C:\id_rsa' -Nested:$Nested `
+                -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl'
+            Should -Invoke Find-NetRoute -Times 0 -Exactly
+            Should -Invoke Get-NetIPAddress -Times 0 -Exactly
+            $script:lastSshArguments | Should -Not -Contain '-b'
+            $script:lastSshArguments | Should -Contain 'StrictHostKeyChecking=no'
+            ($script:lastSshArguments -contains '-n') | Should -Be (-not $Nested)
+        }
+    }
+
+    It 'rejects a local binding for the password-based path explicitly' {
+        InModuleScope $moduleName {
+            { Wait-ForSshPossible -User 'remote@host' -UserPwd 'fixture' -LocalIPAddress '172.19.1.1' `
+                    -SshTestCommand 'true' -ExpectedSshTestCommandResult 'ok' } |
+                Should -Throw '*only be specified for key-based SSH*'
+            Should -Invoke ssh.exe -Times 0 -Exactly
+        }
+    }
+
+    It 'forwards the route guard through the control-plane key wrapper' {
+        InModuleScope $moduleName {
+            Mock Wait-ForSshPossible {}
+            Wait-ForSSHConnectionToLinuxVMViaSshKey -LocalIPAddress '172.19.1.1'
+            Should -Invoke Wait-ForSshPossible -Times 1 -Exactly -ParameterFilter {
+                $LocalIPAddress -eq '172.19.1.1' -and $SshKey -eq $key -and $User -eq $remoteUser
+            }
+        }
+    }
+
+    It 'enables the startup route guard only for Hyper-V (WSL=<Wsl>)' -TestCases @(
+        @{ Wsl = $false; ExpectedLocalAddress = '172.19.1.1' }
+        @{ Wsl = $true; ExpectedLocalAddress = '' }
+    ) {
+        param($Wsl, $ExpectedLocalAddress)
+        InModuleScope $moduleName -Parameters @{
+            Wsl = $Wsl; ExpectedLocalAddress = $ExpectedLocalAddress; StartupSshWait = $startupSshWait
+        } {
+            $WSL = $Wsl
+            $windowsHostIpAddress = '172.19.1.1'
+            Mock Wait-ForSSHConnectionToLinuxVMViaSshKey {}
+            & ([scriptblock]::Create($StartupSshWait))
+            Should -Invoke Wait-ForSSHConnectionToLinuxVMViaSshKey -Times 1 -Exactly -ParameterFilter {
+                [string]$LocalIPAddress -eq $ExpectedLocalAddress
+            }
+        }
+    }
+}
+
 Describe 'SSH key ACL integration' -Tag 'unit', 'ci', 'vm' {
     It 'persists the restricted ACL and lets Windows OpenSSH read the unchanged key' -Skip:(
         -not ([System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(

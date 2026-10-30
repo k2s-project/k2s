@@ -407,7 +407,11 @@ function Start-ControlPlaneNodeOnNewVM {
 
     Set-RoutesToKubemaster
 
-    Wait-ForSSHConnectionToLinuxVMViaSshKey
+    $sshWaitParams = @{}
+    if (-not $WSL) {
+        $sshWaitParams.LocalIPAddress = $windowsHostIpAddress
+    }
+    Wait-ForSSHConnectionToLinuxVMViaSshKey @sshWaitParams
 
     # Ensure the control plane has a route to the Windows loopback adapter subnet
     # so that flannel's host-gw backend can install pod subnet routes via the

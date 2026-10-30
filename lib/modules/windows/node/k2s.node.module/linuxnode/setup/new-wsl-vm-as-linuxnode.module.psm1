@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
 #Requires -RunAsAdministrator
@@ -11,6 +11,43 @@ $debianDistroModule = "$PSScriptRoot\..\distros\debian\debian.module.psm1"
 Import-SpecificDistroSettingsModule -ModulePath $debianDistroModule
 
 $controlPlaneOnWslRootfsFileName = 'Kubemaster-Base.rootfs.tar.gz'
+
+function Invoke-WslCommand {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [switch]$IgnoreErrors
+    )
+
+    $executable = Get-Command -Name 'wsl.exe' -CommandType Application -ErrorAction Stop
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        # Native stderr warnings must not escape to the install wrapper as ErrorRecords.
+        $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = $null
+        $output = @(& $executable.Source @Arguments 2>&1 | ForEach-Object { $_.ToString() })
+        $exitCode = $global:LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedErrorActionPreference
+    }
+
+    foreach ($line in $output) {
+        Write-Log "[WSL] $line" -Console
+    }
+    if ($null -eq $exitCode) {
+        throw "[WSL] wsl.exe did not report an exit code: $($Arguments -join ' ')`n$($output -join "`n")"
+    }
+    if ($exitCode -ne 0) {
+        $message = "[WSL] wsl.exe $($Arguments -join ' ') failed with exit code $exitCode"
+        if (-not $IgnoreErrors) {
+            throw "$message`n$($output -join "`n")"
+        }
+        Write-Log "$message; continuing best-effort cleanup." -Console
+    }
+
+    return $output
+}
 
 function New-WslLinuxVmAsControlPlaneNode {
     param (
@@ -74,11 +111,11 @@ function New-WslLinuxVmAsControlPlaneNode {
     }
 
     Write-Log 'Remove existing KubeMaster distro if existing'
-    wsl --unregister $VmName | Out-Null
+    Invoke-WslCommand -Arguments @('--unregister', $VmName) -IgnoreErrors | Out-Null
     Write-Log 'Import KubeMaster distro'
-    wsl --import $VmName "$env:SystemDrive\wsl" "$rootfsPath"
+    Invoke-WslCommand -Arguments @('--import', $VmName, "$env:SystemDrive\wsl", $rootfsPath) | Out-Null
     Write-Log 'Set KubeMaster as default distro'
-    wsl -s $VmName
+    Invoke-WslCommand -Arguments @('-s', $VmName) | Out-Null
 
     # The rootfs has been pre-configured during creation with:
     # - Fixed fstab (no PARTUUID entries)
@@ -86,7 +123,7 @@ function New-WslLinuxVmAsControlPlaneNode {
     # - Systemd cgroups v1 compatibility settings
 
     Write-Log 'Starting WSL distro...'
-    $null = wsl --exec /bin/true 2>&1
+    $null = Invoke-WslCommand -Arguments @('--exec', '/bin/true')
 
     Write-Log 'Waiting for WSL distro to initialize...'
     $maxRetries = 20
@@ -95,7 +132,7 @@ function New-WslLinuxVmAsControlPlaneNode {
     for ($i = 1; $i -le $maxRetries; $i++) {
         Start-Sleep -Seconds $retryDelaySeconds
         try {
-            $result = wsl --exec /bin/bash -c 'systemctl is-system-running 2>/dev/null || echo "unknown"; exit 0' 2>&1
+            $result = Invoke-WslCommand -Arguments @('--exec', '/bin/bash', '-c', 'systemctl is-system-running 2>/dev/null || echo "unknown"; exit 0')
             $resultStr = ($result | Out-String).Trim()
             if ($resultStr -match 'running|degraded') {
                 Write-Log "WSL systemd is ready (status: $resultStr)"
@@ -110,10 +147,10 @@ function New-WslLinuxVmAsControlPlaneNode {
     }
     if (-not $systemdReady) {
         Write-Log 'Warning: WSL systemd may not be fully ready, attempting to start sshd directly...'
-        $null = wsl --exec /bin/bash -c 'systemctl start ssh 2>/dev/null || /usr/sbin/sshd 2>/dev/null; exit 0' 2>&1
+        $null = Invoke-WslCommand -Arguments @('--exec', '/bin/bash', '-c', 'systemctl start ssh 2>/dev/null || /usr/sbin/sshd 2>/dev/null; exit 0')
     }
 
-    wsl --shutdown
+    Invoke-WslCommand -Arguments @('--shutdown') | Out-Null
 
 }
 

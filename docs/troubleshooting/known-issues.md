@@ -1,9 +1,16 @@
 <!--
-SPDX-FileCopyrightText: © 2024 The K2s Authors
+SPDX-FileCopyrightText: © 2026 The K2s Authors
 SPDX-License-Identifier: MIT
 -->
 
 # Known Issues
+
+## WSL Nested Virtualization Warning
+
+During `k2s install --wsl`, WSL may print `Nested virtualization is not supported on this machine.` This warning concerns virtualization extensions for additional virtual machines inside WSL; it does not by itself mean WSL cannot run.
+
+K2s logs WSL setup diagnostics and checks the native command exit code. A warning with exit code zero does not abort setup; a nonzero exit still fails with its diagnostics. If setup fails, inspect the logged exit code and subsequent errors before changing virtualization settings. Do not disable host security policy or change cluster IP addresses to suppress this warning.
+
 ## Secret Issue When Loading via [Kustomize](https://github.com/kubernetes-sigs/kustomize){target="_blank"}
 ```console
 kubectl apply -k <folder>

@@ -166,9 +166,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-2.4.1-windows-amd64.tar.gz",
+      "group": "https://github.com/containerd/nerdctl/releases/download/v2.4.2/nerdctl-2.4.2-windows-amd64.tar.gz",
       "name": "nerdctl",
-      "version": "v2.4.1",
+      "version": "v2.4.2",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -185,7 +185,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containerd/nerdctl@v2.4.1",
+      "purl": "pkg:github/containerd/nerdctl@v2.4.2",
       "type": "application"
     },
     {

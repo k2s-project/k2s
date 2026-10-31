@@ -5,6 +5,41 @@ SPDX-License-Identifier: MIT
 
 # Networking Architecture for *K2s*
 
+## Hyper-V control-plane startup
+
+When `k2s start` recreates KubeSwitch, the virtual adapter can appear before
+the VM network is usable. During this interval, Windows can select a physical
+interface's default route for the control-plane IP address.
+
+The Hyper-V startup SSH readiness check waits for the configured KubeSwitch
+address to be preferred and for Windows to select an on-link route through
+that address's interface. It rechecks the route before each attempt.
+Route-readiness failures use the bounded SSH retry loop and are logged with
+the `[SSH-Routing]` prefix. SSH source binding (`-b`) is deliberately not used:
+older Windows OpenSSH clients fail with `Invalid argument` when it is set.
+
+This startup check requires the previously trusted SSH host key. If host-key
+verification fails and a second route check confirms that the intended route
+is no longer selected, startup logs the rejection and retries without changing
+trusted keys. Host-key verification failures on the intended route, invalid
+private keys, and authentication rejections still fail explicitly.
+WSL startup and other SSH callers retain their existing behavior.
+
+The on-link requirement is intentional for the Hyper-V control plane attached
+directly to KubeSwitch. A control plane reachable only through a gateway is not
+accepted by this startup check. Route checks are snapshots, not a guarantee
+that routing cannot change during a connection: if the route has already
+recovered when a rejected host key is checked, startup fails closed rather
+than assuming that the rejection was transient.
+
+If startup reports a missing or changed host key, check which Windows account
+is running `k2s start`; its SSH trust files may differ from the account used
+during installation. Verify the VM's host-key fingerprint through its console
+or another trusted channel before adding or updating only that host's entry
+in the affected account's `known_hosts` file. Do not clear the entire trust
+file, disable host-key checking, or automatically trust `ssh-keyscan` output:
+an on-link route alone does not authenticate the server.
+
 ## Core Principles and Architecture: simplicity and maximum performance
 
 In alignment with *K2s*' foundational design principles of operational <b>simplicity</b> and <b>maximum performance</b>, our networking architecture is built upon Flannel CNI configured in host-gateway mode. This provides a transparent, high-throughput, and low-latency data plane that is ideal for demanding workloads and facilitates straightforward network analysis. For production-grade security, K2s integrates the [security addon](https://github.com/k2s-project/k2s/blob/main/addons/security/README.md) which uses [Linkerd](https://linkerd.io/) to establish a zero-trust environment for all TCP-based traffic through transparent mTLS and fine-grained policy enforcement.

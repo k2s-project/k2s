@@ -966,6 +966,46 @@ function Get-ControlPlaneVMRootfsPath {
     return "$kubePath\bin\$fileName"
 }
 
+function Test-SshRouteViaLocalAddress {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$RemoteIPAddress,
+        [Parameter(Mandatory = $true)]
+        [string]$LocalIPAddress
+    )
+
+    $localAddresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object { $_.IPAddress -eq $LocalIPAddress })
+    if ($localAddresses.Count -ne 1 -or $localAddresses[0].AddressState -ne 'Preferred') {
+        Write-Log "[SSH-Routing] Waiting for a unique, preferred local address '$LocalIPAddress'."
+        return $false
+    }
+
+    $routeErrors = @()
+    $routeInfo = @(Find-NetRoute -RemoteIPAddress $RemoteIPAddress -ErrorAction SilentlyContinue -ErrorVariable routeErrors)
+    if ($routeErrors.Count -gt 0) {
+        Write-Log "[SSH-Routing] Cannot determine the route to '$RemoteIPAddress': $($routeErrors | Out-String)"
+        return $false
+    }
+
+    $sources = @($routeInfo | Where-Object { $_.IPAddress -eq $LocalIPAddress })
+    $routes = @($routeInfo | Where-Object { $_.DestinationPrefix })
+    $interfaceIndex = $localAddresses[0].InterfaceIndex
+    if ($sources.Count -eq 1 -and $routes.Count -eq 1 -and
+        $sources[0].InterfaceIndex -eq $interfaceIndex -and
+        $routes[0].InterfaceIndex -eq $interfaceIndex -and
+        $routes[0].NextHop -eq '0.0.0.0' -and
+        $routes[0].DestinationPrefix -ne '0.0.0.0/0') {
+        return $true
+    }
+
+    $selectedRoutes = ($routes | ForEach-Object {
+            "$($_.DestinationPrefix) via $($_.NextHop) on '$($_.InterfaceAlias)' (index $($_.InterfaceIndex))"
+        }) -join '; '
+    Write-Log "[SSH-Routing] Waiting for an on-link route from '$LocalIPAddress' to '$RemoteIPAddress' on interface $interfaceIndex. Selected routes: '$selectedRoutes'."
+    return $false
+}
+
 <#
 .SYNOPSIS
     Waits until a command can be executet via SSH on a remote machine.
@@ -981,6 +1021,8 @@ function Get-ControlPlaneVMRootfsPath {
     The expected SSH test command result. DEFAULT: regex expression; with StrictEqualityCheck = $true: e.g. for command 'whoami' ==> 'my-machine\admin'
 .PARAMETER StrictEqualityCheck
     If set, the SSH test command result will be checked with strict equality comparer (i.e. '-eq') instead of a regex expression match
+.PARAMETER LocalIPAddress
+    For key-based SSH, require an on-link route using this local IPv4 address and require a known host key.
 .EXAMPLE
     Wait-ForSshPossible -User 'admin@192.168.0.11' -UserPwd 'my-secret' -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl'
     ==> result will match the regex expression
@@ -1006,8 +1048,15 @@ function Wait-ForSshPossible {
         [Parameter(HelpMessage = 'Check the expected and actual result for strict equality; otherwise, a regex match will be conducted.')]
         [switch]$StrictEqualityCheck = $false,
         [Parameter(HelpMessage = 'When executing ssh.exe in nested environment[host=>VM=>VM], -n flag should not be used.')]
-        [switch]$Nested = $false
+        [switch]$Nested = $false,
+        [Parameter()]
+        [string]$LocalIPAddress = ''
     )
+    if ($LocalIPAddress -ne '' -and $SshKey -eq '') {
+        $message = '[SSH-Routing] A local address can only be specified for key-based SSH.'
+        Write-Log $message -Console
+        throw $message
+    }
     $iteration = 0
     $maxIterations = 80  # 30 attempts before recovery + 50 after, handles nested Hyper-V issues
     $baseDelay = 3       # Base delay in seconds
@@ -1016,21 +1065,27 @@ function Wait-ForSshPossible {
     if ($SshKey -ne '') {
         Set-SshPrivateKeyPermissions -Path $SshKey
     }
+    $hostKeyChecking = if ($LocalIPAddress -ne '') { 'yes' } else { 'no' }
+    $sshParams = @('-o', 'BatchMode=yes', '-o', "StrictHostKeyChecking=$hostKeyChecking", '-o', 'ConnectTimeout=10')
+    if (-not $Nested) {
+        $sshParams += '-n'
+    }
+    $sshParams += @('-i', $SshKey, $User, $SshTestCommand)
+    $remoteIPAddress = ($User -split '@', 2)[-1]
     Write-Log "Performing SSH login into VM with $($User)..."
     while ($true) {
         $iteration++
         $rawResult = ''
 
-        if ($SshKey -ne '') {
+        if ($LocalIPAddress -ne '' -and -not (Test-SshRouteViaLocalAddress -RemoteIPAddress $remoteIPAddress -LocalIPAddress $LocalIPAddress)) {
+            $sshExitCode = 255
+            $result = "[SSH-Routing] Waiting for the VM network from '$LocalIPAddress' to '$remoteIPAddress'; SSH was not attempted."
+        }
+        elseif ($SshKey -ne '') {
             $savedErrorActionPreference = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Continue'
-                if ($Nested) {
-                    $rawResult = ssh.exe -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $SshKey $User "$($SshTestCommand)" 2>&1
-                }
-                else {
-                    $rawResult = ssh.exe -n -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $SshKey $User "$($SshTestCommand)" 2>&1
-                }
+                $rawResult = ssh.exe @sshParams 2>&1
                 $sshExitCode = $LASTEXITCODE
             }
             finally {
@@ -1040,8 +1095,23 @@ function Wait-ForSshPossible {
             $result = Get-FilteredSSHOutput -RawOutput $rawResult
             if (Test-SshAuthenticationFailure -Output $result) {
                 $message = "[SSH] Authentication or private-key failure for '$User' using '$SshKey': $result"
-                Write-Log $message -Console
-                throw $message
+                # The route can change between the readiness check and SSH opening its socket.
+                $hostKeyFailure = $result -match '(?im)Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED'
+                if ($LocalIPAddress -ne '' -and $hostKeyFailure -and
+                    -not (Test-SshRouteViaLocalAddress -RemoteIPAddress $remoteIPAddress -LocalIPAddress $LocalIPAddress)) {
+                    Write-Log "[SSH-Routing] The route changed during SSH host-key verification. Retrying after VM networking is ready; trusted keys are unchanged. SSH diagnostic: $result" -Console
+                }
+                else {
+                    if ($LocalIPAddress -ne '' -and $hostKeyFailure) {
+                        $message = "[SSH] Control-plane host-key verification failed for '$User'. " +
+                            "The host key may be missing or changed in this Windows account's known_hosts files (profile '$env:USERPROFILE'). " +
+                            'Verify the VM host-key fingerprint through its console or another trusted channel, then add or update only the verified entry for this host and retry. ' +
+                            'Do not disable host-key checking or automatically trust ssh-keyscan output. ' +
+                            "SSH diagnostic: $result"
+                    }
+                    Write-Log $message -Console
+                    throw $message
+                }
             }
             if ($sshExitCode -ne 0) {
                 $result = "SSH failed (exit code $sshExitCode): $result"
@@ -1103,7 +1173,7 @@ function Wait-ForSshPossible {
 
         # Enhanced logging for sporadic failure diagnosis
         if ($iteration -ge 3) {
-            $timeWaited = ($iteration - 1) * $baseDelay
+            $timeWaited = [int]((Get-Date) - $startTime).TotalSeconds
             Write-Log "SSH login into VM with $($User) not yet possible (attempt $iteration/$maxIterations, waited ${timeWaited}s), current result is '$($result)' waiting for it..."
         }
 
@@ -1161,9 +1231,11 @@ function Wait-ForSSHConnectionToLinuxVMViaSshKey {
         [Parameter(Mandatory = $false)]
         [string]$User = $remoteUser,
         [parameter(Mandatory = $false, HelpMessage = 'When executing ssh.exe in nested environment[host=>VM=>VM], -n flag should not be used.')]
-        [switch] $Nested = $false
+        [switch] $Nested = $false,
+        [Parameter(Mandatory = $false)]
+        [string]$LocalIPAddress = ''
     )
-    Wait-ForSshPossible -User $User -SshKey $key -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -Nested:$Nested
+    Wait-ForSshPossible -User $User -SshKey $key -SshTestCommand 'which curl' -ExpectedSshTestCommandResult '/bin/curl' -Nested:$Nested -LocalIPAddress $LocalIPAddress
 }
 
 function Get-DefaultUserNameControlPlane {

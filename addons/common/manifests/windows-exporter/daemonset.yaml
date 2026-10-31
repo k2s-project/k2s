@@ -33,7 +33,7 @@ spec:
       hostPID: true
       containers:
       - name: windows-exporter
-        image: shsk2s.azurecr.io/prometheus-community/windows-exporter:0.32.0-hp #windows_image
+        image: shsk2s.azurecr.io/prometheus-community/windows-exporter:0.32.1-hp #windows_image
         args:
         - --config.file=C:\\config\\windows_exporter.yaml
         ports:

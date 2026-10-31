@@ -26,7 +26,7 @@ SPDX-License-Identifier: MIT
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
     
     
       
@@ -34,10 +34,10 @@ SPDX-License-Identifier: MIT
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -1826,6 +1826,17 @@ You're not viewing the latest release version.
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#hyper-v-control-plane-startup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hyper-V control-plane startup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#core-principles-and-architecture-simplicity-and-maximum-performance" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2897,6 +2908,17 @@ You're not viewing the latest release version.
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#hyper-v-control-plane-startup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hyper-V control-plane startup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#core-principles-and-architecture-simplicity-and-maximum-performance" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3026,6 +3048,35 @@ SPDX-License-Identifier: MIT
 -->
 
 <h1 id="networking-architecture-for-k2s">Networking Architecture for <em>K2s</em></h1>
+<h2 id="hyper-v-control-plane-startup">Hyper-V control-plane startup</h2>
+<p>When <code>k2s start</code> recreates KubeSwitch, the virtual adapter can appear before
+the <abbr title="Virtual Machine">VM</abbr> network is usable. During this interval, Windows can select a physical
+interface's default route for the control-plane <abbr title="Internet Protocol">IP</abbr> address.</p>
+<p>The Hyper-V startup <abbr title="Secure Shell">SSH</abbr> readiness check waits for the configured KubeSwitch
+address to be preferred and for Windows to select an on-link route through
+that address's interface. It rechecks the route before each attempt.
+Route-readiness failures use the bounded <abbr title="Secure Shell">SSH</abbr> retry loop and are logged with
+the <code>[SSH-Routing]</code> prefix. <abbr title="Secure Shell">SSH</abbr> source binding (<code>-b</code>) is deliberately not used:
+older Windows OpenSSH clients fail with <code>Invalid argument</code> when it is set.</p>
+<p>This startup check requires the previously trusted <abbr title="Secure Shell">SSH</abbr> host key. If host-key
+verification fails and a second route check confirms that the intended route
+is no longer selected, startup logs the rejection and retries without changing
+trusted keys. Host-key verification failures on the intended route, invalid
+private keys, and authentication rejections still fail explicitly.
+<abbr title="Windows Subsystem for Linux">WSL</abbr> startup and other <abbr title="Secure Shell">SSH</abbr> callers retain their existing behavior.</p>
+<p>The on-link requirement is intentional for the Hyper-V control plane attached
+directly to KubeSwitch. A control plane reachable only through a gateway is not
+accepted by this startup check. Route checks are snapshots, not a guarantee
+that routing cannot change during a connection: if the route has already
+recovered when a rejected host key is checked, startup fails closed rather
+than assuming that the rejection was transient.</p>
+<p>If startup reports a missing or changed host key, check which Windows account
+is running <code>k2s start</code>; its <abbr title="Secure Shell">SSH</abbr> trust files may differ from the account used
+during installation. Verify the <abbr title="Virtual Machine">VM</abbr>'s host-key fingerprint through its console
+or another trusted channel before adding or updating only that host's entry
+in the affected account's <code>known_hosts</code> file. Do not clear the entire trust
+file, disable host-key checking, or automatically trust <code>ssh-keyscan</code> output:
+an on-link route alone does not authenticate the server.</p>
 <h2 id="core-principles-and-architecture-simplicity-and-maximum-performance">Core Principles and Architecture: simplicity and maximum performance</h2>
 <p>In alignment with <em>K2s</em>' foundational design principles of operational <b>simplicity</b> and <b>maximum performance</b>, our networking architecture is built upon Flannel CNI configured in host-gateway mode. This provides a transparent, high-throughput, and low-latency data plane that is ideal for demanding workloads and facilitates straightforward network analysis. For production-grade security, K2s integrates the <a href="https://github.com/k2s-project/k2s/blob/main/addons/security/README.md">security addon</a> which uses <a href="https://linkerd.io/">Linkerd</a> to establish a zero-trust environment for all TCP-based traffic through transparent mTLS and fine-grained policy enforcement.</p>
 <h2 id="the-broader-strategic-value-of-simplicity-and-performance">The Broader Strategic Value of Simplicity and Performance</h2>
@@ -3293,10 +3344,10 @@ SPDX-License-Identifier: MIT
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.tabs", "navigation.tabs.sticky", "navigation.instant", "navigation.instant.progress", "navigation.tracking", "navigation.footer", "navigation.indexes", "search.suggest", "search.highlight", "search.share", "announce.dismiss", "content.action.edit", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.tabs", "navigation.tabs.sticky", "navigation.instant", "navigation.instant.progress", "navigation.tracking", "navigation.footer", "navigation.indexes", "search.suggest", "search.highlight", "search.share", "announce.dismiss", "content.action.edit", "content.code.copy", "content.code.annotate"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.c21346df.min.js"></script>
       
     
   </body>

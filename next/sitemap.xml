@@ -2,254 +2,254 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://k2s-project.github.io/K2s/next/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/architecture/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/dns-host-topologies/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/hosting-variants-features-matrix/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/training/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/automated-testing/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/building-locally/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/licensing/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/powershell-dev/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/submitting-changes/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/tags-labels/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/updating-documentation/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/dev-guide/contributing/linux-development/linux-development/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/includes/glossary/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/adding-k2s-users/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/backing-up-restoring-addons/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/backing-up-restoring-system/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/ceph-storage-cross-os/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/ceph-storage-linux/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/ceph-storage/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/checking-k2s-status/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/code-signing/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/compacting-vhdx-storage/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/configuration-reference/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/creating-offline-package/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/customizing-kubelet/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/delta-packages/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/extending-k2s-cluster/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/external-dns/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/getting-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/gitops-addon-delivery/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/hook-system/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/installing-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/integrating-native-processes/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/log-folder/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/native-linux-host-dns/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/networking-architecture/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/os-support/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/preparing-windows-worker-qcow2/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/running-apps-as-hostprocess/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/secure-host-access/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/signcatalog-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/starting-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/stopping-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/uninstalling-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/op-manual/upgrading-k2s/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/quickstart/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/security/policy-enforcement/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/security/security-features/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/troubleshooting/diagnostics/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/troubleshooting/hsts-certificate-issues/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/troubleshooting/known-issues/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/adding-container-registry/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/addons/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/building-container-image/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/certificate-management/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/cli-shortcuts/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/cluster-ip-addresses/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/gpu-node/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/hosting-variants/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/k2s-cli/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
     <url>
          <loc>https://k2s-project.github.io/K2s/next/user-guide/proxy-configuration/</loc>
-         <lastmod>2026-10-24</lastmod>
+         <lastmod>2026-10-31</lastmod>
     </url>
 </urlset>

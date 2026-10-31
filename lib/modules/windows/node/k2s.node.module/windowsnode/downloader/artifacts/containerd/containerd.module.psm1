@@ -106,13 +106,13 @@ function Invoke-DeployCrictlArtifacts($windowsNodeArtifactsDirectory) {
 
 function Invoke-DownloadNerdctlArtifacts($downloadsBaseDirectory, $Proxy, $windowsNodeArtifactsDirectory) {
     $nerdctlDownloadsDirectory = "$downloadsBaseDirectory\$windowsNode_NerdctlDirectory"
-    $compressedNerdFile = 'nerdctl-2.4.1-windows-amd64.tar.gz'
+    $compressedNerdFile = 'nerdctl-2.4.2-windows-amd64.tar.gz'
     $compressedFile = "$nerdctlDownloadsDirectory\$compressedNerdFile"
 
     Write-Log "Create folder '$nerdctlDownloadsDirectory'"
     mkdir $nerdctlDownloadsDirectory | Out-Null
     Write-Log 'Download nerdctl'
-    Invoke-DownloadFile "$compressedFile" https://github.com/containerd/nerdctl/releases/download/v2.4.1/$compressedNerdFile $true $Proxy
+    Invoke-DownloadFile "$compressedFile" https://github.com/containerd/nerdctl/releases/download/v2.4.2/$compressedNerdFile $true $Proxy
     Write-Log '  ...done'
     Write-Log "Extract downloaded file '$compressedFile'"
     cmd /c tar xf `"$compressedFile`" -C `"$nerdctlDownloadsDirectory`"

@@ -82,6 +82,14 @@ To inspect the different install options, run:
 !!! note
     *K2s* will start automatically after the installation has finished.
 
+!!! note "Control-plane base-image preparation"
+    When `k2s install` prepares a new control-plane base image, Buildah is installed
+    separately from the Kubernetes packages. Registry configuration is restored
+    after the Buildah packages are installed. Preparation stops on failed registry
+    updates, CRI-O restart/readiness checks, or required image pulls instead of
+    producing an unusable base image. CRI-O restart failures include service status
+    and recent journal output in `k2s.log`.
+
 !!! note "Windows reboot recovery"
     Post-reboot networking recovery defers to an active `k2s install` or
     `k2s start` operation, or a proxy reconfiguration (`k2s system proxy set`,

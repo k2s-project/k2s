@@ -229,12 +229,12 @@ func parseBuildArguments(arguments []string) (map[string]string, error) {
 	buildArgsMap := make(map[string]string, len(arguments))
 
 	for _, argument := range arguments {
-		parts := strings.Split(argument, "=")
-		if len(parts) != 2 {
+		name, value, ok := strings.Cut(argument, "=")
+		if !ok {
 			errMsg := "the build argument was not specified in correct format. The format of the build argument should be of format argumentName=argumentValue"
 			return nil, errors.New(errMsg)
 		}
-		buildArgsMap[parts[0]] = parts[1]
+		buildArgsMap[name] = value
 	}
 	return buildArgsMap, nil
 }

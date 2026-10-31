@@ -640,6 +640,19 @@ Function Install-BuildahDebPackages {
     Write-Log '[BuildahInstall] Finished installing buildah packages'
 }
 
+function Assert-ProvisioningCommandResult {
+    param (
+        [pscustomobject]$Result,
+        [string]$RemoteUser,
+        [switch]$IgnoreErrors
+    )
+
+    $Result.Output | Write-Log
+    if (!$Result.Success -and !$IgnoreErrors) {
+        throw "[Provision] Remote provisioning command failed on '$RemoteUser'. See command output above."
+    }
+}
+
 <#
 .SYNOPSIS
 Installs tools into the VM.
@@ -672,7 +685,8 @@ Function Install-Tools {
             $Command = $(throw 'Argument missing: Command'), 
             [switch]$IgnoreErrors = $false, [string]$RepairCmd = $null, [uint16]$Retries = 0
         )
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd -IgnoreErrors:$IgnoreErrors -RepairCmd $RepairCmd -Retries $Retries
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser -IgnoreErrors:$IgnoreErrors
     }
 
     Write-Log 'Start installing tools in the Linux VM'
@@ -733,13 +747,11 @@ Function Install-Tools {
     &$executeRemoteCommand 'sudo mv /tmp/auth.json /root/.config/containers/auth.json'
 
     Write-Log 'Need to update registry conf file which is added as part of buildah installation'
-    #&$executeRemoteCommand "sudo sed -i '/.*unqualified-search-registries.*/cunqualified-search-registries = [\\\""docker.io\\\"", \\\""quay.io\\\""]' /etc/containers/registries.conf"
-    if ($PSVersionTable.PSVersion.Major -gt 5) {
-        &$executeRemoteCommand 'sudo echo unqualified-search-registries = [\"docker.io\", \"quay.io\"] | sudo tee -a /etc/containers/registries.conf'
-    }
-    else {
-        &$executeRemoteCommand 'sudo echo unqualified-search-registries = [\\\"docker.io\\\", \\\"quay.io\\\"] | sudo tee -a /etc/containers/registries.conf'
-    }
+    # Encode the TOML payload so Windows native argument parsing cannot strip its quotes.
+    $registryConfig = "unqualified-search-registries = [`"docker.io`", `"quay.io`"]`n"
+    $registryConfigEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($registryConfig))
+    &$executeRemoteCommand "if ! grep -q '^[[:space:]]*unqualified-search-registries[[:space:]]*=' /etc/containers/registries.conf 2>/dev/null; then echo '$registryConfigEncoded' | base64 -d | sudo tee -a /etc/containers/registries.conf; fi"
+    # restart crio after updating registry.conf
     &$executeRemoteCommand 'sudo systemctl daemon-reload'
     &$executeRemoteCommand 'if ! sudo systemctl restart crio; then sudo systemctl status crio --no-pager -l; sudo journalctl -u crio -b --no-pager -n 100; exit 1; fi'
     &$executeRemoteCommand 'sudo crictl --runtime-endpoint unix:///var/run/crio/crio.sock info'
@@ -795,7 +807,8 @@ function Get-FlannelImages {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command'))
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log 'Get images used by flannel'
@@ -966,7 +979,8 @@ function Get-ClusterIPWebhookImages {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command'))
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log 'Get images used by clusterip-webhook'
@@ -987,21 +1001,27 @@ function AddRegistryMirrors {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command')) 
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log "Add mirrors to registry for VM with ip address: $IpAddress"
     $mirrorRegistries = Get-MirrorRegistries
+    if ($null -eq $mirrorRegistries -or @($mirrorRegistries).Count -eq 0) {
+        Write-Log "[RegistryMirror] No mirrorRegistries configured in config.json, skipping mirror setup on VM $IpAddress."
+        return
+    }
+
+    &$executeRemoteCommand 'mkdir -p /etc/containers/registries.conf.d'
     foreach ($registry in $mirrorRegistries) {
         $Name = $registry.registry
         $Mirror = $registry.mirror
         $fileName = $Name -replace ':', ''
-        &$executeRemoteCommand 'mkdir -p /etc/containers/registries.conf.d'
         &$executeRemoteCommand "echo -e `'[[registry]]\nlocation=\""$Name\""\ninsecure=true`' | sudo tee /etc/containers/registries.conf.d/$fileName.conf"
         &$executeRemoteCommand "echo -e `'[[registry.mirror]]\nlocation=\""$Mirror\""\ninsecure=true`' | sudo tee -a /etc/containers/registries.conf.d/$fileName.conf" 
-        &$executeRemoteCommand 'sudo systemctl daemon-reload'
-        &$executeRemoteCommand 'sudo systemctl restart crio'
     } 
+    &$executeRemoteCommand 'sudo systemctl daemon-reload'
+    &$executeRemoteCommand 'if ! sudo systemctl restart crio; then sudo systemctl reset-failed crio; if ! sudo systemctl restart crio; then sudo systemctl status crio --no-pager -l; sudo journalctl -u crio -b --no-pager -n 100; exit 1; fi; fi'
 }
 
 function Get-KubernetesImages {
@@ -1018,7 +1038,8 @@ function Get-KubernetesImages {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command')) 
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log 'Pull images used by K8s'

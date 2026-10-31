@@ -7,6 +7,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,5 +180,119 @@ func TestLinuxImageProvider_DelegatesToScripts(t *testing.T) {
 	}
 	if err := p.Tag(ImageTagConfig{ImageName: "test", TargetImageName: "test2"}); err != nil {
 		t.Fatalf("Tag() failed: %v", err)
+	}
+}
+
+func TestFlexibleSize(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "string with unit",
+			input:    `"97.1 MB"`,
+			expected: "97.1 MB",
+		},
+		{
+			name:     "string numeric",
+			input:    `"97114485"`,
+			expected: "97114485",
+		},
+		{
+			name:     "numeric int64",
+			input:    `97114485`,
+			expected: "97114485",
+		},
+		{
+			name:     "numeric float64 whole",
+			input:    `97114485.0`,
+			expected: "97114485",
+		},
+		{
+			name:     "numeric float64 fractional",
+			input:    `12345.5`,
+			expected: "12345.5",
+		},
+		{
+			name:     "null",
+			input:    `null`,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sz flexibleSize
+			if err := json.Unmarshal([]byte(tt.input), &sz); err != nil {
+				t.Fatalf("UnmarshalJSON failed: %v", err)
+			}
+			if string(sz) != tt.expected {
+				t.Fatalf("expected %q, got %q", tt.expected, string(sz))
+			}
+			if sz.String() != tt.expected {
+				t.Fatalf("String() expected %q, got %q", tt.expected, sz.String())
+			}
+		})
+	}
+}
+
+func TestCrictlImageParsing_FlexibleSizeAndSha256Stripping(t *testing.T) {
+	jsonData := `{
+		"images": [
+			{
+				"id": "sha256:7c7f3b8908f972b22bb89a244431e67bb93406f36ebc24f6530a6c22cb8bbdf7",
+				"repoTags": ["docker.io/library/nginx:latest"],
+				"repoDigests": ["docker.io/library/nginx@sha256:..."],
+				"size": 97114485
+			},
+			{
+				"id": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+				"repoTags": ["docker.io/library/alpine:latest"],
+				"repoDigests": [],
+				"size": "97.1 MB"
+			}
+		]
+	}`
+
+	var result struct {
+		Images []struct {
+			Id          string       `json:"id"`
+			RepoTags    []string     `json:"repoTags"`
+			RepoDigests []string     `json:"repoDigests"`
+			Size        flexibleSize `json:"size"`
+		} `json:"images"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
+		t.Fatalf("failed to unmarshal crictl JSON: %v", err)
+	}
+
+	if len(result.Images) != 2 {
+		t.Fatalf("expected 2 images, got %d", len(result.Images))
+	}
+
+	img1 := result.Images[0]
+	shortId1 := strings.TrimPrefix(img1.Id, "sha256:")
+	if len(shortId1) > 12 {
+		shortId1 = shortId1[:12]
+	}
+	if shortId1 != "7c7f3b8908f9" {
+		t.Fatalf("expected shortId '7c7f3b8908f9', got %q", shortId1)
+	}
+	if string(img1.Size) != "97114485" {
+		t.Fatalf("expected size '97114485', got %q", string(img1.Size))
+	}
+
+	img2 := result.Images[1]
+	shortId2 := strings.TrimPrefix(img2.Id, "sha256:")
+	if len(shortId2) > 12 {
+		shortId2 = shortId2[:12]
+	}
+	if shortId2 != "e3b0c44298fc" {
+		t.Fatalf("expected shortId 'e3b0c44298fc', got %q", shortId2)
+	}
+	if string(img2.Size) != "97.1 MB" {
+		t.Fatalf("expected size '97.1 MB', got %q", string(img2.Size))
 	}
 }

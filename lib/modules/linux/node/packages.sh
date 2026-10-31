@@ -44,7 +44,7 @@ k2s_packages_install() {
   chmod 700 "$K2S_CONFIG_DIR/packages"
   "$K2S_INSTALL_DIR/lib/scripts/linux/debian/linuxonly/ProvisionPackages.sh" download "$K2S_CONFIG_DIR/packages" "$version" "http://$gateway:8181" || return 1
   "$K2S_INSTALL_DIR/lib/scripts/linux/debian/linuxonly/ProvisionPackages.sh" install "$K2S_CONFIG_DIR/packages" "http://$gateway:8181" "$token" false "$K2S_NO_PROXY" true || return 1
-  command -v kubeadm kubectl crictl crio >/dev/null || return 1
+  command -v kubeadm kubectl crictl crio buildah >/dev/null || return 1
   systemctl enable --now crio || return 1
   crictl --runtime-endpoint unix:///var/run/crio/crio.sock version || return 1
   [[ $(kubeadm version -o short) == "$K2S_VERSION" ]] || return 1

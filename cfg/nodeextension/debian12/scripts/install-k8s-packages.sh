@@ -141,6 +141,7 @@ else
 fi
 
 # Add unqualified-search-registries only if not already present (prevents duplicate entries on retry)
+sudo mkdir -p /etc/containers
 if ! grep -q '^[[:space:]]*unqualified-search-registries[[:space:]]*=' /etc/containers/registries.conf 2>/dev/null; then
     echo 'unqualified-search-registries = ["docker.io", "quay.io"]' | sudo tee -a /etc/containers/registries.conf
 else

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,14 +47,19 @@ func (p *linuxImageProvider) scriptPath(script string) string {
 
 // sshCmd executes a command on the Windows VM via SSH.
 func sshCmd(command string) (string, error) {
-	out, err := exec.Command("ssh",
+	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ConnectTimeout=10",
 		fmt.Sprintf("%s@%s", sshUser, winVMIP),
 		command,
-	).CombinedOutput()
+	)
+	out, err := cmd.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(exitErr.Stderr))
+		}
 		return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(out))
 	}
 	return string(out), nil
@@ -727,6 +733,49 @@ func listLinuxImages() ([]ContainerImage, error) {
 	return deduplicated, nil
 }
 
+type flexibleSize string
+
+func (f *flexibleSize) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*f = ""
+		return nil
+	}
+
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*f = flexibleSize(str)
+		return nil
+	}
+
+	var i int64
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = flexibleSize(strconv.FormatInt(i, 10))
+		return nil
+	}
+
+	var u uint64
+	if err := json.Unmarshal(data, &u); err == nil {
+		*f = flexibleSize(strconv.FormatUint(u, 10))
+		return nil
+	}
+
+	var fl float64
+	if err := json.Unmarshal(data, &fl); err == nil {
+		if float64(int64(fl)) == fl {
+			*f = flexibleSize(strconv.FormatInt(int64(fl), 10))
+		} else {
+			*f = flexibleSize(strconv.FormatFloat(fl, 'f', -1, 64))
+		}
+		return nil
+	}
+
+	return fmt.Errorf("flexibleSize: cannot unmarshal %s", string(data))
+}
+
+func (f flexibleSize) String() string {
+	return string(f)
+}
+
 func listBuildahImages() ([]ContainerImage, error) {
 	output, err := exec.Command("buildah", "images", "--json").Output()
 	if err != nil {
@@ -734,9 +783,9 @@ func listBuildahImages() ([]ContainerImage, error) {
 	}
 
 	var rawImages []struct {
-		Id    string   `json:"id"`
-		Names []string `json:"names"`
-		Size  string   `json:"size"`
+		Id    string       `json:"id"`
+		Names []string     `json:"names"`
+		Size  flexibleSize `json:"size"`
 	}
 
 	if err := json.Unmarshal(output, &rawImages); err != nil {
@@ -772,7 +821,7 @@ func listBuildahImages() ([]ContainerImage, error) {
 				Repository: repo,
 				Tag:        tag,
 				Node:       getNodeName(),
-				Size:       img.Size,
+				Size:       string(img.Size),
 			})
 		}
 	}
@@ -788,10 +837,10 @@ func listCrictlImages() ([]ContainerImage, error) {
 
 	var result struct {
 		Images []struct {
-			Id          string   `json:"id"`
-			RepoTags    []string `json:"repoTags"`
-			RepoDigests []string `json:"repoDigests"`
-			Size        string   `json:"size"`
+			Id          string       `json:"id"`
+			RepoTags    []string     `json:"repoTags"`
+			RepoDigests []string     `json:"repoDigests"`
+			Size        flexibleSize `json:"size"`
 		} `json:"images"`
 	}
 
@@ -801,7 +850,7 @@ func listCrictlImages() ([]ContainerImage, error) {
 
 	var images []ContainerImage
 	for _, img := range result.Images {
-		shortId := img.Id
+		shortId := strings.TrimPrefix(img.Id, "sha256:")
 		if len(shortId) > 12 {
 			shortId = shortId[:12]
 		}
@@ -828,7 +877,7 @@ func listCrictlImages() ([]ContainerImage, error) {
 				Repository: repo,
 				Tag:        tag,
 				Node:       getNodeName(),
-				Size:       img.Size,
+				Size:       string(img.Size),
 			})
 		}
 	}
@@ -844,9 +893,9 @@ func listWindowsVMImages() ([]ContainerImage, error) {
 
 	var result struct {
 		Images []struct {
-			Id       string   `json:"id"`
-			RepoTags []string `json:"repoTags"`
-			Size     string   `json:"size"`
+			Id       string       `json:"id"`
+			RepoTags []string     `json:"repoTags"`
+			Size     flexibleSize `json:"size"`
 		} `json:"images"`
 	}
 
@@ -856,7 +905,7 @@ func listWindowsVMImages() ([]ContainerImage, error) {
 
 	var images []ContainerImage
 	for _, img := range result.Images {
-		shortId := img.Id
+		shortId := strings.TrimPrefix(img.Id, "sha256:")
 		if len(shortId) > 12 {
 			shortId = shortId[:12]
 		}
@@ -883,7 +932,7 @@ func listWindowsVMImages() ([]ContainerImage, error) {
 				Repository: repo,
 				Tag:        tag,
 				Node:       "windows",
-				Size:       img.Size,
+				Size:       string(img.Size),
 			})
 		}
 	}

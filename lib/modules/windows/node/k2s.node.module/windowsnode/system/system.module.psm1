@@ -327,6 +327,58 @@ function Remove-K2sAppLockerRules {
 }
 
 <#
+.SYNOPSIS
+    Removes event log sources whose message files are located in the K2s installation folder.
+.DESCRIPTION
+    Removing a service does not remove its event log source registration under
+    'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application'. nssm, for example, registers the source 'nssm'
+    with the K2s copy of nssm.exe as message file whenever a service is installed or started.
+    The Windows Event Log service loads the message files of registered sources and keeps them open,
+    so a stale registration keeps a handle on a file in the installation folder after uninstall.
+    Removing the registration prevents new handles; a handle that is already open is released when the
+    Event Log service restarts, e.g. on the next reboot.
+.PARAMETER InstallationPath
+    K2s installation folder
+.EXAMPLE
+    Remove-K2sEventLogSources -InstallationPath 'C:\k'
+#>
+function Remove-K2sEventLogSources {
+    param (
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string] $InstallationPath = $(throw 'Please provide the installation path.')
+    )
+    $installationFolder = $InstallationPath.TrimEnd('\') + '\'
+    if ($installationFolder -match '^[a-zA-Z]:\\$') {
+        # every source with a message file on that drive would match
+        Write-Log "Skipping removal of event log sources, installation path '$InstallationPath' is a drive root"
+        return
+    }
+    $messageFileProperties = 'EventMessageFile', 'CategoryMessageFile', 'ParameterMessageFile'
+
+    Get-ChildItem -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application' -ErrorAction SilentlyContinue | ForEach-Object {
+        $source = $_
+        $properties = Get-ItemProperty -Path $source.PSPath -ErrorAction SilentlyContinue
+        $messageFiles = foreach ($property in $messageFileProperties) {
+            # a message file property may contain a semicolon-separated list of files
+            "$($properties.$property)" -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_.Trim().Trim('"')) }
+        }
+        $installedMessageFile = $messageFiles | Where-Object { $_.StartsWith($installationFolder, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+        if (!$installedMessageFile) {
+            return
+        }
+
+        Write-Log "Removing event log source '$($source.PSChildName)' with message file '$installedMessageFile'"
+        try {
+            Remove-Item -Path $source.PSPath -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Log "Failed to remove event log source '$($source.PSChildName)': $($_.Exception.Message)"
+        }
+    }
+}
+
+<#
 .DESCRIPTION
     Verifies if  Hyper-V PowerShell module can be loaded,
     and whether calling Get-VM succeeds. Throws on error if the module cannot be loaded or Get-VM API is inaccessible.
@@ -385,4 +437,5 @@ Stop-InstallIfNoMandatoryServiceIsRunning,
 Stop-InstallationIfRequiredCurlVersionNotInstalled,
 Write-WarningIfRequiredSshVersionNotInstalled,
 Add-K2sAppLockerRules,
-Remove-K2sAppLockerRules
+Remove-K2sAppLockerRules,
+Remove-K2sEventLogSources

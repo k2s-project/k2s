@@ -2415,9 +2415,10 @@ function Invoke-RemoteScript {
         Copy-ToRemoteComputerViaSshKey -Source $LocalScriptPath -Target $RemoteScriptPath -UserName $UserName -IpAddress $IpAddress
     }
     
-    # Build command with arguments
+    # Build command with arguments. Each argument is passed as a single-quoted shell word; embedded single
+    # quotes are written as '\'' so that no argument can terminate its quoting and inject shell code.
     $argumentString = if ($Arguments.Count -gt 0) { 
-        "'$($Arguments -join "' '")'" 
+        ($Arguments | ForEach-Object { "'" + ([string]$_).Replace("'", "'\''") + "'" }) -join ' '
     } else { 
         "" 
     }

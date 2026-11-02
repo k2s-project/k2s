@@ -21,3 +21,24 @@ func TestClusterUpgradeCommandEscapesConfigPath(t *testing.T) {
 		t.Fatalf("cluster upgrade command does not safely quote config path: %s", command)
 	}
 }
+
+func TestClusterUpgradeCommandEscapesUserSuppliedValues(t *testing.T) {
+	provider := &windowsSystemProvider{installDir: `C:\K2s`}
+
+	command := provider.clusterUpgradeCommand(SystemUpgradeConfig{
+		Proxy:              `http://x'; calc; '`,
+		BackupDir:          `C:\owner's backup`,
+		AdditionalHooksDir: `C:\$(calc)`,
+	})
+
+	expectedParams := []string{
+		` -Proxy 'http://x''; calc; '''`,
+		` -BackupDir 'C:\owner''s backup'`,
+		` -AdditionalHooksDir 'C:\$(calc)'`,
+	}
+	for _, expected := range expectedParams {
+		if !strings.Contains(command, expected) {
+			t.Fatalf("cluster upgrade command does not contain %q: %s", expected, command)
+		}
+	}
+}

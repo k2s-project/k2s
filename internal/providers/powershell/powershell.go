@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/k2s-project/k2s/internal/os"
 	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/powershell/decode"
@@ -130,12 +131,14 @@ func prepareExecScript(script string) (string, error) {
 	// check if there is an directory lib folder
 	if os.PathExists(filepath.Join(installDir, "lib")) {
 		wrapperScript = ("&'" + filepath.Join(installDir, "lib", "scripts", "windows", "host", "base", "Invoke-ExecScript.ps1") + "' -Script ")
-		wrapperScript += "\"" + script + "\""
 	} else {
 		// we assume we have a binary under bin path and not in the root
 		wrapperScript = ("&'" + filepath.Join(installDir, "..", "lib", "scripts", "windows", "host", "base", "Invoke-ExecScript.ps1") + "' -Script ")
-		wrapperScript += "\"" + script + "\""
 	}
+	// The script is passed as a verbatim string, so it reaches Invoke-ExecScript.ps1 exactly as built and is parsed
+	// only once by Invoke-Expression. A double-quoted string would already expand $variables, $(sub-expressions)
+	// and backtick escapes here, bypassing the single-quote escaping of user-supplied values inside the script.
+	wrapperScript += utils.EscapeWithSingleQuotes(script)
 
 	slog.Debug("Final execution script", "script", wrapperScript)
 

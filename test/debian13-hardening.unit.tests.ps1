@@ -4,15 +4,17 @@
 
 Describe 'Debian 13 hardening Bash safety checks' -Tag 'unit', 'ci' {
     BeforeAll {
-        $gitDirectory = Split-Path (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source -Parent
         $bashPath = $null
-        while ($gitDirectory) {
-            $candidate = Join-Path $gitDirectory 'bin\bash.exe'
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                $bashPath = $candidate
-                break
+        foreach ($gitCommand in @(Get-Command git.exe -CommandType Application -ErrorAction Stop)) {
+            $gitDirectory = Split-Path $gitCommand.Source -Parent
+            while ($gitDirectory -and -not $bashPath) {
+                $candidate = Join-Path $gitDirectory 'bin\bash.exe'
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    $bashPath = $candidate
+                }
+                $gitDirectory = Split-Path $gitDirectory -Parent
             }
-            $gitDirectory = Split-Path $gitDirectory -Parent
+            if ($bashPath) { break }
         }
         if (-not $bashPath) {
             throw 'Git for Windows Bash is required to run Debian 13 hardening safety checks.'

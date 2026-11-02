@@ -1,6 +1,7 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: © 2026 Siemens Healthineers AG
-# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
 
 # Isolated filesystem and command-mocked tests. Never execute main(), sudo or real package operations.
 set -euo pipefail

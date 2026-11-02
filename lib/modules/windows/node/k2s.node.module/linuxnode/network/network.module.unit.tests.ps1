@@ -2,20 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 BeforeAll {
-    # windowsnode also has a 'network.module'; InModuleScope fails if both are loaded
-    Get-Module -Name 'network.module' | Remove-Module -Force
-    $script:modulePath = "$PSScriptRoot/network.module.psm1"
-    $script:moduleName = (Import-Module $script:modulePath -PassThru -Force -DisableNameChecking).Name
-}
-
-AfterAll {
-    Get-Module -Name 'network.module' | Remove-Module -Force
+    # windowsnode also contains a module named 'network.module', and other test files load both as
+    # nested modules of k2s.node.module. InModuleScope/Mock -ModuleName resolve modules by name and
+    # fail if the name is ambiguous, so run the test inside this exact module instance instead.
+    $script:module = Import-Module "$PSScriptRoot/network.module.psm1" -PassThru -Force -DisableNameChecking
 }
 
 Describe 'Remove-KubeSwitch' -Tag 'unit', 'ci', 'network' {
     Context 'When removing KubeSwitch' {
         It 'clears stale routes via the control-plane IP from PersistentStore and ActiveStore' {
-            InModuleScope $moduleName {
+            & $script:module {
                 function Get-VM { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Get-VMSwitch { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Remove-VMSwitch { param([Parameter(ValueFromRemainingArguments)]$Rest) }

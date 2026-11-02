@@ -14,8 +14,8 @@ Describe 'Remove-KubeSwitch' -Tag 'unit', 'ci', 'network' {
                 function Get-VMSwitch { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Remove-VMSwitch { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Remove-NetIPAddress { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-                function Get-NetRoute { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-                function Remove-NetRoute { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+                function Get-NetRoute { [CmdletBinding()] param($AddressFamily, $PolicyStore) }
+                function Remove-NetRoute { [CmdletBinding(SupportsShouldProcess)] param([Parameter(ValueFromPipeline)]$InputObject, $PolicyStore) process {} }
 
                 $script:ipControlPlane = '172.19.1.100'
                 $script:queriedStores = [System.Collections.Generic.List[string]]::new()
@@ -34,9 +34,7 @@ Describe 'Remove-KubeSwitch' -Tag 'unit', 'ci', 'network' {
                     )
                 }
                 Mock Remove-NetRoute {
-                    process {
-                        $script:removedRoutes.Add("$PolicyStore`:$($_.DestinationPrefix)->$($_.NextHop)")
-                    }
+                    $script:removedRoutes.Add("$PolicyStore`:$($InputObject.DestinationPrefix)->$($InputObject.NextHop)")
                 }
 
                 Remove-KubeSwitch

@@ -15,19 +15,19 @@ Describe 'Start-ControlPlaneNodeOnNewVM KubeSwitch ordering' -Tag 'unit', 'ci', 
                 function Get-ControlPlaneNodeDefaultSwitchName { 'KubeSwitch' }
                 function Set-IndexForDefaultSwitch {}
                 function Get-ConfigControlPlaneNodeHostname { 'kubemaster' }
-                function Stop-VirtualMachine { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+                function Stop-VirtualMachine { param($VmName, [switch]$Wait) }
                 function Remove-KubeSwitch {}
                 function New-KubeSwitch {}
                 function Connect-KubeSwitch {}
-                function Connect-WorkerNodesToKubeSwitch { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-                function Start-VirtualMachine { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-                function Set-InterfacePrivate { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-                function Add-DnsServer { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+                function Connect-WorkerNodesToKubeSwitch { param($ControlPlaneVMHostName, $SwitchName) }
+                function Start-VirtualMachine { param($VmName, [switch]$Wait) }
+                function Set-InterfacePrivate { param($InterfaceAlias) }
+                function Add-DnsServer { param($switchname) }
                 function Set-RoutesToKubemaster {}
                 function Wait-ForSSHConnectionToLinuxVMViaSshKey {}
                 function Get-LoopbackAdapterCIDR { '' }
                 function Get-NetIPInterface { [pscustomobject]@{ InterfaceAlias = 'vEthernet (KubeSwitch)'; AddressFamily = 'IPv4'; ifIndex = 42 } }
-                function Set-NetIPInterface { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+                function Set-NetIPInterface { param($InterfaceIndex, $InterfaceMetric) }
                 function Invoke-TimeSync {}
                 function Set-RoutesToLinuxWorkloads {}
                 function Get-VirtualSwitchName { param($Name) "vEthernet ($Name)" }

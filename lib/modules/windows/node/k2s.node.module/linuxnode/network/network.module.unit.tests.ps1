@@ -2,8 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 BeforeAll {
+    # windowsnode also has a 'network.module'; InModuleScope fails if both are loaded
+    Get-Module -Name 'network.module' | Remove-Module -Force
     $script:modulePath = "$PSScriptRoot/network.module.psm1"
     $script:moduleName = (Import-Module $script:modulePath -PassThru -Force -DisableNameChecking).Name
+}
+
+AfterAll {
+    Get-Module -Name 'network.module' | Remove-Module -Force
 }
 
 Describe 'Remove-KubeSwitch' -Tag 'unit', 'ci', 'network' {

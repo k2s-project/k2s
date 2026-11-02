@@ -67,7 +67,7 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 	// not by the linuxonly install script.
 	if !cfg.LinuxOnly {
 		if cfg.RestartPostInstall != "" {
-			cmd += fmt.Sprintf(" -RestartAfterInstallCount %s", cfg.RestartPostInstall)
+			cmd += " -RestartAfterInstallCount " + utils.EscapeWithSingleQuotes(cfg.RestartPostInstall)
 		}
 		if cfg.K8sBinsPath != "" {
 			cmd += " -K8sBinsPath " + utils.EscapeWithSingleQuotes(cfg.K8sBinsPath)

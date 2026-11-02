@@ -11,6 +11,8 @@ During `k2s install --wsl`, WSL may print `Nested virtualization is not supporte
 
 K2s logs WSL setup diagnostics and checks the native command exit code. A warning with exit code zero does not abort setup; a nonzero exit still fails with its diagnostics. If setup fails, inspect the logged exit code and subsequent errors before changing virtualization settings. Do not disable host security policy or change cluster IP addresses to suppress this warning.
 
+When multiple `wsl.exe` applications are available (for example, System32 and WindowsApps), K2s selects the first one in normal PowerShell command lookup order. A `CommandNotFoundException` listing multiple executable paths together is an executable-resolution error, not this virtualization warning.
+
 ## Secret Issue When Loading via [Kustomize](https://github.com/kubernetes-sigs/kustomize){target="_blank"}
 ```console
 kubectl apply -k <folder>

@@ -19,7 +19,7 @@ function Invoke-WslCommand {
         [switch]$IgnoreErrors
     )
 
-    $executable = Get-Command -Name 'wsl.exe' -CommandType Application -ErrorAction Stop
+    $executable = Get-Command -Name 'wsl.exe' -CommandType Application -ErrorAction Stop | Select-Object -First 1
     $savedErrorActionPreference = $ErrorActionPreference
     try {
         # Native stderr warnings must not escape to the install wrapper as ErrorRecords.

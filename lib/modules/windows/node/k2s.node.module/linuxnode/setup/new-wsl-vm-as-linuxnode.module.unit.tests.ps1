@@ -42,6 +42,17 @@ Describe 'WSL native diagnostics and exit handling' -Tag 'unit', 'ci', 'wsl' {
         }
     }
 
+    It 'uses the first executable when command lookup returns multiple applications' {
+        Mock Get-Command {
+            [pscustomobject]@{ Source = $env:ComSpec }
+            [pscustomobject]@{ Source = (Join-Path $TestDrive 'unused alias\wsl.exe') }
+        } -ParameterFilter { $Name -eq 'wsl.exe' }
+
+        $output = Invoke-WslCommand -Arguments @('/d', '/c', 'echo first-executable-selected')
+
+        $output | Should -Be 'first-executable-selected'
+    }
+
     It 'throws a nonzero native exit with its diagnostics' {
         { Invoke-WslCommand -Arguments @('/d', '/c', 'echo import failed 1>&2 & exit /b 5') } |
             Should -Throw '*exit code 5*import failed*'

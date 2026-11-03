@@ -54,8 +54,30 @@ func EscapeWithDoubleQuotes(str string) string {
 	return "\"" + str + "\""
 }
 
+// powerShellSingleQuoteEscaper doubles every character PowerShell accepts as a single quote. Besides the
+// ASCII apostrophe, PowerShell also treats the typographic quotes U+2018, U+2019, U+201A and U+201B as
+// single-quote delimiters, so leaving any of them unescaped would terminate the quoted string early.
+var powerShellSingleQuoteEscaper = strings.NewReplacer(
+	"'", "''",
+	"\u2018", "\u2018\u2018",
+	"\u2019", "\u2019\u2019",
+	"\u201A", "\u201A\u201A",
+	"\u201B", "\u201B\u201B",
+)
+
+// EscapeWithSingleQuotes returns str as a PowerShell single-quoted (verbatim) string literal, so that
+// PowerShell neither expands variables or sub-expressions in it nor treats any part of it as code.
 func EscapeWithSingleQuotes(str string) string {
-	return "'" + strings.ReplaceAll(str, "'", "''") + "'"
+	return "'" + powerShellSingleQuoteEscaper.Replace(str) + "'"
+}
+
+// EscapeArrayWithSingleQuotes returns values as a comma-separated PowerShell array of single-quoted string literals.
+func EscapeArrayWithSingleQuotes(values []string) string {
+	escaped := make([]string, len(values))
+	for i, value := range values {
+		escaped[i] = EscapeWithSingleQuotes(value)
+	}
+	return strings.Join(escaped, ",")
 }
 
 // Escape $ in case of ssh cmd

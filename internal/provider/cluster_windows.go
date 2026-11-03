@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/k2s-project/k2s/internal/definitions"
@@ -56,22 +55,22 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 		}
 	}
 	if cfg.Proxy != "" {
-		cmd += " -Proxy " + cfg.Proxy
+		cmd += " -Proxy " + utils.EscapeWithSingleQuotes(cfg.Proxy)
 	}
 	if len(cfg.NoProxy) > 0 {
-		cmd += fmt.Sprintf(" -NoProxy '%s'", strings.Join(cfg.NoProxy, "','"))
+		cmd += " -NoProxy " + utils.EscapeArrayWithSingleQuotes(cfg.NoProxy)
 	}
 	if cfg.AdditionalHooksDir != "" {
-		cmd += fmt.Sprintf(" -AdditionalHooksDir '%s'", cfg.AdditionalHooksDir)
+		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
 	}
 	// RestartAfterInstallCount, K8sBinsPath, and WSL are only supported by the k2s install script,
 	// not by the linuxonly install script.
 	if !cfg.LinuxOnly {
 		if cfg.RestartPostInstall != "" {
-			cmd += fmt.Sprintf(" -RestartAfterInstallCount %s", cfg.RestartPostInstall)
+			cmd += " -RestartAfterInstallCount " + utils.EscapeWithSingleQuotes(cfg.RestartPostInstall)
 		}
 		if cfg.K8sBinsPath != "" {
-			cmd += fmt.Sprintf(" -K8sBinsPath '%s'", cfg.K8sBinsPath)
+			cmd += " -K8sBinsPath " + utils.EscapeWithSingleQuotes(cfg.K8sBinsPath)
 		}
 		if cfg.WSL {
 			cmd += " -WSL"

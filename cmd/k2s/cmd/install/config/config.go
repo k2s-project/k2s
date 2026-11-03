@@ -247,6 +247,12 @@ func (i *installConfigAccess) normalize(flags *pflag.FlagSet) (*InstallConfig, e
 
 	autoEnableDynamicMemory(config)
 
+	if err := validateResourceValues(config); err != nil {
+		return nil, err
+	}
+	if err := validateEnvValues(config); err != nil {
+		return nil, err
+	}
 	if err := validateDynamicMemoryConfiguration(config); err != nil {
 		return nil, err
 	}

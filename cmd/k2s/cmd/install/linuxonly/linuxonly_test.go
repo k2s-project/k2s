@@ -72,7 +72,7 @@ var _ = Describe("linuxonly", func() {
 		When("maximal config set", func() {
 			It("returns cmd with maximal params", func() {
 				const rawExpected = `\lib\scripts\windows\linuxonly\install\install.ps1' -MasterVMProcessorCount 5 -MasterVMMemory 6GB -MasterDiskSize 7GB` +
-					` -Proxy my_proxy -AdditionalHooksDir 'c:\my\dir' -ShowLogs -SkipStart -DeleteFilesForOfflineInstallation -ForceOnlineInstallation -AppendLogFile`
+					` -Proxy 'my_proxy' -AdditionalHooksDir 'c:\my\dir' -ShowLogs -SkipStart -DeleteFilesForOfflineInstallation -ForceOnlineInstallation -AppendLogFile`
 				expected := "&'" + utils.InstallDir() + rawExpected
 
 				config := &config.InstallConfig{
@@ -95,6 +95,36 @@ var _ = Describe("linuxonly", func() {
 						ForceOnlineInstallation:           true,
 						AppendLog:                         true,
 						SkipStart:                         true,
+					},
+				}
+
+				actual, err := linuxonly.BuildCmd(config)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(actual).To(Equal(expected))
+			})
+		})
+
+		When("string values contain single quotes", func() {
+			It("returns cmd with the values escaped as PowerShell string literals", func() {
+				const rawExpected = `\lib\scripts\windows\linuxonly\install\install.ps1' -MasterVMProcessorCount 5 -MasterVMMemory 6GB -MasterDiskSize 7GB` +
+					` -Proxy 'http://x''; calc; ''' -NoProxy 'localhost','x''; calc; ''' -AdditionalHooksDir 'c:\owner''s dir'`
+				expected := "&'" + utils.InstallDir() + rawExpected
+
+				config := &config.InstallConfig{
+					Nodes: []config.NodeConfig{
+						{
+							Role: config.ControlPlaneRoleName,
+							Resources: config.ResourceConfig{
+								Cpu:    "5",
+								Memory: "6GB",
+								Disk:   "7GB",
+							}},
+					},
+					Env: config.EnvConfig{
+						Proxy:              "http://x'; calc; '",
+						NoProxy:            []string{"localhost", "x'; calc; '"},
+						AdditionalHooksDir: "c:\\owner's dir",
 					},
 				}
 

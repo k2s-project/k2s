@@ -170,6 +170,15 @@ function Remove-KubeSwitch() {
 
     Write-Log "[KubeSwitch] Removing IP address $kubeSwitchIp"
     Remove-NetIPAddress -IPAddress $kubeSwitchIp -PrefixLength 24 -Confirm:$False -ErrorAction SilentlyContinue
+
+    if ($ipControlPlane) {
+        Write-Log "[KubeSwitch] Removing routes via control plane IP $ipControlPlane"
+        foreach ($store in @('PersistentStore', 'ActiveStore')) {
+            Get-NetRoute -AddressFamily IPv4 -PolicyStore $store -ErrorAction SilentlyContinue |
+                Where-Object { $_.NextHop -eq $ipControlPlane } |
+                Remove-NetRoute -PolicyStore $store -Confirm:$False -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 

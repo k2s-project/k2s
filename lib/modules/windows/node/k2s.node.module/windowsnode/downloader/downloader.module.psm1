@@ -100,7 +100,7 @@ function Invoke-DownloadWindowsImages($downloadsBaseDirectory, $Proxy) {
 
         # Now really pull image and ignore errors from ctr
         $ErrorActionPreference = 'Continue'
-        &$nerdctlExe -n="k8s.io" pull $sandboxImageName --all-platforms 2>&1 | Out-Null
+        &$nerdctlExe -n="k8s.io" pull $sandboxImageName 2>&1 | Out-Null
         $images = &$ctrExe -n="k8s.io" image ls 2>&1 | Out-String
 
         if ($images.Contains($sandboxImageName)) {
@@ -125,7 +125,7 @@ function Invoke-DownloadWindowsImages($downloadsBaseDirectory, $Proxy) {
         }
 
         Write-Log "Export image '$sandboxImageName' to '$tarFilePath'"
-        $exportSuccess = Invoke-Ctr -Arguments '-n', 'k8s.io', 'images', 'export', '--all-platforms', $tarFilePath, $sandboxImageName
+        $exportSuccess = Invoke-Ctr -Arguments '-n', 'k8s.io', 'images', 'export', $tarFilePath, $sandboxImageName
         if (-not $exportSuccess) {
             throw "The image '$sandboxImageName' could not be exported"
         }

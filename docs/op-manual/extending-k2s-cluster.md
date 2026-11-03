@@ -69,6 +69,24 @@ The command must produce no output.
 
 Do not install kubelet, Kubernetes, CRI-O, containerd, or CNI components manually. `k2s node add` installs and configures the required worker-node components.
 
+### Changes made to a Debian 13 target
+
+`k2s node add` hardens Debian 13 targets for their dedicated worker role. These changes remain in place, also after `k2s node remove`:
+
+- The `apt-daily` and `apt-daily-upgrade` services and timers are masked, so the machine no longer installs updates automatically. `motd-news.timer` is disabled when present.
+- Installed documentation and editor packages, for example `man-db`, `manpages`, `groff-base`, `nano` and `vim-tiny`, are purged together with dependencies that are no longer needed.
+- Documentation under `/usr/share/doc`, `/usr/share/man` and related directories is removed, and `/etc/dpkg/dpkg.cfg.d/01_nodoc` prevents later package installations from adding it again. Copyright and license files are kept.
+
+Removed package names and versions are recorded in `/var/lib/k2s/hardening/reinstall.tsv`. Use a machine dedicated to the worker role and keep it patched through your controlled update process. If the machine is later used for other purposes, restore automatic updates and documentation installation manually, and reinstall required packages:
+
+```bash
+sudo systemctl unmask apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer
+sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+sudo rm /etc/dpkg/dpkg.cfg.d/01_nodoc
+```
+
+For details, see [Debian 13 Node Hardening](../security/security-features.md#debian-13-node-hardening).
+
 ### Network requirements
 
 - **Bare-metal target**: the target IP must be in a physical network subnet (LAN/Wi-Fi/Ethernet) reachable by the Windows host. It must not be an address from the K2s internal KubeSwitch network.

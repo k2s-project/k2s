@@ -60,6 +60,14 @@ a conflict appearing after recovery still fails startup. The already-running
 early-return path uses only the initial validation. If recovery fails, allow
 Windows networking to settle and retry `k2s start`.
 
+### WSL network validation
+
+When `k2s start` restarts the WSL control plane, K2s checks the actual WSL HNS
+subnets before changing the host adapter address. A conflicting, missing, or
+invalid subnet stops startup rather than allowing unverified networking.
+The check does not remove or renumber shared WSL networks. See
+[WSL installation](installing-k2s.md#wsl) for conflict handling.
+
 ### Additional Options
 
 #### Skip Starting if Already Running

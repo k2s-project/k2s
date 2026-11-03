@@ -210,6 +210,19 @@ To install the control-plane in WSL 2 instead of a dedicated *Linux* VM, run:
 <repo>\k2s.exe install --wsl
 ```
 
+Windows selects the underlying WSL HNS subnet automatically. Once WSL starts,
+K2s validates that subnet before changing the Windows WSL adapter address.
+An overlap with the configured control-plane, node pod, service slice, or
+loopback transit subnet stops installation with the conflicting CIDRs in the
+error. Overlap only with an aggregate pod or service range produces a warning.
+Missing or invalid HNS subnet information also stops installation.
+
+Changing the adapter IP alone does not renumber the HNS network. K2s does not
+delete or recreate shared WSL networks to resolve a conflict. Use a host with
+non-overlapping WSL networking, or clean up the partial installation with
+`k2s uninstall` and install using Hyper-V (omit `--wsl`). A newly provisioned
+host must still pass validation; Windows can allocate another conflicting subnet.
+
 ### \[Option 2\] Development-Only
 To build and test containers without a *K8s* cluster, run:
 ```console

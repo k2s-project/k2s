@@ -1804,6 +1804,17 @@ You're not viewing the latest release version.
 </li>
         
           <li class="md-nav__item">
+  <a href="#changes-made-to-a-debian-13-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changes made to a Debian 13 target
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#network-requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3037,6 +3048,17 @@ You're not viewing the latest release version.
 </li>
         
           <li class="md-nav__item">
+  <a href="#changes-made-to-a-debian-13-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changes made to a Debian 13 target
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#network-requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3287,13 +3309,26 @@ SPDX-License-Identifier: MIT
 </code></pre></div>
 <p>The command must produce no output.</p>
 <p>Do not install kubelet, Kubernetes, <abbr title="Container Runtime Interface">CRI</abbr>-O, containerd, or CNI components manually. <code>k2s node add</code> installs and configures the required worker-node components.</p>
+<h3 id="changes-made-to-a-debian-13-target">Changes made to a Debian 13 target</h3>
+<p><code>k2s node add</code> hardens Debian 13 targets for their dedicated worker role. These changes remain in place, also after <code>k2s node remove</code>:</p>
+<ul>
+<li>The <code>apt-daily</code> and <code>apt-daily-upgrade</code> services and timers are masked, so the machine no longer installs updates automatically. <code>motd-news.timer</code> is disabled when present.</li>
+<li>Installed documentation and editor packages, for example <code>man-db</code>, <code>manpages</code>, <code>groff-base</code>, <code>nano</code> and <code>vim-tiny</code>, are purged together with dependencies that are no longer needed.</li>
+<li>Documentation under <code>/usr/share/doc</code>, <code>/usr/share/man</code> and related directories is removed, and <code>/etc/dpkg/dpkg.cfg.d/01_nodoc</code> prevents later package installations from adding it again. Copyright and license files are kept.</li>
+</ul>
+<p>Removed package names and versions are recorded in <code>/var/lib/k2s/hardening/reinstall.tsv</code>. Use a machine dedicated to the worker role and keep it patched through your controlled update process. If the machine is later used for other purposes, restore automatic updates and documentation installation manually, and reinstall required packages:</p>
+<div class="highlight"><span class="filename">Bash</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span>unmask<span class="w"> </span>apt-daily.service<span class="w"> </span>apt-daily.timer<span class="w"> </span>apt-daily-upgrade.service<span class="w"> </span>apt-daily-upgrade.timer
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>sudo<span class="w"> </span>systemctl<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>--now<span class="w"> </span>apt-daily.timer<span class="w"> </span>apt-daily-upgrade.timer
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>sudo<span class="w"> </span>rm<span class="w"> </span>/etc/dpkg/dpkg.cfg.d/01_nodoc
+</code></pre></div>
+<p>For details, see <a href="../../security/security-features/#debian-13-node-hardening">Debian 13 Node Hardening</a>.</p>
 <h3 id="network-requirements">Network requirements</h3>
 <ul>
 <li><strong>Bare-metal target</strong>: the target <abbr title="Internet Protocol">IP</abbr> must be in a physical network subnet (<abbr title="Local Area Network">LAN</abbr>/Wi-Fi/Ethernet) reachable by the Windows host. It must not be an address from the K2s internal KubeSwitch network.</li>
 <li><strong>Existing Hyper-V <abbr title="Virtual Machine">VM</abbr></strong>: attach the <abbr title="Virtual Machine">VM</abbr> to KubeSwitch, keep it running, and assign it an <abbr title="Internet Protocol">IP</abbr> in the KubeSwitch <abbr title="Classless Inter-Domain Routing">CIDR</abbr>, for example <code>172.19.1.x</code>. The Windows host's KubeSwitch network profile must be <code>Private</code>.</li>
 <li>Verify reachability from the K2s host before continuing:</li>
 </ul>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">Test-NetConnection</span> <span class="n">-ComputerName</span> <span class="p">&lt;</span><span class="n">node-ip</span><span class="p">&gt;</span> <span class="n">-Port</span> <span class="n">22</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">Test-NetConnection</span> <span class="n">-ComputerName</span> <span class="p">&lt;</span><span class="n">node-ip</span><span class="p">&gt;</span> <span class="n">-Port</span> <span class="n">22</span>
 </code></pre></div>
 <p>The command must report <code>TcpTestSucceeded : True</code>.</p>
 <hr />
@@ -3322,29 +3357,29 @@ SPDX-License-Identifier: MIT
 <p>When K2s is installed, an <abbr title="Secure Shell">SSH</abbr> public key is available under the directory <code>%USERPROFILE%\.ssh\k2s\id_rsa.pub</code>.
 This key must be copied to the Linux physical host or <abbr title="Virtual Machine">VM</abbr> to establish communication and initiate the installation.</p>
 <p>Copy the public key to the target. For example, from the K2s host:</p>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">scp</span> <span class="n">-o</span> <span class="n">StrictHostKeyChecking</span><span class="p">=</span><span class="n">no</span> <span class="s2">"$env:USERPROFILE\.ssh\k2s\id_rsa.pub"</span> <span class="p">&lt;</span><span class="n">usernameOfNode</span><span class="p">&gt;@&lt;</span><span class="n">IpAddressOfNode</span><span class="p">&gt;:/</span><span class="n">tmp</span><span class="p">/</span><span class="n">temp_k2s</span><span class="p">.</span><span class="n">pub</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">scp</span> <span class="n">-o</span> <span class="n">StrictHostKeyChecking</span><span class="p">=</span><span class="n">no</span> <span class="s2">"$env:USERPROFILE\.ssh\k2s\id_rsa.pub"</span> <span class="p">&lt;</span><span class="n">usernameOfNode</span><span class="p">&gt;@&lt;</span><span class="n">IpAddressOfNode</span><span class="p">&gt;:/</span><span class="n">tmp</span><span class="p">/</span><span class="n">temp_k2s</span><span class="p">.</span><span class="n">pub</span>
 </code></pre></div>
 <div class="admonition hint">
 <p class="admonition-title">scp</p>
 <p>The target user's password may be requested for this initial copy. The password is not needed by K2s after the public key is installed.</p>
 </div>
 <p>On the Debian 13 target, append the key and verify it:</p>
-<div class="highlight"><span class="filename">Bash</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>cat<span class="w"> </span>/tmp/temp_k2s.pub<span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.ssh/authorized_keys
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>chmod<span class="w"> </span><span class="m">600</span><span class="w"> </span>~/.ssh/authorized_keys
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>grep<span class="w"> </span>-F<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>cat<span class="w"> </span>/tmp/temp_k2s.pub<span class="k">)</span><span class="s2">"</span><span class="w"> </span>~/.ssh/authorized_keys
+<div class="highlight"><span class="filename">Bash</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>cat<span class="w"> </span>/tmp/temp_k2s.pub<span class="w"> </span>&gt;&gt;<span class="w"> </span>~/.ssh/authorized_keys
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>chmod<span class="w"> </span><span class="m">600</span><span class="w"> </span>~/.ssh/authorized_keys
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>grep<span class="w"> </span>-F<span class="w"> </span><span class="s2">"</span><span class="k">$(</span>cat<span class="w"> </span>/tmp/temp_k2s.pub<span class="k">)</span><span class="s2">"</span><span class="w"> </span>~/.ssh/authorized_keys
 </code></pre></div>
 <p>From the K2s host, verify key-based, non-interactive access before starting provisioning:</p>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">ssh</span> <span class="n">-o</span> <span class="n">BatchMode</span><span class="p">=</span><span class="n">yes</span> <span class="n">-o</span> <span class="n">StrictHostKeyChecking</span><span class="p">=</span><span class="n">no</span> <span class="p">&lt;</span><span class="n">usernameOfNode</span><span class="p">&gt;@&lt;</span><span class="n">IpAddressOfNode</span><span class="p">&gt;</span> <span class="s2">"hostname; lsb_release -is; lsb_release -rs; sudo -n true"</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">ssh</span> <span class="n">-o</span> <span class="n">BatchMode</span><span class="p">=</span><span class="n">yes</span> <span class="n">-o</span> <span class="n">StrictHostKeyChecking</span><span class="p">=</span><span class="n">no</span> <span class="p">&lt;</span><span class="n">usernameOfNode</span><span class="p">&gt;@&lt;</span><span class="n">IpAddressOfNode</span><span class="p">&gt;</span> <span class="s2">"hostname; lsb_release -is; lsb_release -rs; sudo -n true"</span>
 </code></pre></div>
 <p>The command should print the hostname, <code>Debian</code>, <code>13</code>, and complete without asking for a password. If <code>sudo -n true</code> fails, configure sudo for the selected user before continuing.</p>
 <h3 id="2-add-the-new-node-with-k2s-cli">2. Add the new node with K2s <abbr title="Command-Line Interface">CLI</abbr></h3>
-<div class="highlight"><span class="filename">Text Only</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt;
+<div class="highlight"><span class="filename">Text Only</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt;
 </code></pre></div>
 <p>If the node should be installed <strong>offline</strong>, first create a node package and then pass it to <code>k2s node add</code>:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package &lt;PathToNodePackageZip&gt;</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package &lt;PathToNodePackageZip&gt;</span>
 </code></pre></div>
 <h3 id="3-check-new-node-status">3. Check new node status</h3>
-<div class="highlight"><span class="filename">Text Only</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>k2s status -o wide
+<div class="highlight"><span class="filename">Text Only</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>k2s status -o wide
 </code></pre></div>
 <h2 id="offline-installation-of-a-linux-worker-node">Offline Installation of a Linux Worker Node</h2>
 <p>The offline workflow has two phases:</p>
@@ -3355,13 +3390,13 @@ This key must be copied to the Linux physical host or <abbr title="Virtual Machi
 <h3 id="1-create-the-node-package">1. Create the node package</h3>
 <p>Generate an <abbr title="Operating System">OS</abbr>-specific node package. This step requires an installed and running <em>K2s</em> cluster on the machine where you run the command. The local cluster proxy <code>http://172.19.1.1:8181</code> is used by default, so <code>--proxy</code> can be omitted; pass <code>-p</code> only to override it.</p>
 <p>Example using <code>k2s.exe</code> directly from a local directory:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="go">.\k2s.exe system package --node-package --os debian12 --target-dir "D:\Linuxpackagetest" --name "debian12.zip"</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="go">.\k2s.exe system package --node-package --os debian12 --target-dir "D:\Linuxpackagetest" --name "debian12.zip"</span>
 </code></pre></div>
 <p>You can also generate the package on an existing <em>K2s</em> host:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="go">k2s system package --node-package --os debian12 --target-dir "C:\out" --name "debian12-node.zip"</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="go">k2s system package --node-package --os debian12 --target-dir "C:\out" --name "debian12-node.zip"</span>
 </code></pre></div>
 <p>For Debian 13 nodes, create a Debian 13 package instead:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="go">k2s system package --node-package --os debian13 --target-dir "C:\out" --name "debian13-node.zip"</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="go">k2s system package --node-package --os debian13 --target-dir "C:\out" --name "debian13-node.zip"</span>
 </code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -3377,10 +3412,10 @@ This key must be copied to the Linux physical host or <abbr title="Virtual Machi
 </div>
 <h3 id="gpu-support-for-offline-nodes">GPU Support for Offline Nodes</h3>
 <p>To add a GPU-capable worker node offline, create the node package with the <code>--include-gpu</code> flag:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="go">k2s system package --node-package --os debian13 --include-gpu --target-dir C:\output --name debian13-gpu.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="go">k2s system package --node-package --os debian13 --include-gpu --target-dir C:\output --name debian13-gpu.zip</span>
 </code></pre></div>
 <p>Then add the node as usual:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package C:\output\debian13-gpu.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package C:\output\debian13-gpu.zip</span>
 </code></pre></div>
 <p>K2s automatically detects the NVIDIA GPU and configures GPU support using the bundled packages. If the target has no NVIDIA GPU, it joins as a regular worker.</p>
 <div class="admonition warning">
@@ -3397,10 +3432,10 @@ This key must be copied to the Linux physical host or <abbr title="Virtual Machi
 <p>This step is required in both online and offline mode because <code>k2s node add</code> still connects to the node over <abbr title="Secure Shell">SSH</abbr>.</p>
 <h3 id="3-add-the-node-using-the-offline-package">3. Add the node using the offline package</h3>
 <p>Run <code>k2s node add</code> and point it to the node package ZIP:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package C:\temp\debian13-node.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package C:\temp\debian13-node.zip</span>
 </code></pre></div>
 <h3 id="4-verify-the-node-joined-successfully">4. Verify the node joined successfully</h3>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">k2s status -o wide</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="go">k2s status -o wide</span>
 </code></pre></div>
 <p>You can also use <code>k2s node connect</code> or <code>k2s node exec</code> to confirm <abbr title="Secure Shell">SSH</abbr> connectivity to the node after provisioning.</p>
 <h2 id="when-the-node-ip-changes">When the Node <abbr title="Internet Protocol">IP</abbr> Changes</h2>
@@ -3410,8 +3445,8 @@ This key must be copied to the Linux physical host or <abbr title="Virtual Machi
 <li>Configure a static <abbr title="Internet Protocol">IP</abbr> address or <abbr title="Dynamic Host Configuration Protocol">DHCP</abbr> reservation for the node.</li>
 <li>If the <abbr title="Internet Protocol">IP</abbr> already changed, remove and re-add the node with the new <abbr title="Internet Protocol">IP</abbr>:</li>
 </ol>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="go">k2s node remove --name &lt;NodeName&gt;</span>
-<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="go">k2s node add --ip-addr &lt;NewIpAddress&gt; --username &lt;UserNameForRemoteConnection&gt; --name &lt;NodeName&gt;</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="go">k2s node remove --name &lt;NodeName&gt;</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="go">k2s node add --ip-addr &lt;NewIpAddress&gt; --username &lt;UserNameForRemoteConnection&gt; --name &lt;NodeName&gt;</span>
 </code></pre></div>
 <p>If you use offline installation, include <code>--node-package &lt;PathToNodePackageZip&gt;</code> again during the re-add operation.</p>
 <!--

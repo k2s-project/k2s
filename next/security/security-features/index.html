@@ -2874,6 +2874,56 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
+  <a href="#debian-13-node-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debian 13 Node Hardening
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Debian 13 Node Hardening">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#package-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Package policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#timers-documentation-and-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timers, documentation and updates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation and recovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#package-integrity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3421,6 +3471,56 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
+  <a href="#debian-13-node-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Debian 13 Node Hardening
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Debian 13 Node Hardening">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#package-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Package policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#timers-documentation-and-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timers, documentation and updates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-and-recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation and recovery
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#package-integrity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3706,6 +3806,57 @@ SPDX-License-Identifier: MIT
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="go">powershell -File build\bom\DumpK2sImages.ps1</span>
 </code></pre></div>
 <p>This produces <code>kubernetes_images.json</code> listing every image across the cluster and all addon manifests.</p>
+<hr />
+<h2 id="debian-13-node-hardening">Debian 13 Node Hardening</h2>
+<p>New Windows-hosted Debian 13 control-plane images and newly added external Debian 13 workers use shared hardening during provisioning. The supported worker-add workflow targets existing VMs or physical hosts; it does not create managed worker VMs. Existing installations, cached older images and native Linux K2s hosts are not migrated. Rebuild the base image to validate this behavior.</p>
+<h3 id="package-policy">Package policy</h3>
+<table>
+<thead>
+<tr>
+<th>Candidates</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>man-db</code>, <code>manpages</code>, <code>manpages-dev</code>, <code>groff</code>, <code>groff-base</code>, <code>doc-debian</code>, <code>info</code>, <code>install-info</code></td>
+<td>Documentation viewers and formatting, not node execution</td>
+</tr>
+<tr>
+<td><code>nano</code>, <code>vim-tiny</code>, <code>ed</code></td>
+<td>Interactive editing is not required for managed provisioning</td>
+</tr>
+<tr>
+<td><code>exim4</code>, <code>exim4-base</code>, <code>exim4-config</code>, <code>exim4-daemon-light</code>, <code>exim4-daemon-heavy</code></td>
+<td>A Kubernetes node is not a mail server</td>
+</tr>
+<tr>
+<td><code>avahi-daemon</code></td>
+<td>Node discovery does not use multicast <abbr title="Domain Name System">DNS</abbr></td>
+</tr>
+</tbody>
+</table>
+<p>Only installed candidates are considered. The complete purge/autoremove transaction is simulated before execution; held, essential, required-priority and explicitly protected operational packages block unsafe removal. Protection covers Kubernetes, <abbr title="Container Runtime Interface">CRI</abbr>-O, Buildah and nftables, boot/kernel and guest agents, <abbr title="Secure Shell">SSH</abbr>/sudo/systemd, networking (including <code>ebtables</code> and <code>ipset</code>), <abbr title="Domain Name System">DNS</abbr>, clock and storage/mount tools. In particular, <code>rpcbind</code>, <code>nfs-common</code>, <code>cifs-utils</code>, <code>btrfs-progs</code>, <code>xfsprogs</code>, <code>mdadm</code> and <code>multipath-tools</code> are not blanket removal candidates. Dependency metadata alone cannot prove addon compatibility; regression testing remains mandatory.</p>
+<p>Hardening requires no package downloads. <code>/var/lib/k2s/hardening/removal-plan.log</code> records the simulation and <code>reinstall.tsv</code> records planned removed package names and versions, including transitive removals. A checked post-purge inventory verifies removal before updating <code>removed.tsv</code>; a query failure stops cleanup rather than treating packages as absent. Preserve these records when investigating partial failures. Repeated cleanup retains the reinstall list.</p>
+<h3 id="timers-documentation-and-updates">Timers, documentation and updates</h3>
+<p>Automatic <code>apt-daily</code> and <code>apt-daily-upgrade</code> services/timers are masked before K2s package operations. Timer triggers stop; existing package transactions finish under bounded waiting. Timeout fails provisioning without deleting locks or killing package processes. <code>motd-news.timer</code> is disabled when present.</p>
+<p>Cloud-init completion with recoverable errors (exit code 2) logs a warning and its full status diagnostics; fatal errors and timeouts stop provisioning. Stopped APT timers have their failed state cleared without terminating active package services.</p>
+<p>Late cleanup follows required package/tool installation and precedes image sealing or external-worker join. <code>/etc/dpkg/dpkg.cfg.d/01_nodoc</code> excludes documentation under <code>/usr/share/{doc,man,groff,info,lintian,linda}</code> from subsequent package installs. Copyright/license notices and runtime examples are retained; locales and common licenses are untouched. APT archive-cache cleanup does not remove retained K2s offline payloads under the provisioning user's home directory.</p>
+<div class="admonition warning">
+<p class="admonition-title">Controlled security patching remains necessary</p>
+<p>Disabling automatic APT jobs does not patch Debian vulnerabilities. Image maintainers must regularly rebuild and validate patched images; operators must deliver approved <abbr title="Operating System">OS</abbr> updates through controlled maintenance, including verified offline Debian/delta payloads. Kubernetes-only upgrades do not guarantee <abbr title="Operating System">OS</abbr> security patch coverage. Do not assume security updates still run automatically.</p>
+</div>
+<h3 id="validation-and-recovery">Validation and recovery</h3>
+<ol>
+<li>Retain the previous image/package and capture an equivalent unhardened package inventory, rootfs SBOM, vulnerability scan and size baseline before cleanup.</li>
+<li>Smoke-test fresh control-plane and worker nodes, reboot, repeat hardening and check masks, package/tool availability and documentation exclusions. Check exclusions after offline package/delta updates.</li>
+<li>Run install/start/stop/restart, addon enable/disable, worker-add and offline delta-upgrade regression suites before publication. Compare rootfs CycloneDX component counts and vulnerability identities using identical Trivy/database versions and equivalent <abbr title="Operating System">OS</abbr>/K2s package inputs. Record guest-used bytes and packaged-artifact sizes; fewer guest files do not guarantee VHDX shrinkage, lower <abbr title="Random-Access Memory">RAM</abbr> or faster boots.</li>
+<li>Rehearse recovery on a disposable test image before staged publication. Retaining the previous image is the image rollback; replacing a live control-plane disk is not a substitute for a verified cluster/data backup and restore.</li>
+<li>If a tool is needed later, review <code>reinstall.tsv</code> and restore recorded versions from approved available packages, accounting for dependencies. Reinstallation does not restore configuration/data lost during purge. A failed simulation aborts before purge; a later failure is not transactional rollback.</li>
+</ol>
+<p>Package-safety mocks and isolated filesystem checks of the actual documentation cleanup run through existing Pester unit-test discovery, using Git for Windows Bash. A missing Bash executable or a failed check fails the test; these checks do not replace Debian guest, offline-update or reboot validation. Run just these checks with:</p>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">Invoke-Pester</span> <span class="n">-Path</span> <span class="p">.\</span><span class="n">test</span><span class="p">\</span><span class="n">debian13-hardening</span><span class="p">.</span><span class="n">unit</span><span class="p">.</span><span class="n">tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-Tag</span> <span class="n">unit</span> <span class="n">-Output</span> <span class="n">Detailed</span>
+</code></pre></div>
 <hr />
 <h2 id="package-integrity">Package Integrity</h2>
 <p>The <code>build/catalog/</code> directory contains Windows catalog files (<code>.cat</code>, <code>.cdf</code>) used for file integrity verification:</p>

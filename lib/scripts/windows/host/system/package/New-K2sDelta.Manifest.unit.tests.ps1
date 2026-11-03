@@ -14,11 +14,11 @@ Describe 'Get-PackageKubernetesVersion' -Tag 'unit', 'ci', 'delta-package' {
         New-Item -ItemType Directory -Path $moduleDir -Force | Out-Null
         @"
 function Get-DefaultK8sVersion {
-    return 'v1.36.5'
+    return 'v1.37.2'
 }
 "@ | Set-Content -LiteralPath (Join-Path $moduleDir 'config.module.psm1')
 
-        Get-PackageKubernetesVersion -ExtractPath $TestDrive | Should -Be 'v1.36.5'
+        Get-PackageKubernetesVersion -ExtractPath $TestDrive | Should -Be 'v1.37.2'
     }
 }
 
@@ -40,7 +40,7 @@ Describe 'New-DeltaManifest' -Tag 'unit', 'ci', 'delta-package' {
         New-Item -ItemType Directory -Path $oldConfigDir, $newConfigDir -Force | Out-Null
         "function Get-DefaultK8sVersion { return 'v1.36.4' }" |
             Set-Content -LiteralPath (Join-Path $oldConfigDir 'config.module.psm1')
-        "function Get-DefaultK8sVersion { return 'v1.36.5' }" |
+        "function Get-DefaultK8sVersion { return 'v1.37.2' }" |
             Set-Content -LiteralPath (Join-Path $newConfigDir 'config.module.psm1')
 
         $context = @{
@@ -64,6 +64,6 @@ Describe 'New-DeltaManifest' -Tag 'unit', 'ci', 'delta-package' {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 
         $manifest.BaseKubernetesVersion | Should -Be 'v1.36.4'
-        $manifest.TargetKubernetesVersion | Should -Be 'v1.36.5'
+        $manifest.TargetKubernetesVersion | Should -Be 'v1.37.2'
     }
 }

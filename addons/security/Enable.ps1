@@ -119,19 +119,19 @@ try {
 	if (Test-NginxIngressControllerAvailability) {
 		# Ensure certificate exists
 	
-		Assert-IngressTlsCertificate -IngressType 'nginx' -CertificateManifestPath "$PSScriptRoot\..\ingress\$IngressType\manifests\cluster-local-ingress.yaml"
+		Assert-IngressTlsCertificate -IngressType 'nginx' -CertificateManifestPath "$PSScriptRoot\..\ingress\nginx\manifests\cluster-local-ingress.yaml"
 	}
 	elseif (Test-TraefikIngressControllerAvailability) {
-		Assert-IngressTlsCertificate -IngressType 'traefik' -CertificateManifestPath "$PSScriptRoot\..\ingress\$IngressType\manifests\cluster-local-ingress.yaml"
+		Assert-IngressTlsCertificate -IngressType 'traefik' -CertificateManifestPath "$PSScriptRoot\..\ingress\traefik\manifests\cluster-local-ingress.yaml"
 	}
 	elseif (Test-NginxGatewayAvailability) {
-		Assert-IngressTlsCertificate -IngressType 'nginx-gw' -CertificateManifestPath "$PSScriptRoot\..\ingress\$IngressType\manifests\k2s-cluster-local-tls-certificate.yaml"
+		Assert-IngressTlsCertificate -IngressType 'nginx-gw' -CertificateManifestPath "$PSScriptRoot\..\ingress\nginx-gw\manifests\k2s-cluster-local-tls-certificate.yaml"
 	}
 	else {
 		# Enable required ingress addon
 		Write-Log "No Ingress controller found in the cluster, enabling $Ingress controller" -Console
 		Enable-IngressAddon -Ingress:$Ingress
-		Assert-IngressTlsCertificate -IngressType 'nginx' -CertificateManifestPath "$PSScriptRoot\..\ingress\$IngressType\manifests\cluster-local-ingress.yaml"
+		Assert-IngressTlsCertificate -IngressType $Ingress -CertificateManifestPath "$PSScriptRoot\..\ingress\$Ingress\manifests\cluster-local-ingress.yaml"
 	}
 
 	# Keycloak and Hydra setup (conditional)
@@ -177,6 +177,7 @@ try {
 		$keycloakPodStatus = $true
 		if (-not $OmitHydra ) {
 			Write-Log 'Using Hydra as OIDC provider for oauth2-proxy' -Console
+			$winSecurityStatus = $true
 				if ($keycloakPodStatus -eq $true) {
 					if ($setupInfo.LinuxOnly -eq $false) {
 						$winSecurityStatus = Enable-WindowsSecurityDeployments	
@@ -241,31 +242,12 @@ try {
 		Write-Log 'Creating linkerd config files' -Console
 		$clinkerdExe = "$(Get-KubeBinPath)\linkerd.exe"
 		$linkerdYaml = Get-LinkerdConfigDirectory
-		# generate the CRDs
-		& $clinkerdExe install --ignore-cluster --crds 2> $null | Out-File -FilePath $linkerdYaml\linkerd-crds-gen.yaml -Encoding utf8
-		# generate the other resources
-		# add this line for debug infos
-		# --ignore-cluster --disable-heartbeat --proxy-log-level "debug,linkerd=debug,hickory=error"  `
-		& $clinkerdExe install  `
---ignore-cluster --disable-heartbeat  `
---proxy-memory-limit 100Mi  `
---proxy-cpu-request 100m  `
---proxy-cpu-limit 100m  `
---default-inbound-policy "all-authenticated"  `
---set "identity.externalCA=true"  `
---set "identity.issuer.scheme=kubernetes.io/tls"  `
---set "proxy.await=false"  `
---set "proxy.image.name=shsk2s.azurecr.io/linkerd/proxy"  `
---set "proxyInit.image.name=shsk2s.azurecr.io/linkerd/proxy-init"  `
---set "proxyInit.resources.cpu.request=100m"  `
---set "proxyInit.resources.cpu.limit=100m" 2> $null | Out-File -FilePath $linkerdYaml\linkerd-gen.yaml -Encoding utf8
 
-		# cleanup linkerd resources
-		(Get-Content $linkerdYaml\linkerd-crds-gen.yaml) -replace '[^\x20-\x7E\r\n]', '' | Set-Content $linkerdYaml\linkerd-crds.yaml
-		(Get-Content $linkerdYaml\linkerd-gen.yaml) -replace '[^\x20-\x7E\r\n]', '' | Set-Content $linkerdYaml\linkerd.yaml
-		# remove downloaded files
-		Remove-Item -Path $linkerdYaml\linkerd-crds-gen.yaml -Force
-		Remove-Item -Path $linkerdYaml\linkerd-gen.yaml -Force
+		Invoke-LinkerdCliRender `
+			-LinkerdExe $clinkerdExe `
+			-Arguments @('install', '--ignore-cluster', '--crds') `
+			-OutputFile "$linkerdYaml\linkerd-crds.yaml" `
+			-Description 'CRD manifest generation'
 
 		# create linkerd namespace
 		Write-Log 'Creating linkerd namespace' -Console
@@ -383,6 +365,53 @@ try {
 		# Wait for trust-manager to propagate certificates to linkerd namespace
 		Write-Log 'Waiting for linkerd namespace secrets to be ready' -Console
 		Start-Sleep -Seconds 10
+
+		Write-Log 'Applying Linkerd CRDs to cluster' -Console
+		$crdApplyResult = Invoke-Kubectl -Params 'apply', '--server-side', '--force-conflicts', '-f', (Get-LinkerdConfigCRDs)
+		$crdApplyResult.Output | Write-Log
+		if ($crdApplyResult.Success -ne $true) {
+			throw "Failed to apply Linkerd CRDs: $($crdApplyResult.Output)"
+		}
+
+		Write-Log 'Waiting for Linkerd CRDs to become Established' -Console
+		$linkerdCrds = @(
+			'authorizationpolicies.policy.linkerd.io',
+			'egressnetworks.policy.linkerd.io',
+			'httplocalratelimitpolicies.policy.linkerd.io',
+			'httproutes.policy.linkerd.io',
+			'meshtlsauthentications.policy.linkerd.io',
+			'networkauthentications.policy.linkerd.io',
+			'serverauthorizations.policy.linkerd.io',
+			'servers.policy.linkerd.io',
+			'serviceprofiles.linkerd.io',
+			'externalworkloads.workload.linkerd.io'
+		)
+		$linkerdCrdResources = $linkerdCrds | ForEach-Object { "crd/$_" }
+		$crdWaitResult = Invoke-Kubectl -Params (@('wait', '--for=condition=Established') + $linkerdCrdResources + '--timeout=120s')
+		$crdWaitResult.Output | Write-Log
+		if ($crdWaitResult.Success -ne $true) {
+			throw "Linkerd CRDs did not become Established within 120s: $($crdWaitResult.Output)"
+		}
+		Clear-KubectlDiscoveryCache
+
+		Write-Log 'Creating linkerd control plane manifest' -Console
+		$controlPlaneArguments = @(
+			'install',
+			'--disable-heartbeat',
+			'--proxy-memory-limit', '100Mi',
+			'--proxy-cpu-request', '100m',
+			'--proxy-cpu-limit', '100m',
+			'--default-inbound-policy', 'all-authenticated',
+			'--set', 'identity.externalCA=true',
+			'--set', 'identity.issuer.scheme=kubernetes.io/tls',
+			'--set', 'proxy.await=false',
+			'--set', 'proxy.image.name=shsk2s.azurecr.io/linkerd/proxy'
+		)
+		Invoke-LinkerdCliRender `
+			-LinkerdExe $clinkerdExe `
+			-Arguments $controlPlaneArguments `
+			-OutputFile "$linkerdYaml\linkerd.yaml" `
+			-Description 'control plane manifest generation'
 
 		# install linkerd
 		# Clear kubectl discovery cache before applying Linkerd kustomization

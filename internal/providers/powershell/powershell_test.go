@@ -175,4 +175,17 @@ var _ = Describe("powershell pkg", func() {
 			})
 		})
 	})
+
+	Describe("prepareExecScript", Label("unit"), func() {
+		It("passes the script as a verbatim string literal to the wrapper script", func() {
+			const script = `&'C:\k2s\install.ps1' -Proxy 'it''s $(calc) ` + "`" + `"'`
+			const expectedSuffix = `Invoke-ExecScript.ps1' -Script '&''C:\k2s\install.ps1'' -Proxy ''it''''s $(calc) ` + "`" + `"'''`
+
+			actual, err := prepareExecScript(script)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(actual).To(HavePrefix("&'"))
+			Expect(actual).To(HaveSuffix(expectedSuffix))
+		})
+	})
 })

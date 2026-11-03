@@ -21,10 +21,8 @@ spec:
             - quay.io/jetstack/cert-manager-cainjector
             - quay.io/jetstack/cert-manager-controller
             - quay.io/jetstack/cert-manager-webhook
-            - cr.l5d.io/linkerd/policy-controller:edge-25.4.4
-            - cr.l5d.io/linkerd/controller:edge-25.4.4
-            - shsk2s.azurecr.io/linkerd/proxy:edge-25.4.4
-            - shsk2s.azurecr.io/linkerd/proxy-init:v2.4.2
+            - cr.l5d.io/linkerd/controller:edge-26.6.3
+            - shsk2s.azurecr.io/linkerd/proxy:edge-26.6.3
             - reg.kyverno.io/kyverno/kyverno:v1.19.2
             - reg.kyverno.io/kyverno/kyvernopre:v1.19.2
             - reg.kyverno.io/kyverno/background-controller:v1.19.2
@@ -36,14 +34,13 @@ spec:
             - ../common/manifests/certmanager/cert-manager.yaml
         windows:
           additionalImages:
-            - shsk2s.azurecr.io/linkerd/proxy:edge-25.4.4
-            - shsk2s.azurecr.io/linkerd/proxy-init:v2.4.2
+            - shsk2s.azurecr.io/linkerd/proxy:edge-26.6.3
           curl:
-            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.1/cmctl_windows_amd64.exe
+            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.2/cmctl_windows_amd64.exe
               destination: bin\cmctl.exe
             - url: https://github.com/kyverno/kyverno/releases/download/v1.19.2/kyverno-cli_v1.19.2_windows_x86_64.zip
               destination: bin\kyverno.exe
-            - url: https://github.com/linkerd/linkerd2/releases/download/edge-25.4.4/linkerd2-cli-edge-25.4.4-windows.exe
+            - url: https://github.com/linkerd/linkerd2/releases/download/edge-26.6.3/linkerd2-cli-edge-26.6.3-windows.exe
               destination: bin\linkerd.exe
       commands:
         enable:

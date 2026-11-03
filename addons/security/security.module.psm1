@@ -381,6 +381,51 @@ function Get-LinkerdConfigCNI {
     return "$PSScriptRoot\manifests\linkerd\linkerd-cni-plugin-sa.yaml"
 }
 
+function Invoke-LinkerdCliRender {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LinkerdExe,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)]
+        [string]$OutputFile,
+        [Parameter(Mandatory = $true)]
+        [string]$Description
+    )
+
+    $stdoutFile = [System.IO.Path]::GetTempFileName()
+    $stderrFile = [System.IO.Path]::GetTempFileName()
+
+    try {
+        # Windows PowerShell 5.1 turns native stderr into formatted ErrorRecord text when 2>&1 is used, corrupting YAML output.
+        $process = Start-Process `
+            -FilePath $LinkerdExe `
+            -ArgumentList $Arguments `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+
+        $stderrContent = if (Test-Path $stderrFile) { Get-Content -Path $stderrFile -Raw } else { '' }
+        if ($process.ExitCode -ne 0) {
+            throw "[Linkerd] $Description failed with exit code $($process.ExitCode).`n$stderrContent"
+        }
+
+        $stdoutContent = if (Test-Path $stdoutFile) { Get-Content -Path $stdoutFile -Raw } else { '' }
+        if ([string]::IsNullOrWhiteSpace($stdoutContent)) {
+            throw "[Linkerd] $Description produced no manifest output. stderr: $stderrContent"
+        }
+
+        $sanitizedContent = $stdoutContent -replace '[^\x20-\x7E\r\n]', ''
+        [System.IO.File]::WriteAllText($OutputFile, $sanitizedContent, [System.Text.UTF8Encoding]::new($false))
+        Write-Log "[Linkerd] $Description succeeded, manifest written to '$OutputFile'"
+    }
+    finally {
+        Remove-Item -Path $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 <#
 .DESCRIPTION
 Waits for the linkerd pods to be available.

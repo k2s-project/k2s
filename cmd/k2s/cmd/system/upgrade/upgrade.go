@@ -192,6 +192,10 @@ func upgradeCluster(cmd *cobra.Command, args []string) error {
 		return errors.New("--node and --path must be specified together")
 	}
 
+	if err := installconfig.ValidateProxy(proxyVal); err != nil {
+		return err
+	}
+
 	cleanupUpgradeConfig := func() error { return nil }
 	if nodeNameVal == "" {
 		configFile, cleanupUpgradeConfig, err = prepareUpgradeInstallConfig(configFile, resolvedConfigDir)
@@ -414,7 +418,7 @@ func createUpgradeCommand(cmd *cobra.Command) string {
 	}
 	proxy := cmd.Flags().Lookup(proxy).Value.String()
 	if len(proxy) > 0 {
-		psCmd += " -Proxy " + proxy
+		psCmd += " -Proxy " + utils.EscapeWithSingleQuotes(proxy)
 	}
 	skipImages, _ := strconv.ParseBool(cmd.Flags().Lookup(skipImagesFlag).Value.String())
 	if skipImages {

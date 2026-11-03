@@ -60,7 +60,7 @@ var _ = Describe("upgrade", func() {
 		When("flags set", func() {
 			It("creates the command", func() {
 				const staticPartOfExpectedCmd = `\lib\scripts\windows\host\system\upgrade\Start-ClusterUpgrade.ps1`
-				const args = ` -ShowLogs -SkipResources  -DeleteFiles  -Config 'config.yaml' -Proxy http://myproxy:81 -SkipImages -AdditionalHooksDir 'hookDir' -BackupDir 'backupDir'`
+				const args = ` -ShowLogs -SkipResources  -DeleteFiles  -Config 'config.yaml' -Proxy 'http://myproxy:81' -SkipImages -AdditionalHooksDir 'hookDir' -BackupDir 'backupDir'`
 				expected := utils.FormatScriptFilePath(utils.InstallDir()+staticPartOfExpectedCmd) + args
 
 				flags := UpgradeCmd.Flags()

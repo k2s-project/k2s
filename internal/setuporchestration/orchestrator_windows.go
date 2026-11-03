@@ -42,7 +42,7 @@ func (o *WindowsOrchestrator) Install(config InstallConfig) error {
 		cmd += " -WSL"
 	}
 	if config.Proxy != "" {
-		cmd += " -Proxy " + config.Proxy
+		cmd += " -Proxy " + utils.EscapeWithSingleQuotes(config.Proxy)
 	}
 	if config.AdditionalHooksDir != "" {
 		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(config.AdditionalHooksDir)

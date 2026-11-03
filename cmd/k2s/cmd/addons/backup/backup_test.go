@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2024 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package backup
 
@@ -55,7 +55,13 @@ func TestAddPlacementMetadata(t *testing.T) {
 					t.Fatalf("selector = %q, want %q", selector, test.selector)
 				}
 			}
-			if string(manifest["custom"]) != `{"preserved":true}` && string(manifest["custom"]) != "{\n    \"preserved\": true\n  }" {
+			var custom struct {
+				Preserved bool `json:"preserved"`
+			}
+			if err := json.Unmarshal(manifest["custom"], &custom); err != nil {
+				t.Fatal(err)
+			}
+			if !custom.Preserved {
 				t.Fatalf("custom metadata lost: %s", manifest["custom"])
 			}
 		})

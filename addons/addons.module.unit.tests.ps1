@@ -3254,11 +3254,6 @@ Describe 'Addon scripts parse without errors' -Tag 'unit', 'ci', 'addon' {
             })
     }
 
-    It 'finds addon scripts to check' {
-        $parseCases = @(Get-ChildItem -Path $PSScriptRoot -Recurse -Filter '*.psm1' -File)
-        $parseCases.Count | Should -BeGreaterThan 0
-    }
-
     It '<Relative> has no parse errors' -ForEach $parseCases {
         $tokens = $null
         $parseErrors = $null

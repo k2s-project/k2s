@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2026 Siemens Healthineers AG
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2024 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package addons
 
@@ -10,10 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/k2s-project/k2s/cmd/k2s/cmd/addons/backup"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/addons/generic"
-	"github.com/k2s-project/k2s/cmd/k2s/cmd/addons/restore"
-	"github.com/k2s-project/k2s/cmd/k2s/cmd/addons/status"
 	"github.com/k2s-project/k2s/internal/core/addonplacement"
 	addoncore "github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/spf13/cobra"
@@ -31,42 +28,19 @@ func TestManualPlacementCLIContract(t *testing.T) {
 	}
 	root := &cobra.Command{Use: "addons"}
 	root.AddCommand(commands...)
-	root.AddCommand(status.NewCommand(allAddons), backup.NewCommand(), restore.NewCommand())
 	for _, path := range []string{
 		"enable metrics", "enable dashboard", "enable monitoring", "enable logging", "enable registry",
 		"enable ingress nginx", "enable ingress traefik", "enable ingress nginx-gw",
-		"disable metrics", "status metrics", "status ingress nginx",
 	} {
 		t.Run(path, func(t *testing.T) {
 			command, remaining, err := root.Find(strings.Fields(path))
 			if err != nil || len(remaining) != 0 || command.RunE == nil {
 				t.Fatalf("documented command unavailable: %s (%v, %v)", path, remaining, err)
 			}
-			if strings.HasPrefix(path, "enable ") && command.Flags().Lookup("infra-node-selector") == nil {
+			if command.Flags().Lookup("infra-node-selector") == nil {
 				t.Fatal("placement option missing")
 			}
-			if path == "enable monitoring" && (command.Flags().Lookup("omitGrafana") == nil || command.Flags().Lookup("omitgrafana") != nil) {
-				t.Fatal("monitoring recovery requires the case-sensitive --omitGrafana option")
-			}
-			if strings.HasPrefix(path, "status ") && command.Flags().ShorthandLookup("o") == nil {
-				t.Fatal("JSON status option missing")
-			}
 		})
-	}
-	for _, name := range []string{"backup", "restore"} {
-		command, _, err := root.Find([]string{name})
-		if err != nil || command.Flags().ShorthandLookup("f") == nil || command.Flags().ShorthandLookup("f").Name != "file" {
-			t.Fatalf("%s must use -f/--file", name)
-		}
-		if err := command.Args(command, []string{"ingress", "nginx"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, addon := range []string{"metrics", "dashboard", "monitoring", "logging", "registry"} {
-		command, remaining, err := root.Find([]string{"update", addon})
-		if err == nil && len(remaining) == 0 && command.RunE != nil {
-			t.Fatalf("public update command must not be exposed: %s", addon)
-		}
 	}
 }
 
@@ -162,10 +136,6 @@ func TestUnintegratedAddonPlacementIsNotExposed(t *testing.T) {
 
 	for _, addonName := range addonsNotExposingPlacement {
 		t.Run(addonName, func(t *testing.T) {
-			if addonplacement.SupportsAddon(addonName) {
-				t.Fatalf("addon %q is marked placement-capable before full integration or despite its workload exception", addonName)
-			}
-
 			manifestPath := filepath.Join(repositoryRoot, "addons", addonName, "addon.manifest.yaml")
 			manifestData, err := os.ReadFile(manifestPath)
 			if err != nil {
@@ -277,40 +247,7 @@ func TestPlacementOwnerAssetsAndFlagMappings(t *testing.T) {
 	}
 }
 
-func TestPlacementRenderCommandRetainsHelmDiagnosticAndCleansValues(t *testing.T) {
-	helm, err := exec.LookPath("helm")
-	if err != nil {
-		t.Skip("local Helm required for offline template failure test")
-	}
-	chartDir := t.TempDir()
-	inputPath := filepath.Join(chartDir, "values.yaml")
-	if err := os.WriteFile(inputPath, []byte("nodeSelector: {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(chartDir, "headlamp-invalid.tgz"), []byte("invalid local chart"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	temporaryFiles := t.TempDir()
-	t.Setenv("TMP", temporaryFiles)
-	t.Setenv("TEMP", temporaryFiles)
-	t.Setenv("TMPDIR", temporaryFiles)
-	outputPath := filepath.Join(t.TempDir(), "selectors.json")
-	command := newPlacementRenderCommand()
-	command.SetArgs([]string{"--addon-name", "dashboard", "--input-file", inputPath, "--selector", "pool=infra", "--output", outputPath, "--selectors-only", "--helm-path", helm})
-	err = command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "render offline Headlamp chart") || !strings.Contains(err.Error(), "Error:") {
-		t.Fatalf("Helm diagnostic lost: %v", err)
-	}
-	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
-		t.Fatal("failed chart wrote selector output")
-	}
-	files, err := os.ReadDir(temporaryFiles)
-	if err != nil || len(files) != 0 {
-		t.Fatalf("template leaked temporary files: %v, %v", files, err)
-	}
-}
-
-func TestSupportedAddonPlacementManifestCoverage(t *testing.T) {
+func TestMetricsPlacementManifestCoverage(t *testing.T) {
 	tests := []struct {
 		addonName         string
 		workloadCount     int

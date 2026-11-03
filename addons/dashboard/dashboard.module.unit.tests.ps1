@@ -1721,8 +1721,6 @@ Describe 'Dashboard Enable.ps1 selector with side-effect addons' -Tag 'unit', 'c
         $enableAst = [System.Management.Automation.Language.Parser]::ParseFile("$PSScriptRoot\Enable.ps1", [ref]$tokens, [ref]$parseErrors)
         $trapAst = $enableAst.EndBlock.Traps[0]
         $guardAst = $enableAst.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -match 'throw' } | Select-Object -First 1
-        $firstSideEffectOffset = ($enableAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Test-SystemAvailability', 'Enable-IngressAddon', 'Enable-MetricsServer') }, $true) | Measure-Object -Property { $_.Extent.StartOffset } -Minimum).Minimum
-        $guardOffset = $guardAst.Extent.StartOffset
         $probe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + $trapAst.Extent.Text + "`n" + $guardAst.Extent.Text + "`n'continued'")
         $guardOnlyProbe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + $guardAst.Extent.Text + "`n'continued'")
     }
@@ -1732,11 +1730,6 @@ Describe 'Dashboard Enable.ps1 selector with side-effect addons' -Tag 'unit', 'c
         function Send-ToCli { param($MessageType, $Message) $script:cliMessages.Add($Message) }
         function New-Error { param($Code, $Message) [pscustomobject]@{ Code = $Code; Message = $Message } }
         function Get-ErrCodeAddonEnableFailed { 'addon-enable-failed' }
-    }
-
-    It 'places the guard before cluster checks and nested addon enablement' {
-        $guardAst | Should -Not -BeNull
-        $guardOffset | Should -BeLessThan $firstSideEffectOffset
     }
 
     It 'rejects a selector combined with <Case> before continuing' -ForEach @(

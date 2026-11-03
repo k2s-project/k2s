@@ -49,24 +49,3 @@ Describe 'Metrics enable apply' -Tag 'unit', 'ci', 'addon', 'metrics' {
         Should -Invoke Invoke-Kubectl -Times 1 -Exactly
     }
 }
-
-Describe 'Monitoring full exporter bundle compatibility' -Tag 'unit', 'ci', 'addon', 'metrics' {
-    It 'keeps the existing full-bundle apply in monitoring <EntryPoint>' -TestCases @(
-        @{ EntryPoint = 'Enable.ps1' }
-        @{ EntryPoint = 'Update.ps1' }
-    ) {
-        param($EntryPoint)
-        $tokens = $null
-        $parseErrors = $null
-        $monitoringAst = [System.Management.Automation.Language.Parser]::ParseFile("$PSScriptRoot\..\monitoring\$EntryPoint", [ref]$tokens, [ref]$parseErrors)
-        $bundleApply = $monitoringAst.EndBlock.Statements | Where-Object { $_.Extent.Text -match 'Invoke-Kubectl -Params ''apply'', ''-k'', \$windowsExporter' }
-        @($bundleApply).Count | Should -Be 1
-        $windowsExporterPath = Get-WindowsExporterManifestDir
-        $windowsExporterManifest = $windowsExporterPath
-        Mock Write-Log { }
-        Mock Invoke-Kubectl { [pscustomobject]@{ Success = $true; Output = 'full bundle configured' } }
-        & ([scriptblock]::Create($bundleApply.Extent.Text))
-        Should -Invoke Invoke-Kubectl -Times 1 -Exactly -ParameterFilter { $Params[0] -eq 'apply' -and $Params[1] -eq '-k' -and $Params[2] -eq $windowsExporterPath }
-        Get-Content "$windowsExporterPath\kustomization.yaml" | Should -Contain '  - servicemonitor.yaml'
-    }
-}

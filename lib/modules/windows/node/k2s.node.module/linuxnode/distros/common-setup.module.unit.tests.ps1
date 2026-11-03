@@ -281,3 +281,42 @@ Describe 'Get-GpuContainerImages' -Tag 'unit', 'ci', 'gpu' {
         }
     }
 }
+
+Describe 'Invoke-RemoteScript' -Tag 'unit', 'ci', 'provisioning' {
+    BeforeEach {
+        Mock Write-Log {} -ModuleName $moduleName
+        Mock Test-Path { $true } -ModuleName $moduleName
+        Mock Copy-ToRemoteComputerViaSshKey {} -ModuleName $moduleName
+        Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $true; Output = '' } } -ModuleName $moduleName
+    }
+
+    It 'passes every argument as a single-quoted shell word' {
+        InModuleScope $moduleName {
+            Invoke-RemoteScript -LocalScriptPath 'C:\k\setproxy.sh' -UserName 'remote' -IpAddress '172.19.1.100' -Arguments @('http://proxy:8080', 'two words', '')
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -eq "chmod +x /tmp/setproxy.sh && /tmp/setproxy.sh 'http://proxy:8080' 'two words' ''"
+            }
+        }
+    }
+
+    It 'escapes single quotes so that an argument cannot inject shell commands' {
+        InModuleScope $moduleName {
+            Invoke-RemoteScript -LocalScriptPath 'C:\k\setproxy.sh' -UserName 'remote' -IpAddress '172.19.1.100' -Arguments @("http://x'; id; '")
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -eq "chmod +x /tmp/setproxy.sh && /tmp/setproxy.sh 'http://x'\''; id; '\'''"
+            }
+        }
+    }
+
+    It 'runs the script without arguments when none are given' {
+        InModuleScope $moduleName {
+            Invoke-RemoteScript -LocalScriptPath 'C:\k\setproxy.sh' -UserName 'remote' -IpAddress '172.19.1.100'
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -eq 'chmod +x /tmp/setproxy.sh && /tmp/setproxy.sh '
+            }
+        }
+    }
+}

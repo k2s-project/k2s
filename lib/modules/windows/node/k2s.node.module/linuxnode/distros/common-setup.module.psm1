@@ -704,9 +704,6 @@ Function Install-Tools {
     Write-Log '[TimeSync] Verifying hwclock installation'
     &$executeRemoteCommand "if sudo sh -c 'command -v hwclock >/dev/null 2>&1 || [ -x /usr/sbin/hwclock ] || [ -x /sbin/hwclock ]'; then echo '[TimeSync] hwclock installed at:'; sudo sh -c 'command -v hwclock || ls -l /usr/sbin/hwclock /sbin/hwclock 2>/dev/null'; sudo hwclock --version; else echo '[TimeSync] hwclock not installed'; fi 2>&1"
     
-    # Clean up any unnecessary packages
-    &$executeRemoteCommand 'sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove -qq --yes'
-
     # Temporary fix for [master] not recognized in buildah 1.22.3, we comment the section as this is only specific to container engine
     # Issue is fixed in buildah 1.26 but exists in experimental stage
     #&$executeRemoteCommand "sudo sed -i 's/\[machine/#&/' /usr/share/containers/containers.conf"
@@ -1807,6 +1804,8 @@ function New-VmImageForKubernetesNode {
     $vmUserPwd = Get-DefaultUserPwdKubeNode
 
     $setUpKubenode = {
+        Invoke-Debian13NodeHardening -Stage prepare -InstalledDistribution 'debian13' -UserName $vmUserName -UserPwd $vmUserPwd -IpAddress $vmIpAddress
+
         $addToKubeNode = {
             AddRegistryMirrors -IpAddress $vmIpAddress -UserName $vmUserName -UserPwd $vmUserPwd
             Get-KubernetesImages -IpAddress $vmIpAddress -UserName $vmUserName -UserPwd $vmUserPwd -K8sVersion $kubernetesVersion
@@ -1828,6 +1827,8 @@ function New-VmImageForKubernetesNode {
         New-KubernetesNode @kubeNodeParameters
 
         &$addToKubeNode
+
+        Invoke-Debian13NodeHardening -Stage cleanup -InstalledDistribution 'debian13' -UserName $vmUserName -UserPwd $vmUserPwd -IpAddress $vmIpAddress
     }
 
     $kubenodeBaseImageCreationParams = @{
@@ -2394,6 +2395,29 @@ function Get-LinuxScriptPath {
     return $scriptPath
 }
 
+function Invoke-Debian13NodeHardening {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('prepare', 'cleanup')]
+        [string]$Stage,
+        [Parameter(Mandatory = $true)]
+        [string]$InstalledDistribution,
+        [Parameter(Mandatory = $true)]
+        [string]$UserName,
+        [Parameter(Mandatory = $true)]
+        [string]$IpAddress,
+        [string]$UserPwd = ''
+    )
+
+    if ($InstalledDistribution -ne 'debian13') {
+        return
+    }
+
+    $scriptPath = "$(Get-LinuxScriptPath -InstalledDistribution $InstalledDistribution)\harden-node.sh"
+    Invoke-RemoteScript -LocalScriptPath $scriptPath -UserName $UserName -IpAddress $IpAddress `
+        -UserPwd $UserPwd -Arguments @($Stage) -Retries 0 -CleanupAfterExecution -ErrorAction Stop
+}
+
 function Invoke-RemoteScript {
     param (
         [Parameter(Mandatory = $true)]
@@ -2436,9 +2460,10 @@ function Invoke-RemoteScript {
         Copy-ToRemoteComputerViaSshKey -Source $LocalScriptPath -Target $RemoteScriptPath -UserName $UserName -IpAddress $IpAddress
     }
     
-    # Build command with arguments
+    # Build command with arguments. Each argument is passed as a single-quoted shell word; embedded single
+    # quotes are written as '\'' so that no argument can terminate its quoting and inject shell code.
     $argumentString = if ($Arguments.Count -gt 0) { 
-        "'$($Arguments -join "' '")'" 
+        ($Arguments | ForEach-Object { "'" + ([string]$_).Replace("'", "'\''") + "'" }) -join ' '
     } else { 
         "" 
     }
@@ -2577,6 +2602,7 @@ Set-K2sLinuxKubeletOverride,
 Set-UpMasterNode,
 Set-HypervDynamicMemory,
 Get-LinuxScriptPath,
+Invoke-Debian13NodeHardening,
 Invoke-RemoteScript,
 Get-KubernetesPackageCachePath,
 Get-BuildahPackageCachePath

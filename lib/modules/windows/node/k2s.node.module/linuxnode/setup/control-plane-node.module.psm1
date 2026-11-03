@@ -372,7 +372,7 @@ function Start-ControlPlaneNodeOnNewVM {
             # change cores
             Set-VMProcessor $controlPlaneVMHostName -Count $VmProcessors
         }
-       $kubeSwitchInExpectedState = CheckKubeSwitchInExpectedState
+        $kubeSwitchInExpectedState = CheckKubeSwitchInExpectedState
         if (!$UseCachedK2sVSwitches -or !$kubeSwitchInExpectedState) {
             # Remove old switch
             Write-Log 'Updating VM networking...'
@@ -380,7 +380,6 @@ function Start-ControlPlaneNodeOnNewVM {
 
             # create switch for VM
             New-KubeSwitch
-            Set-InterfacePrivate -InterfaceAlias "vEthernet ($switchname)"
 
             # connect VM to switch
             Connect-KubeSwitch
@@ -390,6 +389,7 @@ function Start-ControlPlaneNodeOnNewVM {
         Connect-WorkerNodesToKubeSwitch -ControlPlaneVMHostName $controlPlaneVMHostName -SwitchName $switchname
 
         Start-VirtualMachine -VmName $controlPlaneVMHostName -Wait
+        Set-InterfacePrivate -InterfaceAlias "vEthernet ($switchname)"
     }
     else {
         Write-Log 'Configuring KubeMaster Distro' -Console
@@ -407,7 +407,11 @@ function Start-ControlPlaneNodeOnNewVM {
 
     Set-RoutesToKubemaster
 
-    Wait-ForSSHConnectionToLinuxVMViaSshKey
+    $sshWaitParams = @{}
+    if (-not $WSL) {
+        $sshWaitParams.LocalIPAddress = $windowsHostIpAddress
+    }
+    Wait-ForSSHConnectionToLinuxVMViaSshKey @sshWaitParams
 
     # Ensure the control plane has a route to the Windows loopback adapter subnet
     # so that flannel's host-gw backend can install pod subnet routes via the

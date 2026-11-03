@@ -106,10 +106,10 @@ Describe 'Set-UpdateSetupConfigValue' -Tag 'unit', 'ci', 'update' {
 				Version           = '2.0.0'
 			} | ConvertTo-Json | Set-Content -LiteralPath $setupPath
 
-			Set-UpdateSetupConfigValue -SetupConfigPath $setupPath -Key 'KubernetesVersion' -Value 'v1.36.5'
+			Set-UpdateSetupConfigValue -SetupConfigPath $setupPath -Key 'KubernetesVersion' -Value 'v1.37.2'
 
 			$setup = Get-Content -LiteralPath $setupPath -Raw | ConvertFrom-Json
-			$setup.KubernetesVersion | Should -Be 'v1.36.5'
+			$setup.KubernetesVersion | Should -Be 'v1.37.2'
 			$setup.InstallFolder | Should -Be 'C:\k2s-delta'
 			$setup.Version | Should -Be '2.0.0'
 		}
@@ -120,20 +120,20 @@ Describe 'Set-UpdateSetupConfigValue' -Tag 'unit', 'ci', 'update' {
 			@{ KubernetesVersion = 'v1.36.4' } | ConvertTo-Json | Set-Content -LiteralPath $setupPath
 			Mock Set-ConfigValue {}
 
-			{ Set-UpdateSetupConfigValue -SetupConfigPath $setupPath -Key 'KubernetesVersion' -Value 'v1.36.5' } |
-				Should -Throw "*expected 'v1.36.5'*found 'v1.36.4'*"
+			{ Set-UpdateSetupConfigValue -SetupConfigPath $setupPath -Key 'KubernetesVersion' -Value 'v1.37.2' } |
+				Should -Throw "*expected 'v1.37.2'*found 'v1.36.4'*"
 		}
 	}
 }
 
 Describe 'Confirm-DeltaKubernetesVersion' -Tag 'unit', 'ci', 'update' {
 	It '<name>' -TestCases @(
-		@{ name = 'uses destination kubectl despite the old imported client'; client = 'v1.36.5'; server = 'v1.36.5'; code = 0; invalidJson = $false; errorPattern = $null }
-		@{ name = 'rejects a server rollback'; client = 'v1.36.5'; server = 'v1.36.4'; code = 0; invalidJson = $false; errorPattern = '*server*v1.36.4*' }
-		@{ name = 'rejects a stale destination client'; client = 'v1.36.4'; server = 'v1.36.5'; code = 0; invalidJson = $false; errorPattern = '*client*v1.36.4*' }
-		@{ name = 'rejects a failed kubectl query'; client = 'v1.36.5'; server = 'v1.36.5'; code = 1; invalidJson = $false; errorPattern = '*query failed*exit code 1*' }
+		@{ name = 'uses destination kubectl despite the old imported client'; client = 'v1.37.2'; server = 'v1.37.2'; code = 0; invalidJson = $false; errorPattern = $null }
+		@{ name = 'rejects a server rollback'; client = 'v1.37.2'; server = 'v1.36.4'; code = 0; invalidJson = $false; errorPattern = '*server*v1.36.4*' }
+		@{ name = 'rejects a stale destination client'; client = 'v1.36.4'; server = 'v1.37.2'; code = 0; invalidJson = $false; errorPattern = '*client*v1.36.4*' }
+		@{ name = 'rejects a failed kubectl query'; client = 'v1.37.2'; server = 'v1.37.2'; code = 1; invalidJson = $false; errorPattern = '*query failed*exit code 1*' }
 		@{ name = 'rejects malformed version JSON'; client = ''; server = ''; code = 0; invalidJson = $true; errorPattern = '*' }
-		@{ name = 'accepts valid JSON with a stderr warning'; client = 'v1.36.5'; server = 'v1.36.5'; code = 0; invalidJson = $false; errorPattern = $null; stderrMessage = 'transport warning' }
+		@{ name = 'accepts valid JSON with a stderr warning'; client = 'v1.37.2'; server = 'v1.37.2'; code = 0; invalidJson = $false; errorPattern = $null; stderrMessage = 'transport warning' }
 		@{ name = 'includes stderr in a failed query error'; client = ''; server = ''; code = 1; invalidJson = $false; errorPattern = '*connection refused*'; stderrMessage = 'connection refused' }
 	) {
 		param($client, $server, $code, $invalidJson, $errorPattern, $stderrMessage)
@@ -155,10 +155,10 @@ Describe 'Confirm-DeltaKubernetesVersion' -Tag 'unit', 'ci', 'update' {
 			}
 			try {
 				if ($errorPattern) {
-					{ Confirm-DeltaKubernetesVersion -ExpectedVersion 'v1.36.5' -InstallPath $installPath } |
+					{ Confirm-DeltaKubernetesVersion -ExpectedVersion 'v1.37.2' -InstallPath $installPath } |
 						Should -Throw $errorPattern
 				} else {
-					Confirm-DeltaKubernetesVersion -ExpectedVersion 'v1.36.5' -InstallPath $installPath
+					Confirm-DeltaKubernetesVersion -ExpectedVersion 'v1.37.2' -InstallPath $installPath
 				}
 				($script:versionQueryArguments -join '|') |
 					Should -Be "--kubeconfig|$configPath|--request-timeout=30s|version|-o|json"
@@ -171,7 +171,7 @@ Describe 'Confirm-DeltaKubernetesVersion' -Tag 'unit', 'ci', 'update' {
 	It 'rejects missing destination artifacts rather than falling back to PATH' {
 		InModuleScope $moduleName -Parameters @{ installPath = $TestDrive } {
 			Mock Test-Path { $false }
-			{ Confirm-DeltaKubernetesVersion -ExpectedVersion 'v1.36.5' -InstallPath $installPath } |
+			{ Confirm-DeltaKubernetesVersion -ExpectedVersion 'v1.37.2' -InstallPath $installPath } |
 				Should -Throw '*verification requires*'
 		}
 	}
@@ -208,12 +208,12 @@ Describe 'Get-DeltaTargetKubernetesVersion' -Tag 'unit', 'ci', 'update' {
 	It 'uses the target Kubernetes version declared by the manifest' {
 		InModuleScope $moduleName {
 			$manifest = [pscustomobject]@{
-				TargetKubernetesVersion = 'v1.36.5'
+				TargetKubernetesVersion = 'v1.37.2'
 				DebianDeltaRelativePath = $null
 			}
 
 			Get-DeltaTargetKubernetesVersion -Manifest $manifest -DeltaRoot $TestDrive |
-				Should -Be 'v1.36.5'
+				Should -Be 'v1.37.2'
 		}
 	}
 
@@ -221,13 +221,13 @@ Describe 'Get-DeltaTargetKubernetesVersion' -Tag 'unit', 'ci', 'update' {
 		InModuleScope $moduleName -Parameters @{ deltaRoot = $TestDrive } {
 			$debianDelta = Join-Path $deltaRoot 'debian-delta'
 			New-Item -ItemType Directory -Path $debianDelta -Force | Out-Null
-			Set-Content -LiteralPath (Join-Path $debianDelta 'expected-k8s-version') -Value '1.36.5'
+			Set-Content -LiteralPath (Join-Path $debianDelta 'expected-k8s-version') -Value '1.37.2'
 			$manifest = [pscustomobject]@{
 				DebianDeltaRelativePath = 'debian-delta'
 			}
 
 			Get-DeltaTargetKubernetesVersion -Manifest $manifest -DeltaRoot $deltaRoot |
-				Should -Be 'v1.36.5'
+				Should -Be 'v1.37.2'
 		}
 	}
 }

@@ -27,7 +27,7 @@ spec:
       dnsPolicy: ClusterFirst
       containers:
       - name: fluent-bit-win
-        image: shsk2s.azurecr.io/fluent/fluent-bit:5.1.3-hp #windows_image
+        image: shsk2s.azurecr.io/fluent/fluent-bit:5.1.5-hp #windows_image
         args: ["-c", "fluent-bit.conf"]
         imagePullPolicy: IfNotPresent
         resources:

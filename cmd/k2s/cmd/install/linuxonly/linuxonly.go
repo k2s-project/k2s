@@ -6,7 +6,6 @@ package linuxonly
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	ic "github.com/k2s-project/k2s/cmd/k2s/cmd/install/config"
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -43,13 +42,13 @@ func BuildCmd(config *ic.InstallConfig) (cmd string, err error) {
 	}
 
 	if config.Env.Proxy != "" {
-		cmd += fmt.Sprintf(" -Proxy %s", config.Env.Proxy)
+		cmd += " -Proxy " + utils.EscapeWithSingleQuotes(config.Env.Proxy)
 	}
 	if len(config.Env.NoProxy) > 0 {
-		cmd += fmt.Sprintf(" -NoProxy '%s'", strings.Join(config.Env.NoProxy, "','"))
+		cmd += " -NoProxy " + utils.EscapeArrayWithSingleQuotes(config.Env.NoProxy)
 	}
 	if config.Env.AdditionalHooksDir != "" {
-		cmd += fmt.Sprintf(" -AdditionalHooksDir '%s'", config.Env.AdditionalHooksDir)
+		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(config.Env.AdditionalHooksDir)
 	}
 	if config.Behavior.ShowOutput {
 		cmd += " -ShowLogs"

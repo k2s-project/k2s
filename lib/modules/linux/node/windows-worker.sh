@@ -621,9 +621,20 @@ k2s_windows_worker_wait_for_node() {
 
 k2s_windows_worker_define() {
   local disk="$1" memory_mb domain_xml boot_mode firmware variables nvram firmware_xml
+  local tz_offset sign hh mm utc_offset_seconds
   memory_mb=$(k2s_windows_worker_memory_mb) || return $?
   boot_mode=$(k2s_windows_worker_detect_boot_mode "$disk") || return $?
   firmware_xml=''
+  # clock offset='localtime' asks QEMU to convert its UTC epoch to the host's local
+  # wall-clock before exposing it as the guest's RTC. On this host that conversion silently
+  # does not happen (observed: the Windows worker's clock reads exactly one hour, the host's
+  # UTC offset, behind true time), which fails kubeadm join's TLS validation ("certificate
+  # ... is not yet valid"). Compute the offset ourselves and pass it explicitly via
+  # offset='variable' so the guest clock is correct regardless of that environment quirk.
+  tz_offset=$(date +%z)
+  sign=${tz_offset:0:1}; hh=${tz_offset:1:2}; mm=${tz_offset:3:2}
+  utc_offset_seconds=$(( 10#$hh * 3600 + 10#$mm * 60 ))
+  [[ "$sign" == '-' ]] && utc_offset_seconds=$(( -utc_offset_seconds ))
   if [[ "$boot_mode" == uefi ]]; then
     firmware=/usr/share/OVMF/OVMF_CODE_4M.fd
     variables=/usr/share/OVMF/OVMF_VARS_4M.fd
@@ -633,7 +644,7 @@ k2s_windows_worker_define() {
   fi
   domain_xml=$(mktemp)
   cat > "$domain_xml" <<EOF
-<domain type='kvm'><name>$K2S_WINDOWS_WORKER_NAME</name><memory unit='MiB'>$memory_mb</memory><currentMemory unit='MiB'>$memory_mb</currentMemory><vcpu placement='static'>$K2S_WORKER_CPU_COUNT</vcpu><os><type arch='x86_64' machine='q35'>hvm</type>$firmware_xml<boot dev='hd'/></os><features><acpi/><apic/><hyperv mode='custom'><relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/><vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'/></hyperv></features><cpu mode='host-passthrough' check='none'/><clock offset='localtime'><timer name='hypervclock' present='yes'/><timer name='hpet' present='no'/></clock><devices><disk type='file' device='disk'><driver name='qemu' type='qcow2' discard='unmap'/><source file='$disk'/><target dev='sda' bus='sata'/></disk><interface type='network'><mac address='$K2S_WINDOWS_WORKER_MAC'/><source network='$K2S_WINDOWS_WORKER_NETWORK'/><model type='e1000'/></interface><serial type='pty'/><console type='pty'/><graphics type='vnc' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics><video><model type='vga' vram='16384' heads='1' primary='yes'/></video><rng model='virtio'><backend model='random'>/dev/urandom</backend></rng><memballoon model='virtio'/></devices></domain>
+<domain type='kvm'><name>$K2S_WINDOWS_WORKER_NAME</name><memory unit='MiB'>$memory_mb</memory><currentMemory unit='MiB'>$memory_mb</currentMemory><vcpu placement='static'>$K2S_WORKER_CPU_COUNT</vcpu><os><type arch='x86_64' machine='q35'>hvm</type>$firmware_xml<boot dev='hd'/></os><features><acpi/><apic/><hyperv mode='custom'><relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/><vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'/></hyperv></features><cpu mode='host-passthrough' check='none'/><clock offset='variable' basis='utc' adjustment='$utc_offset_seconds'><timer name='hypervclock' present='yes'/><timer name='hpet' present='no'/></clock><devices><disk type='file' device='disk'><driver name='qemu' type='qcow2' discard='unmap'/><source file='$disk'/><target dev='sda' bus='sata'/></disk><interface type='network'><mac address='$K2S_WINDOWS_WORKER_MAC'/><source network='$K2S_WINDOWS_WORKER_NETWORK'/><model type='e1000'/></interface><serial type='pty'/><console type='pty'/><graphics type='vnc' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics><video><model type='vga' vram='16384' heads='1' primary='yes'/></video><rng model='virtio'><backend model='random'>/dev/urandom</backend></rng><memballoon model='virtio'/></devices></domain>
 EOF
   virsh define "$domain_xml"; local result=$?; rm -f "$domain_xml"; return "$result"
 }

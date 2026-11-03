@@ -426,6 +426,7 @@ Describe 'Restore-SmbShareAndFolderWindowsHost' -Tag 'unit', 'ci', 'addon', 'sto
                 }
             }
             Mock -ModuleName $moduleName New-SmbHostOnWindowsIfNotExisting {}
+            Mock -ModuleName $moduleName Install-DebianPackages {}
             Mock -ModuleName $moduleName New-SharedFolderMountOnLinuxClient {}
             Mock -ModuleName $moduleName Wait-ForSharedFolderMountOnLinuxClient {}
 
@@ -439,6 +440,14 @@ Describe 'Restore-SmbShareAndFolderWindowsHost' -Tag 'unit', 'ci', 'addon', 'sto
         It 'creates SMB host on Windows' {
             InModuleScope -ModuleName $moduleName {
                 Should -Invoke New-SmbHostOnWindowsIfNotExisting -Times 1 -Scope Context
+            }
+        }
+
+        It 'installs cifs-utils for the Linux client mount' {
+            InModuleScope -ModuleName $moduleName {
+                Should -Invoke Install-DebianPackages -Times 1 -Scope Context -ParameterFilter {
+                    $addon -eq 'storage' -and $implementation -eq 'smb' -and $packages -contains 'cifs-utils'
+                }
             }
         }
 

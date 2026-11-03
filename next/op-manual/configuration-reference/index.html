@@ -3499,7 +3499,7 @@ SPDX-License-Identifier: MIT
 <tr>
 <td><code>env.httpProxy</code></td>
 <td>string</td>
-<td><abbr title="Hypertext Transfer Protocol">HTTP</abbr> proxy <abbr title="Uniform Resource Locator">URL</abbr> for network access during install</td>
+<td><abbr title="Hypertext Transfer Protocol">HTTP</abbr> proxy for network access during install, in the form <code>[scheme://][user[:password]@]host[:port]</code>. Percent-encode special characters in the user and password (e.g. <code>$</code> as <code>%24</code>)</td>
 </tr>
 <tr>
 <td><code>env.additionalHooksDir</code></td>
@@ -3563,7 +3563,7 @@ SPDX-License-Identifier: MIT
 </tr>
 </tbody>
 </table>
-<p>Unknown roles, fields, invalid quantity strings, and mistyped values are rejected before installation starts. Omitting <code>kubeletOverrides</code> preserves previous behavior. See <a href="../customizing-kubelet/">Customizing Kubelet Configuration</a> for topology and lifecycle details.</p>
+<p>Malformed <code>cpu</code>, <code>memory</code>, <code>disk</code>, <code>restartPostInstallCount</code> and <code>httpProxy</code> values as well as unknown roles, fields, invalid quantity strings, and mistyped values are rejected before installation starts. Omitting <code>kubeletOverrides</code> preserves previous behavior. See <a href="../customizing-kubelet/">Customizing Kubelet Configuration</a> for topology and lifecycle details.</p>
 <hr />
 <h2 id="runtime-configuration-setupjson">Runtime Configuration (setup.json)</h2>
 <p>After installation, <em>K2s</em> persists cluster state in <code>setup.json</code>, located in the directory configured via <code>configDir.k2s</code> (default: <code>C:\ProgramData\K2s</code>). This file is managed automatically — do not edit it manually.</p>

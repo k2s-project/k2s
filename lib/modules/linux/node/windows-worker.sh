@@ -290,10 +290,19 @@ k2s_windows_worker_wait_for_ssh() {
 # over the SSH channel we already have, using the Linux host's own (NTP-synced) clock as the
 # source of truth.
 k2s_windows_worker_sync_clock() {
-  local now_utc
-  now_utc=$(date -u +'%Y-%m-%d %H:%M:%S')
-  k2s_log INFO "Setting the Windows worker's clock to UTC ($now_utc)."
-  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date '$now_utc'\""
+  local now_utc deadline=$((SECONDS + 300))
+  # A single unprotected SSH call here is exactly as exposed to the worker's occasional
+  # multi-minute connectivity blips (see k2s_windows_worker_wait_for_ssh) as any other; retry
+  # instead of letting one transient hiccup abort the whole install.
+  until now_utc=$(date -u +'%Y-%m-%d %H:%M:%S') && k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date '$now_utc'\""; do
+    if (( SECONDS >= deadline )); then
+      k2s_log ERROR 'Timed out setting the Windows worker clock.'
+      return 1
+    fi
+    k2s_log WARN 'Setting the Windows worker clock failed; retrying.'
+    sleep 10
+  done
+  k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc)."
 }
 
 k2s_windows_worker_log_ssh_diagnostics() {

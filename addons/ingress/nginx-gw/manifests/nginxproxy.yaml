@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: © 2026 Siemens Healthineers AG
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 #
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 # Source: nginx-gateway-fabric/templates/nginxproxy.yaml
 apiVersion: gateway.nginx.org/v1alpha2
 kind: NginxProxy
@@ -8,10 +8,10 @@ metadata:
   name: nginx-gw-proxy-config
   namespace: nginx-gw
   labels:
-    helm.sh/chart: nginx-gateway-fabric-2.8.0
+    helm.sh/chart: nginx-gateway-fabric-2.8.1
     app.kubernetes.io/name: nginx-gw
     app.kubernetes.io/instance: nginx-gw
-    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/version: "2.8.1"
     app.kubernetes.io/managed-by: Helm
 spec:
   kubernetes:
@@ -21,7 +21,7 @@ spec:
         image:
           pullPolicy: IfNotPresent
           repository: ghcr.io/nginx/nginx-gateway-fabric/nginx
-          tag: 2.8.0
+          tag: 2.8.1
     service:
       externalTrafficPolicy: Local
       type: LoadBalancer

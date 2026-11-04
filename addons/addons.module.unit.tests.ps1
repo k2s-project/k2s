@@ -559,49 +559,64 @@ Describe 'Get-AddonInfrastructurePlacementStatus' -Tag 'unit', 'ci', 'addon' {
 
 Describe 'Infrastructure placement owning preflight' -Tag 'unit', 'ci', 'addon' {
     BeforeEach {
-        Mock -ModuleName $moduleName Get-ConfigValue { @() }
         Mock -ModuleName $moduleName Get-AddonsConfig { @() }
         Mock -ModuleName $moduleName Set-SharedInfrastructurePlacement {}
-        Mock -ModuleName $moduleName Get-SetupConfigFilePath { 'unused' }
+        Mock -ModuleName k2s.node.module Get-SetupConfigFilePath { 'unused' }
         Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
     }
 
     It 'rejects a conflicting shared-service selector without applying resources' {
-        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=infra'}) }
-        Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"items":[{"spec":{"template":{"spec":{"nodeSelector":{"pool":"infra"}}}}}]}'} }
-        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=other' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*already owns selector*'
-        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params[0] -ne 'get' }
+        InModuleScope -ModuleName $moduleName {
+            $script:sharedPlacementCalls = [System.Collections.ArrayList]::new()
+            Mock Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=infra'}) }
+            Mock Get-AddonsConfig { @([pscustomobject]@{Name = 'ingress'; Implementation = 'nginx'}) }
+            Mock Invoke-Kubectl {
+                $null = $script:sharedPlacementCalls.Add(@($Params))
+                [pscustomobject]@{Success = $true; Output = ''}
+            }
+            { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=other' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*already owns selector*'
+            $script:sharedPlacementCalls.Count | Should -Be 1
+            $script:sharedPlacementCalls[0][0] | Should -Be 'get'
+        }
     }
 
     It 'reconciles stale ownership only after shared workloads and consumers are absent' {
-        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=old'}) }
-        { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=new' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Not -Throw
-        Should -Invoke -ModuleName $moduleName Set-SharedInfrastructurePlacement -Times 1 -Scope It -ParameterFilter { $Selector -eq 'pool=new' }
-        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'cert-manager-webhook' -and $Params -contains 'cert-manager-cainjector' -and $Params -contains '--ignore-not-found' }
+        InModuleScope -ModuleName $moduleName {
+            Mock Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=old'}) }
+            Mock Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
+            Mock Set-SharedInfrastructurePlacement { }
+            { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=new' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Not -Throw
+            Should -Invoke Set-SharedInfrastructurePlacement -Times 1 -Scope It -ParameterFilter { $Selector -eq 'pool=new' }
+            Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'cert-manager-webhook' -and $Params -contains 'cert-manager-cainjector' -and $Params -contains '--ignore-not-found' }
+        }
     }
 
     It 'does not release a shared owner still referenced by an enabled consumer' {
-        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'external-dns'; InfraNodeSelector = 'pool=old'}) }
-        Mock -ModuleName $moduleName Get-AddonsConfig { @([pscustomobject]@{Name = 'ingress'; Implementation = 'nginx'}) }
-        { Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector 'pool=new' -Namespace 'external-dns' -Deployment 'external-dns' } | Should -Throw
-        Should -Invoke -ModuleName $moduleName Set-SharedInfrastructurePlacement -Times 0 -Scope It
+        InModuleScope -ModuleName $moduleName {
+            Mock Get-ConfigValue { @([pscustomobject]@{Name = 'external-dns'; InfraNodeSelector = 'pool=old'}) }
+            Mock Get-AddonsConfig { @([pscustomobject]@{Name = 'ingress'; Implementation = 'nginx'}) }
+            Mock Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = ''} }
+            Mock Set-SharedInfrastructurePlacement { }
+            { Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector 'pool=new' -Namespace 'external-dns' -Deployment 'external-dns' } | Should -Throw
+            Should -Invoke Set-SharedInfrastructurePlacement -Times 0 -Scope It
+        }
     }
 
     It 'fails closed on forbidden instead of treating it as not found' {
-        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=old'}) }
+        Mock -ModuleName k2s.node.module Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=old'}) }
         Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $false; Output = 'Forbidden'} }
         { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=new' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*Cannot inspect*Forbidden*'
         Should -Invoke -ModuleName $moduleName Set-SharedInfrastructurePlacement -Times 0 -Scope It
     }
 
     It 'accepts the same canonical shared selector without reinstalling it' {
-        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'external-dns'; InfraNodeSelector = 'pool=infra,zone=a'}) }
+        Mock -ModuleName k2s.node.module Get-ConfigValue { @([pscustomobject]@{Name = 'external-dns'; InfraNodeSelector = 'pool=infra,zone=a'}) }
         { Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector 'zone=a,pool=infra' -Namespace 'external-dns' -Deployment 'external-dns' } | Should -Not -Throw
         Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params[0] -eq 'get' }
     }
 
     It 'rejects actual shared drift even when saved ownership is compatible' {
-        Mock -ModuleName $moduleName Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=infra'}) }
+        Mock -ModuleName k2s.node.module Get-ConfigValue { @([pscustomobject]@{Name = 'cert-manager'; InfraNodeSelector = 'pool=infra'}) }
         Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"pool":"other"}}}}}'} }
         { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=infra' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*exists without compatible placement*'
     }
@@ -618,6 +633,7 @@ Describe 'Infrastructure placement owning preflight' -Tag 'unit', 'ci', 'addon' 
     }
 
     It 'rejects a legacy shared Deployment with incompatible actual placement' {
+        Mock -ModuleName k2s.node.module Get-ConfigValue { @() }
         Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{Success = $true; Output = '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux"}}}}}'} }
         { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector 'pool=infra' -Namespace 'cert-manager' -Deployment 'cert-manager' } | Should -Throw -ExpectedMessage '*exists without compatible placement*'
     }
@@ -1131,41 +1147,62 @@ Describe 'Get-AddonBackupInfrastructureSelector' -Tag 'unit', 'ci', 'addon' {
 
 Describe 'Test-AddonInfrastructureSelectorOnCluster' -Tag 'unit', 'ci', 'addon' {
     BeforeEach {
-        Mock -ModuleName $moduleName New-AddonPlacementManifest { return 'TestDrive:\effective-selectors.json' }
         '["kubernetes.io/hostname=infra-1,kubernetes.io/os=linux"]' | Set-Content 'TestDrive:\effective-selectors.json'
     }
     It 'includes mandatory Linux placement for the dashboard owner' {
-        Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $true; Output = '' } }
-        Mock -ModuleName $moduleName Write-Log { }
-        '["kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux"]' | Set-Content 'TestDrive:\effective-selectors.json'
-        Test-AddonInfrastructureSelectorOnCluster -Name 'dashboard' -Selector 'kubernetes.io/hostname=kubemaster' | Should -BeFalse
-        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains 'kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux' }
+        InModuleScope -ModuleName $moduleName {
+            $script:selectorQueries = [System.Collections.ArrayList]::new()
+            Mock New-AddonPlacementManifest { return 'TestDrive:\effective-selectors.json' }
+            Mock Invoke-Kubectl {
+                $null = $script:selectorQueries.Add(@($Params))
+                [pscustomobject]@{ Success = $true; Output = '' }
+            }
+            Mock Write-Log { }
+            '["kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux"]' | Set-Content 'TestDrive:\effective-selectors.json'
+            Test-AddonInfrastructureSelectorOnCluster -Name 'dashboard' -Selector 'kubernetes.io/hostname=kubemaster' | Should -BeFalse
+            $script:selectorQueries.Count | Should -Be 1
+            $script:selectorQueries[0][3] | Should -BeExactly 'kubernetes.io/hostname=kubemaster,kubernetes.io/os=linux'
+        }
     }
 
     It 'requires matches for every rendered central workload constraint' {
-        '["pool=infra,kubernetes.io/os=linux","pool=infra,kubernetes.io/os=linux,zone=b"]' | Set-Content 'TestDrive:\effective-selectors.json'
-        Mock -ModuleName $moduleName Write-Log { }
-        Mock -ModuleName $moduleName Invoke-Kubectl {
-            if ($Params -contains 'pool=infra,kubernetes.io/os=linux') { return [pscustomobject]@{ Success = $true; Output = 'node/linux' } }
-            return [pscustomobject]@{ Success = $true; Output = '' }
+        InModuleScope -ModuleName $moduleName {
+            $script:selectorQueries = [System.Collections.ArrayList]::new()
+            Mock New-AddonPlacementManifest { return 'TestDrive:\effective-selectors.json' }
+            '["pool=infra,kubernetes.io/os=linux","pool=infra,kubernetes.io/os=linux,zone=b"]' | Set-Content 'TestDrive:\effective-selectors.json'
+            Mock Write-Log { }
+            Mock Invoke-Kubectl {
+                $null = $script:selectorQueries.Add(@($Params))
+                if ($script:selectorQueries.Count -eq 1) { return [pscustomobject]@{ Success = $true; Output = 'node/linux' } }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+            $result = Test-AddonInfrastructureSelectorOnCluster -Name 'monitoring' -Selector 'pool=infra'
+            $script:selectorQueries.Count | Should -Be 2 -Because ("Observed queries: $([string]::Join(';', @($script:selectorQueries | ForEach-Object { [string]::Join('|', $_) })))")
+            $script:selectorQueries[0][3] | Should -BeExactly 'pool=infra,kubernetes.io/os=linux'
+            $script:selectorQueries[1][3] | Should -BeExactly 'pool=infra,kubernetes.io/os=linux,zone=b'
+            $result | Should -BeFalse
         }
-        Test-AddonInfrastructureSelectorOnCluster -Name 'monitoring' -Selector 'pool=infra' | Should -BeFalse
-        Should -Invoke -ModuleName $moduleName Invoke-Kubectl -Times 2 -Scope It
     }
     It 'queries the effective metrics selector and allows no matches' {
-        Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $true; Output = '' } }
-        Mock -ModuleName $moduleName Write-Log {}
-
         InModuleScope -ModuleName $moduleName {
+            $script:selectorQueries = [System.Collections.ArrayList]::new()
+            Mock New-AddonPlacementManifest { return 'TestDrive:\effective-selectors.json' }
+            Mock Invoke-Kubectl {
+                $null = $script:selectorQueries.Add(@($Params))
+                [pscustomobject]@{ Success = $true; Output = '' }
+            }
+            Mock Write-Log {}
             Test-AddonInfrastructureSelectorOnCluster -Name 'metrics' -Selector 'kubernetes.io/hostname=infra-1' | Should -BeFalse
-            Should -Invoke Invoke-Kubectl -Times 1 -Scope It -ParameterFilter { $Params -contains '-l' -and $Params -contains 'kubernetes.io/hostname=infra-1,kubernetes.io/os=linux' }
+            $script:selectorQueries.Count | Should -Be 1
+            $script:selectorQueries[0][2] | Should -Be '-l'
+            $script:selectorQueries[0][3] | Should -BeExactly 'kubernetes.io/hostname=infra-1,kubernetes.io/os=linux'
         }
     }
 
     It 'fails when the destination cluster cannot evaluate the selector' {
-        Mock -ModuleName $moduleName Invoke-Kubectl { return [pscustomobject]@{ Success = $false; Output = 'cluster unavailable' } }
-
         InModuleScope -ModuleName $moduleName {
+            Mock New-AddonPlacementManifest { return 'TestDrive:\effective-selectors.json' }
+            Mock Invoke-Kubectl { return [pscustomobject]@{ Success = $false; Output = 'cluster unavailable' } }
             { Test-AddonInfrastructureSelectorOnCluster -Name 'metrics' -Selector 'kubernetes.io/hostname=infra-1' } | Should -Throw -ExpectedMessage '*cluster unavailable*'
         }
     }

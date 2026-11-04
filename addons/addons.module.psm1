@@ -712,7 +712,7 @@ function Test-AddonInfrastructureSelectorOnCluster {
 	if ($Name -eq 'dashboard') { $manifestDirectory = Join-Path $manifestDirectory 'chart' }
 	$selectorPath = New-AddonPlacementManifest -AddonName $Name -ManifestDirectory $manifestDirectory -Selector $Selector -SelectorsOnly
 	try {
-		$effectiveSelectors = @(Get-Content -LiteralPath $selectorPath -Raw | ConvertFrom-Json)
+		$effectiveSelectors = Get-Content -LiteralPath $selectorPath -Raw | ConvertFrom-Json
 		if ($effectiveSelectors.Count -eq 0) { throw "No effective infrastructure workload selectors were rendered for '$Name'." }
 		foreach ($effectiveSelector in $effectiveSelectors) {
 			$nodes = Invoke-Kubectl -Params 'get', 'nodes', '-l', $effectiveSelector, '-o', 'name'

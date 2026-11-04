@@ -226,11 +226,15 @@ k2s_windows_worker_ssh() {
 k2s_windows_worker_password() { printf '%s' "${K2S_WINDOWS_WORKER_PASSWORD:-admin}"; }
 
 k2s_windows_worker_password_ssh() {
-  SSHPASS=$(k2s_windows_worker_password) sshpass -e ssh -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "remote@$(k2s_windows_worker_ip)" "$@"
+  # ServerAlive* matters here as much as on k2s_windows_worker_ssh: observed directly, this
+  # call (icacls/Copy-Item against C:\ProgramData\ssh, which Windows Defender's real-time
+  # scanner intercepts) can go idle mid-command under nested virtualization. ConnectTimeout
+  # alone does not bound that -- it only covers the initial TCP connect.
+  SSHPASS=$(k2s_windows_worker_password) sshpass -e ssh -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip)" "$@"
 }
 
 k2s_windows_worker_password_scp() {
-  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "$(k2s_windows_worker_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
+  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$(k2s_windows_worker_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
 }
 
 # sshd reads administrators_authorized_keys on every authentication, so the key takes
@@ -305,6 +309,28 @@ k2s_windows_worker_sync_clock() {
   k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc)."
 }
 
+# Observed directly on a live worker via Get-Process during a stall: MsMpEng.exe (Windows
+# Defender's real-time scanner) was among the top CPU consumers, and the SSH call that hung
+# at that exact moment (k2s_windows_worker_password_ssh, installing the SSH key) does nothing
+# but file-system operations under C:\ProgramData\ssh -- exactly what Defender's filesystem
+# filter driver intercepts on every access. Every subsequent step downloads and extracts many
+# executables/archives, each individually scanned. Under nested virtualization that per-file
+# overhead is magnified enough to explain stalls recurring at unrelated points throughout the
+# install. This is a disposable, single-purpose CI worker, so disable it outright rather than
+# just excluding paths.
+k2s_windows_worker_disable_defender() {
+  local deadline=$((SECONDS + 300))
+  until k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true -DisableIOAVProtection $true -ErrorAction SilentlyContinue"'; do
+    if (( SECONDS >= deadline )); then
+      k2s_log WARN 'Timed out disabling Windows Defender on the worker; continuing anyway.'
+      return 0
+    fi
+    k2s_log WARN 'Disabling Windows Defender on the worker failed; retrying.'
+    sleep 10
+  done
+  k2s_log INFO 'Disabled Windows Defender real-time protection on the Windows worker.'
+}
+
 k2s_windows_worker_log_ssh_diagnostics() {
   local worker_ip="$1"
   k2s_log ERROR "Windows worker SSH diagnostics for $worker_ip"
@@ -332,7 +358,7 @@ k2s_windows_worker_copy_runtime() {
     --exclude='bin/*.vhdx' \
     -cf "$archive" "${runtime_paths[@]}" || { rm -f "$archive"; return 1; }
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\ProgramData\K2s -Force | Out-Null"' || { rm -f "$archive"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
   result=$?
   rm -f "$archive"
   (( result == 0 )) || return "$result"
@@ -348,7 +374,7 @@ k2s_windows_worker_copy_kubeconfig() {
   k2s_log INFO 'Copying the cluster kubeconfig to the Windows worker.'
   kubeconfig=$(mktemp) || return 1
   cp /etc/kubernetes/admin.conf "$kubeconfig" || { rm -f "$kubeconfig"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
   result=$?
   rm -f "$kubeconfig"
   return "$result"
@@ -369,7 +395,7 @@ k2s_windows_worker_collect_logs() {
   log_dir=${log_dir//\\//}
   log=$(mktemp) || return 0
   k2s_log ERROR "Retrieving the Windows worker K2s log from $log_dir/k2s.log"
-  if scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
+  if scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
     printf '===== Windows worker K2s log (last 300 lines) =====\n'
     tail -n 300 "$log" | tr -d '\r'
     printf '===== end of Windows worker K2s log =====\n'
@@ -502,7 +528,7 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
   # Best-effort: the worker's disk is a fresh qcow2 overlay on every install, so a stale
   # marker from a previous run cannot actually exist here. Do not abort the join over a
@@ -591,7 +617,7 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
   # Best-effort: the worker's disk is a fresh qcow2 overlay on every install, so a stale
   # marker from a previous run cannot actually exist here. Do not abort the start over a
@@ -683,6 +709,7 @@ k2s_windows_worker_provision() {
   k2s_log INFO "Starting the Windows worker and waiting for SSH on $(k2s_windows_worker_ip)."
   virsh start "$K2S_WINDOWS_WORKER_NAME" || return 1
   k2s_windows_worker_wait_for_ssh || return $?
+  k2s_windows_worker_disable_defender
   k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_copy_runtime || return $?
   k2s_windows_worker_copy_kubeconfig || return $?
@@ -698,6 +725,7 @@ k2s_windows_worker_start() {
   virsh net-start "$K2S_WINDOWS_WORKER_NETWORK" 2>/dev/null || true
   virsh start "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true
   k2s_windows_worker_wait_for_ssh || return $?
+  k2s_windows_worker_disable_defender
   k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_start_node
 }

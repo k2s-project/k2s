@@ -1672,6 +1672,12 @@ param([string]$InfraNodeSelector, [string]$StorageUsage)
 param([string]$InfraNodeSelector, [bool]$OmitCertMgr)
 @{ Keys = @($PSBoundParameters.Keys | Sort-Object) } | ConvertTo-Json | Set-Content -LiteralPath $env:K2S_PLACEMENT_CAPTURE
 '@ | Set-Content -LiteralPath (Join-Path $ingressDirectory 'Enable.ps1')
+            $registryDirectory = Join-Path $replayRoot 'registry'
+            New-Item -Path $registryDirectory -ItemType Directory -Force | Out-Null
+            @'
+param([string]$InfraNodeSelector, [string]$StorageNode, [string]$Ingress)
+@{ InfraNodeSelector = $InfraNodeSelector; StorageNode = $StorageNode; Ingress = $Ingress } | ConvertTo-Json | Set-Content -LiteralPath $env:K2S_PLACEMENT_CAPTURE
+'@ | Set-Content -LiteralPath (Join-Path $registryDirectory 'Enable.ps1')
             Mock -ModuleName $moduleName Write-Log { }
         }
 
@@ -1697,6 +1703,23 @@ param([string]$InfraNodeSelector, [bool]$OmitCertMgr)
             $savedParams = Get-Content -Raw -LiteralPath $capturePath | ConvertFrom-Json
             $savedParams.InfraNodeSelector | Should -Be 'kubernetes.io/hostname=infra-1'
             $savedParams.StorageUsage | Should -BeNullOrEmpty
+        }
+
+        It 'replays the saved registry selector storage node and non-default ingress unchanged' {
+            InModuleScope -ModuleName $moduleName -Parameters @{ replayRoot = $replayRoot } {
+                $config = [pscustomobject]@{
+                    Name = 'registry'
+                    InfraNodeSelector = 'pool=infra'
+                    StorageNode = 'worker-1'
+                    Ingress = 'traefik'
+                }
+                Enable-AddonFromConfig -Config $config -Root $replayRoot
+            }
+
+            $captured = Get-Content -Raw -LiteralPath $capturePath | ConvertFrom-Json
+            $captured.InfraNodeSelector | Should -BeExactly 'pool=infra'
+            $captured.StorageNode | Should -BeExactly 'worker-1'
+            $captured.Ingress | Should -BeExactly 'traefik'
         }
 
         It 'replays owner options only together with a saved selector' -ForEach @(
@@ -2304,6 +2327,52 @@ Describe 'Import-CertificateToTrustedRootStore' -Tag 'unit', 'ci', 'addon' {
 }
 
 Describe 'Install-CertManagerControllers' -Tag 'unit', 'ci', 'addon' {
+    Context 'infrastructure selector placement' {
+        BeforeEach {
+            Mock -ModuleName $moduleName Write-Log { }
+            Mock -ModuleName $moduleName Assert-SharedInfrastructurePlacement { }
+            Mock -ModuleName $moduleName Set-SharedInfrastructurePlacement { }
+            Mock -ModuleName $moduleName Get-CertManagerConfig { 'cert-manager.yaml' }
+            Mock -ModuleName $moduleName New-AddonPlacementInput { [pscustomobject]@{ Path = 'placed-cert-manager.yaml'; HasMatchingNodes = $true } }
+            Mock -ModuleName $moduleName Remove-Item { }
+            Mock -ModuleName $moduleName Invoke-Kubectl { [pscustomobject]@{ Success = $true; Output = 'ok' } }
+            Mock -ModuleName $moduleName Wait-ForCertManagerAvailable { $true }
+            Mock -ModuleName $moduleName Clear-KubectlDiscoveryCache { }
+            Mock -ModuleName $moduleName Invoke-CmdOnControlPlaneViaSSHKey { throw 'Selector targets must not use control-plane image pre-pull.' }
+        }
+
+        It 'waits for API CRD establishment and refreshed discovery when nodes match' {
+            InModuleScope -ModuleName $moduleName {
+                Install-CertManagerControllers -InfraNodeSelector 'pool=infra' | Should -BeTrue
+
+                Should -Invoke Wait-ForCertManagerAvailable -Times 1 -Exactly -Scope It
+                Should -Invoke Invoke-Kubectl -Times 1 -Exactly -Scope It -ParameterFilter {
+                    $Params -contains 'wait' -and $Params -contains '--for=condition=Established' -and
+                    $Params -contains 'crd/clusterissuers.cert-manager.io' -and $Params -contains 'crd/certificates.cert-manager.io'
+                }
+                Should -Invoke Clear-KubectlDiscoveryCache -Times 1 -Exactly -Scope It
+                Should -Invoke Invoke-Kubectl -Times 1 -Exactly -Scope It -ParameterFilter {
+                    $Params -contains 'get' -and $Params -contains 'clusterissuers' -and $Params -contains '--ignore-not-found'
+                }
+                Should -Invoke Invoke-CmdOnControlPlaneViaSSHKey -Times 0 -Scope It
+            }
+        }
+
+        It 'returns false without API CRD or discovery waits when no nodes match' {
+            Mock -ModuleName $moduleName New-AddonPlacementInput { [pscustomobject]@{ Path = 'placed-cert-manager.yaml'; HasMatchingNodes = $false } }
+            InModuleScope -ModuleName $moduleName {
+                Install-CertManagerControllers -InfraNodeSelector 'pool=infra' | Should -BeFalse
+
+                Should -Invoke Invoke-Kubectl -Times 1 -Exactly -Scope It -ParameterFilter { $Params -contains 'apply' }
+                Should -Invoke Wait-ForCertManagerAvailable -Times 0 -Scope It
+                Should -Invoke Invoke-Kubectl -Times 0 -Scope It -ParameterFilter { $Params -contains 'wait' -or $Params -contains 'clusterissuers' }
+                Should -Invoke Clear-KubectlDiscoveryCache -Times 0 -Scope It
+                Should -Invoke Invoke-CmdOnControlPlaneViaSSHKey -Times 0 -Scope It
+                Should -Invoke Remove-Item -Times 1 -Exactly -Scope It -ParameterFilter { $LiteralPath -eq 'placed-cert-manager.yaml' }
+            }
+        }
+    }
+
     Context 'images are already cached locally' {
         BeforeAll {
             Mock -ModuleName $moduleName Write-Log { }

@@ -90,7 +90,6 @@ function Enable-AddonFromConfig {
 			if ($null -ne $property) { $enableParameters[$propertyName] = $property.Value }
 		}
 		$enableParameters['InfraNodeSelector'] = [string]$selectorProperty.Value
-		if ($Config.Name -eq 'registry') { $enableParameters['Ingress'] = 'none' }
 	}
 	& $enableCmdPath @enableParameters
 
@@ -326,11 +325,13 @@ function New-AddonPlacementInput {
 			$inputPath = $temporaryInput
 		}
 		$k2sExe = Join-Path (Split-Path $PSScriptRoot -Parent) 'k2s.exe'
-		& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file $inputPath --selector $Selector --storage-node $StorageNode --output $outputPath
+		$renderOptions = @()
+		if (-not [string]::IsNullOrWhiteSpace($StorageNode)) { $renderOptions += @('--storage-node', $StorageNode) }
+		& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file $inputPath --selector $Selector --output $outputPath @renderOptions
 		if ($LASTEXITCODE -ne 0) { throw "Could not render owning placement input for '$AddonName'." }
 		$selectorsPath = [System.IO.Path]::GetTempFileName()
 		try {
-			& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file $inputPath --selector $Selector --storage-node $StorageNode --output $selectorsPath --selectors-only
+			& $k2sExe addons __render-placement-manifests --addon-name $AddonName --input-file $inputPath --selector $Selector --output $selectorsPath --selectors-only @renderOptions
 			if ($LASTEXITCODE -ne 0) { throw "Could not inspect effective selectors for '$AddonName'." }
 			$hasMatchingNodes = $true
 			foreach ($effectiveSelector in @(Get-Content -Raw -LiteralPath $selectorsPath | ConvertFrom-Json)) {
@@ -2384,6 +2385,7 @@ function Install-CertManagerControllers {
 			if (-not $result.Success) { throw "cert-manager apply failed: $($result.Output)" }
 			if (-not $placement.HasMatchingNodes) { return $false }
 			if (-not (Wait-ForCertManagerAvailable)) { throw 'cert-manager is not ready; shared placement is retained for retry.' }
+			Wait-ForCertManagerCrdDiscovery
 			return $true
 		}
 		finally { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue }
@@ -2423,6 +2425,10 @@ function Install-CertManagerControllers {
         throw "cert-manager is not ready. Please use cmctl.exe to investigate.`nInstallation of 'cert-manager' failed."
     }
 
+	Wait-ForCertManagerCrdDiscovery
+}
+
+function Wait-ForCertManagerCrdDiscovery {
     Write-Log '[CertManager] Waiting for cert-manager CRDs to be fully established' -Console
     $crdWaitResult = Invoke-Kubectl -Params 'wait', '--for=condition=Established', 'crd/clusterissuers.cert-manager.io', 'crd/certificates.cert-manager.io', '--timeout=120s'
     if ($crdWaitResult.Success -ne $true) {

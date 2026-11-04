@@ -1723,6 +1723,11 @@ Describe 'Dashboard Enable.ps1 selector with side-effect addons' -Tag 'unit', 'c
         $guardAst = $enableAst.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -match 'throw' } | Select-Object -First 1
         $probe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + $trapAst.Extent.Text + "`n" + $guardAst.Extent.Text + "`n'continued'")
         $guardOnlyProbe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + $guardAst.Extent.Text + "`n'continued'")
+        $statements = @($enableAst.EndBlock.Statements)
+        $alreadyEnabledGuard = $statements | Where-Object { $_ -is [System.Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -match 'Test-IsAddonEnabled' } | Select-Object -First 1
+        $transaction = $statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] -and $_.Extent.Text -match 'Invoke-AddonEnableTransaction' } | Select-Object -First 1
+        $retryStatements = $statements[[array]::IndexOf($statements, $alreadyEnabledGuard)..[array]::IndexOf($statements, $transaction)]
+        $retryProbe = [scriptblock]::Create($enableAst.ParamBlock.Extent.Text + "`n" + (($retryStatements | ForEach-Object { $_.Extent.Text }) -join "`n"))
     }
 
     BeforeEach {
@@ -1737,7 +1742,7 @@ Describe 'Dashboard Enable.ps1 selector with side-effect addons' -Tag 'unit', 'c
         @{ Case = 'metrics server'; Arguments = @{ InfraNodeSelector = 'pool=infra'; EnableMetricsServer = $true } }
     ) {
         $arguments = $Arguments
-        { & $guardOnlyProbe @arguments } | Should -Throw '*separately before enabling dashboard with infrastructure placement*'
+        { & $guardOnlyProbe @arguments } | Should -Throw '*--ingress none*--enable-metrics=false*'
     }
 
     It 'encodes the rejection as a structured error' {
@@ -1755,5 +1760,35 @@ Describe 'Dashboard Enable.ps1 selector with side-effect addons' -Tag 'unit', 'c
     ) {
         $arguments = $Arguments
         & $probe @arguments | Should -Be 'continued'
+    }
+
+    It 'recovers an omitted selector before retry preflight and passes matching-node state to the transaction' -ForEach @(
+        @{ MatchingNodes = $true }
+        @{ MatchingNodes = $false }
+    ) {
+        InModuleScope $moduleName -Parameters @{ Probe = $retryProbe; MatchingNodes = $MatchingNodes } {
+            $script:retryEvents = [System.Collections.Generic.List[string]]::new()
+            $script:retryMatchingNodes = $MatchingNodes
+            Mock Test-IsAddonEnabled { $script:retryEvents.Add('enabled-guard'); $false }
+            Mock Get-AddonEffectiveInfrastructureSelector {
+                $script:retryEvents.Add('resolve')
+                'pool=infra'
+            } -ParameterFilter { $Name -eq 'dashboard' -and [string]::IsNullOrWhiteSpace($Selector) }
+            Mock Get-HeadlampChartDirectory { 'chart' }
+            Mock New-AddonPlacementManifest { $script:retryEvents.Add('preflight'); 'placed-values.yaml' }
+            Mock Remove-Item { }
+            Mock Write-Log { }
+            Mock Test-AddonInfrastructureSelectorOnCluster { $script:retryEvents.Add('nodes'); $script:retryMatchingNodes }
+            Mock Invoke-AddonEnableTransaction { $script:retryEvents.Add('transaction') }
+
+            & $Probe
+
+            ($script:retryEvents -join ',') | Should -BeExactly 'enabled-guard,resolve,preflight,nodes,transaction'
+            Should -Invoke New-AddonPlacementManifest -Times 1 -Exactly -Scope It -ParameterFilter { $AddonName -eq 'dashboard' -and $Selector -eq 'pool=infra' }
+            Should -Invoke Test-AddonInfrastructureSelectorOnCluster -Times 1 -Exactly -Scope It -ParameterFilter { $Name -eq 'dashboard' -and $Selector -eq 'pool=infra' }
+            Should -Invoke Invoke-AddonEnableTransaction -Times 1 -Exactly -Scope It -ParameterFilter {
+                $Selector -eq 'pool=infra' -and $Addon.InfraNodeSelector -eq 'pool=infra' -and $HasMatchingNodes -eq $script:retryMatchingNodes
+            }
+        }
     }
 }

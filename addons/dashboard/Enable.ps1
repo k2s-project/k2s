@@ -41,7 +41,7 @@ Initialize-Logging -ShowLogs:$ShowLogs
 
 trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
 if (-not [string]::IsNullOrWhiteSpace($InfraNodeSelector) -and ($EnableMetricsServer -or $Ingress -ne 'none')) {
-    throw 'Enable the requested ingress and metrics addons separately before enabling dashboard with infrastructure placement.'
+    throw 'Enable the requested ingress and metrics addons separately before enabling dashboard with infrastructure placement. Use --ingress none and --enable-metrics=false when enabling dashboard with infrastructure placement.'
 }
 
 Write-Log '[Dashboard] Checking cluster status' -Console
@@ -77,6 +77,8 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'dashboard' })) -eq $
     Write-Log $errMsg -Error
     exit 1
 }
+
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'dashboard' -Selector $InfraNodeSelector
 
 $preflightValues = $null
 if (-not [string]::IsNullOrWhiteSpace($InfraNodeSelector)) {

@@ -258,9 +258,9 @@
       "type": "application"
     },
     {
-      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.2.zip",
+      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.3.zip",
       "name": "dockerd",
-      "version": "v29.9.2",
+      "version": "v29.9.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -277,13 +277,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/moby/moby@29.9.2",
+      "purl": "pkg:github/moby/moby@29.9.3",
       "type": "application"
     },
     {
-      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.2.zip",
+      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.3.zip",
       "name": "docker",
-      "version": "v29.9.2",
+      "version": "v29.9.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -300,13 +300,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/moby/moby@29.9.2",
+      "purl": "pkg:github/moby/moby@29.9.3",
       "type": "application"
     },
     {
-      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.2.zip",
+      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.3.zip",
       "name": "docker-proxy",
-      "version": "v29.9.2",
+      "version": "v29.9.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -323,7 +323,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/moby/moby@29.9.2",
+      "purl": "pkg:github/moby/moby@29.9.3",
       "type": "application"
     },
     {

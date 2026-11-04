@@ -98,9 +98,25 @@ function Invoke-DownloadWindowsImages($downloadsBaseDirectory, $Proxy) {
             Write-Log "Containerd is not initialized yet after $maxAmountOfRetries tries."
         }
 
-        # Now really pull image and ignore errors from ctr
+        # Now really pull image and ignore errors from ctr. --all-platforms is needed here:
+        # this artifact bundle can be built on one Windows build and reused (see
+        # ReuseDailyPackage) to install nodes on a different one, and Windows container
+        # images are matched by exact OS build, not just CPU architecture. Bounded with a
+        # timeout because at least one registry in use here (shsk2s.azurecr.io) is known to
+        # have multi-arch manifest issues (see CLAUDE.md) and has been observed to hang this
+        # pull indefinitely, with no built-in timeout of its own.
         $ErrorActionPreference = 'Continue'
-        &$nerdctlExe -n="k8s.io" pull $sandboxImageName 2>&1 | Out-Null
+        $pullTimeoutSeconds = 600
+        $pullJob = Start-Job -ScriptBlock {
+            param($NerdctlExe, $ImageName)
+            & $NerdctlExe -n="k8s.io" pull $ImageName --all-platforms 2>&1
+        } -ArgumentList $nerdctlExe, $sandboxImageName
+        if (-not (Wait-Job -Job $pullJob -Timeout $pullTimeoutSeconds)) {
+            Write-Log "Pulling '$sandboxImageName' did not finish within $pullTimeoutSeconds seconds; stopping it."
+            Stop-Job -Job $pullJob
+        }
+        Receive-Job -Job $pullJob | Out-Null
+        Remove-Job -Job $pullJob -Force
         $images = &$ctrExe -n="k8s.io" image ls 2>&1 | Out-String
 
         if ($images.Contains($sandboxImageName)) {
@@ -125,7 +141,7 @@ function Invoke-DownloadWindowsImages($downloadsBaseDirectory, $Proxy) {
         }
 
         Write-Log "Export image '$sandboxImageName' to '$tarFilePath'"
-        $exportSuccess = Invoke-Ctr -Arguments '-n', 'k8s.io', 'images', 'export', $tarFilePath, $sandboxImageName
+        $exportSuccess = Invoke-Ctr -Arguments '-n', 'k8s.io', 'images', 'export', '--all-platforms', $tarFilePath, $sandboxImageName
         if (-not $exportSuccess) {
             throw "The image '$sandboxImageName' could not be exported"
         }

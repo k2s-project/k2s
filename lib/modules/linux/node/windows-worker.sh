@@ -309,28 +309,6 @@ k2s_windows_worker_sync_clock() {
   k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc)."
 }
 
-# Observed directly on a live worker via Get-Process during a stall: MsMpEng.exe (Windows
-# Defender's real-time scanner) was among the top CPU consumers, and the SSH call that hung
-# at that exact moment (k2s_windows_worker_password_ssh, installing the SSH key) does nothing
-# but file-system operations under C:\ProgramData\ssh -- exactly what Defender's filesystem
-# filter driver intercepts on every access. Every subsequent step downloads and extracts many
-# executables/archives, each individually scanned. Under nested virtualization that per-file
-# overhead is magnified enough to explain stalls recurring at unrelated points throughout the
-# install. This is a disposable, single-purpose CI worker, so disable it outright rather than
-# just excluding paths.
-k2s_windows_worker_disable_defender() {
-  local deadline=$((SECONDS + 300))
-  until k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "Set-MpPreference -DisableRealtimeMonitoring $true -DisableBehaviorMonitoring $true -DisableIOAVProtection $true -ErrorAction SilentlyContinue"'; do
-    if (( SECONDS >= deadline )); then
-      k2s_log WARN 'Timed out disabling Windows Defender on the worker; continuing anyway.'
-      return 0
-    fi
-    k2s_log WARN 'Disabling Windows Defender on the worker failed; retrying.'
-    sleep 10
-  done
-  k2s_log INFO 'Disabled Windows Defender real-time protection on the Windows worker.'
-}
-
 k2s_windows_worker_log_ssh_diagnostics() {
   local worker_ip="$1"
   k2s_log ERROR "Windows worker SSH diagnostics for $worker_ip"
@@ -707,7 +685,6 @@ k2s_windows_worker_provision() {
   k2s_log INFO "Starting the Windows worker and waiting for SSH on $(k2s_windows_worker_ip)."
   virsh start "$K2S_WINDOWS_WORKER_NAME" || return 1
   k2s_windows_worker_wait_for_ssh || return $?
-  k2s_windows_worker_disable_defender
   k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_copy_runtime || return $?
   k2s_windows_worker_copy_kubeconfig || return $?
@@ -723,7 +700,6 @@ k2s_windows_worker_start() {
   virsh net-start "$K2S_WINDOWS_WORKER_NETWORK" 2>/dev/null || true
   virsh start "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true
   k2s_windows_worker_wait_for_ssh || return $?
-  k2s_windows_worker_disable_defender
   k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_start_node
 }

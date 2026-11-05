@@ -171,7 +171,7 @@ func selectorEnableParams(addonName string, manifest backupManifest) []string {
 	if storageNode := strings.TrimSpace(manifest.StorageNode); storageNode != "" {
 		params = append(params, fmt.Sprintf(" -StorageNode %s", utils.EscapeWithSingleQuotes(storageNode)))
 	}
-	if ingress := strings.TrimSpace(manifest.Ingress); ingress != "" {
+	if ingress := strings.TrimSpace(manifest.Ingress); ingress != "" && !strings.EqualFold(addonName, "dashboard") {
 		params = append(params, fmt.Sprintf(" -Ingress %s", utils.EscapeWithSingleQuotes(ingress)))
 	}
 	if manifest.OmitGrafana != nil {

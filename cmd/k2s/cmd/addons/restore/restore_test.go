@@ -70,6 +70,15 @@ func TestSelectorEnableParamsOmitsUnsetOwnerOptions(t *testing.T) {
 	}
 }
 
+func TestSelectorEnableParamsDoesNotReplayDashboardIngress(t *testing.T) {
+	manifest := backupManifest{InfraNodeSelector: "pool=infra", Ingress: "nginx"}
+	params := selectorEnableParams("dashboard", manifest)
+	joined := strings.Join(params, "")
+	if !strings.Contains(joined, "-InfraNodeSelector") || strings.Contains(joined, "-Ingress") {
+		t.Fatalf("dashboard params = %v, want selector without ingress", params)
+	}
+}
+
 func TestSelectorEnableParamsOnlyTargetsSupportedAddons(t *testing.T) {
 	manifest := backupManifest{InfraNodeSelector: "kubernetes.io/hostname=infra-1"}
 	for _, addon := range []string{"metrics", "dashboard", "monitoring", "logging", "registry", "ingress"} {

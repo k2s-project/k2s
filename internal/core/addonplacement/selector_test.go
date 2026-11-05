@@ -166,7 +166,7 @@ func TestOperatorPlacementUsesBundledSchemas(t *testing.T) {
 	}{
 		{"monitoring/manifests/monitoring/crds/crd-prometheuses.yaml", "Prometheus", "monitoring.coreos.com/v1", []string{"spec"}},
 		{"monitoring/manifests/monitoring/crds/crd-alertmanagers.yaml", "Alertmanager", "monitoring.coreos.com/v1", []string{"spec"}},
-		{"ingress/nginx-gw/manifests/crds/gateway-fabric-api-v2.8.0.yaml", "NginxProxy", "gateway.nginx.org/v1alpha2", []string{"spec", "kubernetes", "deployment", "pod"}},
+		{"ingress/nginx-gw/manifests/crds/gateway-fabric-api-v2.8.1.yaml", "NginxProxy", "gateway.nginx.org/v1alpha2", []string{"spec", "kubernetes", "deployment", "pod"}},
 	}
 	for _, test := range tests {
 		t.Run(test.kind, func(t *testing.T) {

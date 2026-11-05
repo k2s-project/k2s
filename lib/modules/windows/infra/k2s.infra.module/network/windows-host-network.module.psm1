@@ -359,12 +359,22 @@ function Test-WslNetwork {
 
     $conflicts = @()
     foreach ($network in $networks) {
-        if ($null -eq $network.Subnets -or @($network.Subnets).Count -eq 0) {
+        $networkSubnets = @(
+            if ($null -ne $network.Subnets) {
+                $network.Subnets
+            }
+            foreach ($ipam in $network.Ipams) {
+                if ($null -ne $ipam.Subnets) {
+                    $ipam.Subnets
+                }
+            }
+        )
+        if ($networkSubnets.Count -eq 0) {
             $message = "[WslNetwork] HNS '$($network.Name)' ($($network.Id)) has no inspectable subnets."
             Write-Log $message -Error
             throw "[PREREQ-FAILED] $message"
         }
-        foreach ($subnet in $network.Subnets) {
+        foreach ($subnet in $networkSubnets) {
             $cidr = $subnet.AddressPrefix
             Test-WslIpv4Subnet -Cidr $cidr -Source "HNS '$($network.Name)'"
             Write-Log "[WslNetwork] HNS '$($network.Name)' ($($network.Id)): $cidr"

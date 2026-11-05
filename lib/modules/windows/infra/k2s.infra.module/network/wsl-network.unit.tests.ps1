@@ -103,6 +103,95 @@ Describe 'Test-WslNetwork' -Tag 'unit', 'ci', 'network' {
         { Test-WslNetwork } | Should -Not -Throw
     }
 
+    It 'accepts schema-v2 IPAM subnets from the Windows 10 failure' {
+        Mock Get-HnsNetwork -ModuleName windows-host-network.module {
+            [pscustomobject]@{
+                Name = 'WSL'; Id = 'b95d0c5e-57d4-412b-b571-18a81a16e005'
+                Ipams = @([pscustomobject]@{
+                    Type = 'Static'
+                    Subnets = @([pscustomobject]@{ AddressPrefix = '172.25.80.0/20' })
+                })
+            }
+        }
+
+        { Test-WslNetwork } | Should -Not -Throw
+        Should -Invoke Write-Log -ModuleName windows-host-network.module -Times 1 -Exactly -ParameterFilter {
+            ($Messages -join ' ') -like '*b95d0c5e-57d4-412b-b571-18a81a16e005*172.25.80.0/20*'
+        }
+    }
+
+    It 'checks every schema-v2 IPAM and subnet for overlapping <Cidr>' -TestCases @(
+        @{ Cidr = '172.19.0.0/20'; Name = 'masterNetworkCIDR' },
+        @{ Cidr = '172.20.0.0/20'; Name = 'podNetworkMasterCIDR' },
+        @{ Cidr = '172.20.1.0/24'; Name = 'podNetworkWorkerCIDR' },
+        @{ Cidr = '172.21.0.0/20'; Name = 'servicesCIDRLinux' },
+        @{ Cidr = '172.21.1.0/24'; Name = 'servicesCIDRWindows' },
+        @{ Cidr = '172.22.0.0/20'; Name = 'loopbackAdapterCIDR' }
+    ) {
+        param($Cidr, $Name)
+        Mock Get-HnsNetwork -ModuleName windows-host-network.module {
+            [pscustomobject]@{
+                Name = 'WSL'; Id = 'wsl-network-id'
+                Ipams = @(
+                    [pscustomobject]@{ Subnets = @([pscustomobject]@{ AddressPrefix = '172.25.80.0/20' }) },
+                    [pscustomobject]@{ Subnets = @(
+                        [pscustomobject]@{ AddressPrefix = '192.168.128.0/20' },
+                        [pscustomobject]@{ AddressPrefix = $Cidr }
+                    ) }
+                )
+            }
+        }
+
+        { Test-WslNetwork } | Should -Throw "*$Cidr overlaps K2s $Name*"
+    }
+
+    It 'does not ignore IPAM subnets when legacy subnets are also present' {
+        Mock Get-HnsNetwork -ModuleName windows-host-network.module {
+            [pscustomobject]@{
+                Name = 'WSL'; Id = 'wsl-network-id'
+                Subnets = @([pscustomobject]@{ AddressPrefix = '172.25.80.0/20' })
+                Ipams = @([pscustomobject]@{
+                    Subnets = @([pscustomobject]@{ AddressPrefix = '172.19.1.0/24' })
+                })
+            }
+        }
+
+        { Test-WslNetwork } | Should -Throw '*172.19.1.0/24 overlaps K2s masterNetworkCIDR*'
+    }
+
+    It 'fails closed when schema-v2 subnet information is unavailable' -TestCases @(
+        @{ Ipams = $null },
+        @{ Ipams = @() },
+        @{ Ipams = @([pscustomobject]@{ Subnets = $null }) },
+        @{ Ipams = @([pscustomobject]@{ Subnets = @() }) }
+    ) {
+        param($Ipams)
+        Mock Get-HnsNetwork -ModuleName windows-host-network.module {
+            [pscustomobject]@{ Name = 'WSL'; Id = 'wsl-network-id'; Ipams = $Ipams }
+        }
+
+        { Test-WslNetwork } | Should -Throw '*has no inspectable subnets*'
+    }
+
+    It 'rejects malformed schema-v2 CIDRs' -TestCases @(
+        @{ Cidr = '' },
+        @{ Cidr = 'not-a-subnet' },
+        @{ Cidr = '172.25.80.0/33' },
+        @{ Cidr = 'fd00::/64' }
+    ) {
+        param($Cidr)
+        Mock Get-HnsNetwork -ModuleName windows-host-network.module {
+            [pscustomobject]@{
+                Name = 'WSL'; Id = 'wsl-network-id'
+                Ipams = @([pscustomobject]@{
+                    Subnets = @([pscustomobject]@{ AddressPrefix = $Cidr })
+                })
+            }
+        }
+
+        { Test-WslNetwork } | Should -Throw '*Cannot validate HNS*expected an IPv4 CIDR*'
+    }
+
     It 'checks all WSL networks and every subnet' {
         Mock Get-HnsNetwork -ModuleName windows-host-network.module {
             [pscustomobject]@{

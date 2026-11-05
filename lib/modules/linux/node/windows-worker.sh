@@ -619,10 +619,8 @@ catch {
 EOF
   scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
-  # Best-effort: the worker's disk is a fresh qcow2 overlay on every install, so a stale
-  # marker from a previous run cannot actually exist here. Do not abort the start over a
-  # transient hiccup in this throwaway cleanup call.
-  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || true
+  # The worker disk persists across stop/start, so remove any previous result before launching.
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return 1
   # The SSH session is expected to die mid-run, so its exit status says nothing.
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\StartWorker.ps1' || true
   k2s_windows_worker_wait_for_start_result

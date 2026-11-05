@@ -68,7 +68,7 @@ function Enable-AddonFromConfig {
 	$enableCmdPath = "$Root\$dirName\Enable.ps1"
 
 	if ((Test-Path $enableCmdPath) -ne $true) {
-		Write-Warning "Addon '$($Config.Name)' seems to be deprecated, skipping it."
+		Write-Warning "Addon '$addonName' is deprecated or missing ('$enableCmdPath' not found), skipping it. To use it, run 'k2s addons import' and 'k2s addons enable $addonName'."
 		return
 	}
 

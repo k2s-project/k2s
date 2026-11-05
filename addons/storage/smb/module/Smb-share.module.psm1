@@ -1348,6 +1348,11 @@ function Restore-AddonData {
 }
 
 function New-SmbShareNamespace {    
+    if ((Invoke-Kubectl -Params 'get', 'namespace', $namespace).Success -eq $true) {
+        Write-Log "Namespace '$namespace' already exists, skipping creation."
+        return
+    }
+
     $params = 'create', 'namespace', $namespace
     Write-Log "Invoking kubectl with '$params'.."
     $result = Invoke-Kubectl -Params $params

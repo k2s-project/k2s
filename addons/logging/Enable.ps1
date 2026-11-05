@@ -202,7 +202,7 @@ else {
     $pvOrig = [System.IO.File]::ReadAllText($pvFile)
     [System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode))
     try {
-        $createResult = Invoke-Kubectl -Params 'create', '-k', "$manifestsPath\"
+        $createResult = Invoke-Kubectl -Params 'apply', '-k', "$manifestsPath\"
     }
     finally {
         # Restore PV manifest placeholder

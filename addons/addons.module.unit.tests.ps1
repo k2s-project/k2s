@@ -863,7 +863,27 @@ Describe 'Enable-AddonFromConfig' -Tag 'unit', 'ci', 'addon' {
                 Should -Invoke Write-Warning -Times 1 -Scope Context -ParameterFilter { $Message -match 'a1' -and $Message -match 'deprecated' }
             }
         }
-    }  
+    }
+
+    Context 'addon implementation files are missing in the installation' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Test-Path { return $false } -ParameterFilter { $Path -match '\\a1\\impl1\\Enable.ps1' }
+            Mock -ModuleName $moduleName Write-Warning {}
+            Mock -ModuleName $moduleName Write-Log {}
+
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject] @{ Name = 'a1'; Implementation = 'impl1' }
+
+                Enable-AddonFromConfig -Config $config
+            }
+        }
+
+        It 'warns with the missing path and how to import the addon instead of failing' {
+            InModuleScope -ModuleName $moduleName {
+                Should -Invoke Write-Warning -Times 1 -Scope Context -ParameterFilter { $Message -like "*'a1 impl1'*missing*a1\impl1\Enable.ps1*k2s addons import*" }
+            }
+        }
+    }
 }
 
 Describe 'Get-AddonsConfig' -Tag 'unit', 'ci', 'addon' {

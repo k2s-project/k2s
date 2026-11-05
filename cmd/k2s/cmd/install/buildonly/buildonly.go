@@ -5,7 +5,6 @@ package buildonly
 
 import (
 	"fmt"
-	"strings"
 
 	cc "github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 
@@ -93,10 +92,10 @@ func buildInstallCmd(c *ic.InstallConfig) (cmd string, err error) {
 	}
 
 	if c.Env.Proxy != "" {
-		cmd += fmt.Sprintf(" -Proxy %s", c.Env.Proxy)
+		cmd += " -Proxy " + utils.EscapeWithSingleQuotes(c.Env.Proxy)
 	}
 	if len(c.Env.NoProxy) > 0 {
-		cmd += fmt.Sprintf(" -NoProxy '%s'", strings.Join(c.Env.NoProxy, "','"))
+		cmd += " -NoProxy " + utils.EscapeArrayWithSingleQuotes(c.Env.NoProxy)
 	}
 	if c.Behavior.ShowOutput {
 		cmd += " -ShowLogs"

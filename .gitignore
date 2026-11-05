@@ -185,6 +185,9 @@ bin/cni/vfprules.pdb
 
 addons/security/login
 addons/security/login.exe
+cmd/login/login.exe
+cmd/login/hydra.exe
+cmd/pause/pause.exe
 bin/linkerd.exe
 addons/security/manifests/linkerd/linkerd.yaml
 addons/security/manifests/linkerd/linkerd-crds.yaml

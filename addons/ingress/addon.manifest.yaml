@@ -127,7 +127,7 @@ spec:
           - quay.io/jetstack/cert-manager-cainjector
           - quay.io/jetstack/cert-manager-controller
           - quay.io/jetstack/cert-manager-webhook
-          - ghcr.io/nginx/nginx-gateway-fabric/nginx:2.8.0
+          - ghcr.io/nginx/nginx-gateway-fabric/nginx:2.8.1
           additionalImagesFiles:
           - ../../common/manifests/external-dns/deployment.yaml
           - ../../common/manifests/certmanager/cert-manager.yaml

@@ -7,10 +7,10 @@ kind: GatewayClass
 metadata:
   name: nginx-gw
   labels:
-    helm.sh/chart: nginx-gateway-fabric-2.8.0
+    helm.sh/chart: nginx-gateway-fabric-2.8.1
     app.kubernetes.io/name: nginx-gw
     app.kubernetes.io/instance: nginx-gw
-    app.kubernetes.io/version: "2.8.0"
+    app.kubernetes.io/version: "2.8.1"
     app.kubernetes.io/managed-by: Helm
 spec:
   controllerName: gateway.nginx.org/nginx-gw-controller

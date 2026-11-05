@@ -1,0 +1,251 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI - Windows Cluster
+
+# Never run untrusted pull-request code on an elevated self-hosted runner.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k2s-windows-cluster
+  cancel-in-progress: false
+
+jobs:
+  install-and-test:
+    name: Install and test Hyper-V cluster
+    runs-on: [self-hosted, Windows, X64, k2s-hyperv]
+    environment: k2s-windows-e2e
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    env:
+      K2S_LOG_ROOT: C:\var\log
+      KUBECONFIG: C:\k2s-ci\config
+      SYSTEM_TEST_KEEP_RESOURCES_ON_ERROR: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check runner prerequisites and stage source on C drive
+        id: preflight
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+              throw 'Run the runner under an elevated local administrator account.'
+          }
+          if ($env:SystemDrive -ne 'C:' -or -not [Environment]::Is64BitProcess) {
+              throw 'This workflow requires 64-bit Windows PowerShell on a C: system drive.'
+          }
+          if ((Get-ExecutionPolicy) -notin @('RemoteSigned', 'Unrestricted', 'Bypass')) {
+              throw 'Configure RemoteSigned (or less restrictive) execution policy before starting the runner.'
+          }
+          $hostInfo = Get-CimInstance Win32_ComputerSystem
+          $osInfo = Get-CimInstance Win32_OperatingSystem
+          if ([int]$osInfo.BuildNumber -lt 20348 -or $osInfo.ProductType -eq 1) {
+              throw 'Use Windows Server 2022 or newer for this workflow.'
+          }
+          if ($hostInfo.NumberOfLogicalProcessors -lt 8 -or $hostInfo.TotalPhysicalMemory -lt 16GB -or
+              ($osInfo.FreePhysicalMemory * 1KB) -lt 10GB) {
+              throw 'Provide at least 8 logical CPUs, 16 GiB RAM and 10 GiB free RAM (32 GiB RAM recommended).'
+          }
+          if ((Get-PSDrive C).Free -lt 100GB) {
+              throw 'Provide at least 100 GiB free on C: for source, downloads, VHDX files and container images.'
+          }
+          foreach ($feature in @('Microsoft-Hyper-V', 'Microsoft-Hyper-V-Management-PowerShell',
+                                'Containers', 'VirtualMachinePlatform')) {
+              if ((Get-WindowsOptionalFeature -Online -FeatureName $feature).State -ne 'Enabled') {
+                  throw "Enable $feature and reboot BEFORE dispatching this workflow."
+              }
+          }
+          foreach ($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending',
+                             'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')) {
+              if (Test-Path $key) {
+                  throw 'A Windows servicing reboot is pending. Reboot before dispatching.'
+              }
+          }
+          foreach ($service in @('vmms', 'vmcompute', 'hns')) {
+              if ((Get-Service $service).Status -ne 'Running') {
+                  throw "Required service $service is not running."
+              }
+          }
+          $docker = Get-Service 'com.docker.service' -ErrorAction SilentlyContinue
+          if (($docker -and $docker.Status -eq 'Running') -or
+              (Get-Process 'Docker Desktop', 'dockerd' -ErrorAction SilentlyContinue)) {
+              throw 'Stop Docker Desktop and Docker Engine before dispatching.'
+          }
+          if (-not (Test-Path 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64') -or
+              (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64').Installed -ne 1) {
+              throw 'Install the Microsoft Visual C++ v14 x64 redistributable before dispatching.'
+          }
+          $curlVersion = & curl.exe --version
+          if ($LASTEXITCODE -ne 0 -or $curlVersion[0] -notmatch '^curl (\d+\.\d+\.\d+)' -or
+              [version]$Matches[1] -lt [version]'7.71.0') {
+              throw 'curl.exe >= 7.71.0 is required.'
+          }
+          # OpenSSH prints its version to stderr; PS 5.1 must not treat that as a terminating error.
+          try {
+              $ErrorActionPreference = 'Continue'
+              $sshVersion = & ssh.exe -V 2>&1
+              $sshExitCode = $LASTEXITCODE
+          }
+          finally {
+              $ErrorActionPreference = 'Stop'
+          }
+          if ($sshExitCode -ne 0 -or "$sshVersion" -notmatch 'OpenSSH(?:_for_Windows)?_(\d+)' -or
+              [int]$Matches[1] -lt 8) {
+              throw 'OpenSSH >= 8 is required.'
+          }
+          if ($env:HTTP_PROXY -or $env:HTTPS_PROXY) {
+              throw 'Remove HTTP_PROXY/HTTPS_PROXY from the runner environment; use Windows proxy configuration.'
+          }
+          if ((Get-VM) -or (Get-VMSwitch | Where-Object SwitchType -eq 'External') -or
+              (Test-Path 'C:\ProgramData\K2s\setup.json') -or (Test-Path 'C:\k2s-ci')) {
+              throw 'Runner is not clean. Use a fresh disposable VM without existing VMs, external switches or K2s state.'
+          }
+
+          # A running hypervisor or CPU flag alone does not prove nested VM startup works.
+          $probe = $null
+          try {
+              $probe = New-VM -Name "k2s-ci-probe-$env:GITHUB_RUN_ID" -Generation 1 -NoVHD -MemoryStartupBytes 512MB
+              $probe | Start-VM
+              if ((Get-VM -Id $probe.Id).State -ne 'Running') {
+                  throw 'Hyper-V VM startup failed. Enable nested virtualization on the outer host.'
+              }
+          }
+          finally {
+              if ($null -ne $probe) {
+                  if ((Get-VM -Id $probe.Id).State -ne 'Off') {
+                      $probe | Stop-VM -TurnOff -Force
+                  }
+                  $probe | Remove-VM -Force
+              }
+          }
+
+          New-Item -ItemType Directory -Path 'C:\k2s-ci' | Out-Null
+          # Preserve HEAD for build version metadata; checkout did not persist its token.
+          & robocopy.exe "$env:GITHUB_WORKSPACE" 'C:\k2s-ci' /E /R:2 /W:2 /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -ge 8) { throw "Source staging failed: robocopy exit $LASTEXITCODE" }
+          exit 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build all K2s executables
+        timeout-minutes: 30
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s-ci'
+          # The helper throws on build failure, but git describe writes stderr on untagged commits.
+          try {
+              $ErrorActionPreference = 'Continue'
+              & .\smallsetup\common\BuildGoExe.ps1 -BuildAll
+          }
+          finally {
+              $ErrorActionPreference = 'Stop'
+          }
+          foreach ($binary in @('k2s.exe', 'bin\cloudinitisobuilder.exe', 'bin\devgon.exe',
+                               'bin\httpproxy.exe', 'bin\yaml2json.exe', 'bin\zap.exe',
+                               'bin\cni\bridge.exe', 'bin\cni\l4proxy.exe',
+                               'bin\cni\vfprules.exe', 'bin\cni\cplauncher.exe')) {
+              if (-not (Test-Path $binary)) { throw "Build did not produce $binary" }
+          }
+
+      - name: Install K2s with Linux control plane and Windows worker
+        id: install
+        timeout-minutes: 120
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s-ci'
+          & .\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output
+          if ($LASTEXITCODE -ne 0) { throw "k2s install failed with exit $LASTEXITCODE" }
+
+      - name: Verify both nodes and system pods
+        timeout-minutes: 15
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s-ci'
+          & .\k2s.exe status --output
+          if ($LASTEXITCODE -ne 0) { throw 'k2s status failed.' }
+          $kubectl = '.\bin\kube\kubectl.exe'
+          & $kubectl wait --for=condition=Ready nodes --all --timeout=600s
+          if ($LASTEXITCODE -ne 0) { throw 'Nodes did not become Ready.' }
+          $nodeJson = & $kubectl get nodes -o json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not query nodes.' }
+          $nodes = ($nodeJson -join "`n" | ConvertFrom-Json).items
+          if ($nodes.Count -ne 2 -or
+              @($nodes | Where-Object { $_.metadata.labels.'kubernetes.io/os' -eq 'linux' }).Count -ne 1 -or
+              @($nodes | Where-Object { $_.metadata.labels.'kubernetes.io/os' -eq 'windows' }).Count -ne 1) {
+              throw 'Expected exactly one Linux control-plane node and one Windows worker node.'
+          }
+          foreach ($namespace in @('kube-system', 'kube-flannel')) {
+              & $kubectl wait --for=condition=Ready pods --all -n $namespace --timeout=300s
+              if ($LASTEXITCODE -ne 0) { throw "System pods in $namespace did not become Ready." }
+          }
+
+      - name: Run core cluster acceptance suite
+        timeout-minutes: 100
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s-ci'
+          # go run uses the Ginkgo version pinned in go.mod; never run suites in parallel on this cluster.
+          & go run github.com/onsi/ginkgo/v2/ginkgo -v --procs=1 --fail-on-empty --timeout=90m `
+              --label-filter='core && acceptance' --junit-report=core.xml `
+              --output-dir="$env:RUNNER_TEMP\k2s-test-results" .\test\e2e\cluster\core
+          if ($LASTEXITCODE -ne 0) { throw "Core acceptance suite failed with exit $LASTEXITCODE" }
+
+      - name: Collect failure diagnostics
+        if: ${{ failure() && steps.install.outcome != 'skipped' && steps.preflight.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $outDir = "$env:RUNNER_TEMP\k2s-test-results"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          Set-Location 'C:\k2s-ci'
+          foreach ($query in @(@('get', 'nodes', '-o', 'wide'), @('get', 'pods', '-A', '-o', 'wide'),
+                               @('get', 'events', '-A', '--sort-by=.lastTimestamp'))) {
+              & .\bin\kube\kubectl.exe @query --request-timeout=15s 2>&1 |
+                  Out-File "$outDir\cluster-diagnostics.txt" -Append
+              if ($LASTEXITCODE -ne 0) { Write-Warning "Diagnostic query failed: $query" }
+          }
+          Get-VM | Format-List Name, State, Status | Out-File "$outDir\hyperv.txt"
+          foreach ($log in @('Microsoft-Windows-Hyper-V-VMMS-Admin', 'Microsoft-Windows-Hyper-V-Worker-Admin')) {
+              Get-WinEvent -LogName $log -MaxEvents 50 |
+                  Format-List TimeCreated, Id, LevelDisplayName, Message |
+                  Out-File "$outDir\hyperv.txt" -Append
+          }
+
+      - name: Upload results and K2s log before uninstall
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/k2s-test-results/
+            C:/var/log/k2s.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Uninstall K2s
+        if: ${{ always() && steps.install.outcome != 'skipped' && steps.preflight.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s-ci'
+          & .\k2s.exe uninstall --output
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Uninstall failed. Discard the runner VM; do not reuse it.'
+          }

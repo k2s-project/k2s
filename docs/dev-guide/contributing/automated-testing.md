@@ -58,6 +58,104 @@ change network state. Evidence appears under `NODE-NET DIAG` in test output.
 
 !!! tip
     When running the [Main Script: execute_all_tests.ps1](#main-script-execute_all_testsps1) for the first time, those prerequisites are installed automatically in the correct version.
+
+## Windows Cluster GitHub Actions Workflow
+
+The **CI - Windows Cluster** workflow (`.github/workflows/ci-windows-cluster.yml`)
+builds all ten Windows executables, runs `k2s install`, verifies that both the
+Linux control plane and Windows worker are Ready, and runs the existing
+`test/e2e/cluster/core` acceptance suite. The suite deploys Linux and Windows
+workloads and checks DNS, Service forwarding, cross-node connectivity and
+internet access. This is a core cluster test, not the complete addon or
+lifecycle test matrix.
+
+### Provision the Runner Before Dispatch
+
+Use a **dedicated, disposable x64 Windows Server 2022 or 2025 runner VM** with
+labels `self-hosted`, `Windows`, `X64`, and `k2s-hyperv`. Do not assume that
+`windows-latest` or an arbitrary larger runner exposes nested virtualization.
+The workflow requires at least 8 logical CPUs, 16 GiB RAM (32 GiB recommended),
+10 GiB free RAM and 100 GiB free disk space on the `C:` system drive. The
+control-plane VM receives 6 CPUs, 6 GiB static memory and a 50 GiB disk.
+
+If the runner itself is a VM, expose virtualization extensions **on the outer
+hypervisor while the runner VM is powered off**, not inside the workflow:
+
+```powershell
+Set-VMProcessor -VMName '<runner-vm>' -ExposeVirtualizationExtensions $true
+Set-VMMemory -VMName '<runner-vm>' -DynamicMemoryEnabled $false
+```
+
+For Azure or another cloud, select a VM family/size and security configuration
+that explicitly supports nested Hyper-V; enabling Windows features alone does
+not provide this capability. For physical runners, enable virtualization in
+firmware. The workflow creates, starts and removes a diskless probe VM to
+verify actual VM startup, rather than relying only on CPU flags.
+
+Enable these features in an elevated Windows PowerShell session, then **reboot
+before registering/starting the runner**:
+
+```powershell
+Enable-WindowsOptionalFeature -Online -FeatureName @(
+    'Microsoft-Hyper-V',
+    'Microsoft-Hyper-V-Management-PowerShell',
+    'Containers',
+    'VirtualMachinePlatform'
+) -All -NoRestart
+Set-ExecutionPolicy RemoteSigned -Force
+Restart-Computer
+```
+
+Install the Microsoft Visual C++ v14 **x64** redistributable, `curl.exe`
+>= 7.71.0, OpenSSH >= 8, and Git. Run the Actions runner with an elevated local
+administrator token and a usable profile; the job uses Windows PowerShell 5.1.
+Go is installed by `actions/setup-go`, using the version from `go.mod`.
+No preinstalled `k2s.exe`, Ginkgo or Pester is needed.
+
+Stop Docker Desktop/Engine. Start with no existing K2s installation, Hyper-V
+VMs, external virtual switches or `C:\k2s-ci` staging folder. Allow downloads
+and registry access from the host and nested VM, including the configured
+`shsk2s.azurecr.io` registry. Ensure host/VPN/cloud networks do not overlap the
+subnets in `cfg/config.json` (by default `172.19.1.0/24`, `172.20.0.0/16`,
+`172.21.0.0/16` and `172.22.1.0/24`). Preserve GitHub runner connectivity when
+K2s creates switches and changes DNS/routing. K2s uses internal switches/NAT;
+do not create an external switch on the runner to provide nested networking.
+Leave `HTTP_PROXY`/`HTTPS_PROXY` unset in the runner environment; configure
+any required proxy through Windows as described in the installation guide.
+
+### Dispatch, Results and Runner Disposal
+
+Create the `k2s-windows-e2e` GitHub environment with required reviewers and
+deployment branch restrictions, and restrict the runner group to trusted
+repositories/workflows. Under **Actions > CI - Windows Cluster > Run workflow**,
+select a reviewed branch. To test a PR, dispatch its reviewed head branch
+within this repository; do not execute untrusted fork code on this runner.
+There are deliberately no `pull_request` or `pull_request_target` triggers.
+Runs are serialized and do not cancel an active installation.
+
+Source (including credential-free Git metadata for build version information)
+is staged at `C:\k2s-ci` because installation on the system drive is recommended.
+The workflow uses the repository's `BuildGoExe.ps1 -BuildAll` helper before:
+
+```console
+C:\k2s-ci\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output
+```
+
+Ginkgo is invoked through `go run` at the version pinned in `go.mod`, with one
+process and `--fail-on-empty`. JUnit results, failure-only Kubernetes/Hyper-V
+diagnostics and `k2s.log` are retained for seven days. Logs may contain internal
+network information; review them before sharing. Kubeconfigs, SSH keys and
+full system dumps are not uploaded.
+
+The job attempts `k2s uninstall --output` even after installation/test failure,
+and uploads evidence first. **Discard/reimage the runner VM after every run**,
+including success, cancellation or timeout. Register it as an ephemeral
+runner (`config.cmd --ephemeral`) and arrange infrastructure-side disposal;
+ephemeral registration alone does not delete the VM. Uninstall cannot restore
+all machine changes: installation modifies networking, Windows services,
+registry settings and Defender settings. Partial installs may also leave
+provisioning VMs. Never reuse this runner for unrelated jobs or treat workflow
+cleanup as a substitute for VM disposal.
   
 ## Main Script: execute_all_tests.ps1
 The main entry point for automated testing is the script `execute_all_tests.ps1`, whether being executed locally or in CI/CD workflows. It is not mandatory, but recommended to use this script instead of running *Pester* or *Ginkgo* commands directly due to the following features of the `execute_all_tests.ps1` script:

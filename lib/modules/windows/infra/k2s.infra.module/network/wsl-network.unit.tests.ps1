@@ -103,21 +103,38 @@ Describe 'Test-WslNetwork' -Tag 'unit', 'ci', 'network' {
         { Test-WslNetwork } | Should -Not -Throw
     }
 
-    It 'accepts schema-v2 IPAM subnets from the Windows 10 failure' {
+    It 'accepts schema-v2 IPAM subnet <Cidr> from the Windows 10 failures' -TestCases @(
+        @{ Cidr = '172.25.80.0/20' },
+        @{ Cidr = '172.23.144.0/20' }
+    ) {
+        param($Cidr)
         Mock Get-HnsNetwork -ModuleName windows-host-network.module {
             [pscustomobject]@{
                 Name = 'WSL'; Id = 'b95d0c5e-57d4-412b-b571-18a81a16e005'
                 Ipams = @([pscustomobject]@{
                     Type = 'Static'
-                    Subnets = @([pscustomobject]@{ AddressPrefix = '172.25.80.0/20' })
+                    Subnets = @([pscustomobject]@{ IpAddressPrefix = $Cidr })
                 })
             }
         }
 
         { Test-WslNetwork } | Should -Not -Throw
         Should -Invoke Write-Log -ModuleName windows-host-network.module -Times 1 -Exactly -ParameterFilter {
-            ($Messages -join ' ') -like '*b95d0c5e-57d4-412b-b571-18a81a16e005*172.25.80.0/20*'
+            ($Messages -join ' ') -like "*b95d0c5e-57d4-412b-b571-18a81a16e005*$Cidr*"
         }
+    }
+
+    It 'fails closed when a schema-v2 subnet has no prefix' {
+        Mock Get-HnsNetwork -ModuleName windows-host-network.module {
+            [pscustomobject]@{
+                Name = 'WSL'; Id = 'wsl-network-id'
+                Ipams = @([pscustomobject]@{
+                    Subnets = @([pscustomobject]@{ Routes = @() })
+                })
+            }
+        }
+
+        { Test-WslNetwork } | Should -Throw '*Cannot validate HNS*expected an IPv4 CIDR*'
     }
 
     It 'checks every schema-v2 IPAM and subnet for overlapping <Cidr>' -TestCases @(
@@ -133,10 +150,10 @@ Describe 'Test-WslNetwork' -Tag 'unit', 'ci', 'network' {
             [pscustomobject]@{
                 Name = 'WSL'; Id = 'wsl-network-id'
                 Ipams = @(
-                    [pscustomobject]@{ Subnets = @([pscustomobject]@{ AddressPrefix = '172.25.80.0/20' }) },
+                    [pscustomobject]@{ Subnets = @([pscustomobject]@{ IpAddressPrefix = '172.25.80.0/20' }) },
                     [pscustomobject]@{ Subnets = @(
-                        [pscustomobject]@{ AddressPrefix = '192.168.128.0/20' },
-                        [pscustomobject]@{ AddressPrefix = $Cidr }
+                        [pscustomobject]@{ IpAddressPrefix = '192.168.128.0/20' },
+                        [pscustomobject]@{ IpAddressPrefix = $Cidr }
                     ) }
                 )
             }
@@ -151,7 +168,7 @@ Describe 'Test-WslNetwork' -Tag 'unit', 'ci', 'network' {
                 Name = 'WSL'; Id = 'wsl-network-id'
                 Subnets = @([pscustomobject]@{ AddressPrefix = '172.25.80.0/20' })
                 Ipams = @([pscustomobject]@{
-                    Subnets = @([pscustomobject]@{ AddressPrefix = '172.19.1.0/24' })
+                    Subnets = @([pscustomobject]@{ IpAddressPrefix = '172.19.1.0/24' })
                 })
             }
         }
@@ -184,7 +201,7 @@ Describe 'Test-WslNetwork' -Tag 'unit', 'ci', 'network' {
             [pscustomobject]@{
                 Name = 'WSL'; Id = 'wsl-network-id'
                 Ipams = @([pscustomobject]@{
-                    Subnets = @([pscustomobject]@{ AddressPrefix = $Cidr })
+                    Subnets = @([pscustomobject]@{ IpAddressPrefix = $Cidr })
                 })
             }
         }

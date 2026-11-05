@@ -212,7 +212,8 @@ To install the control-plane in WSL 2 instead of a dedicated *Linux* VM, run:
 
 Windows selects the underlying WSL HNS subnet automatically. Once WSL starts,
 K2s validates that subnet before changing the Windows WSL adapter address.
-Validation supports both legacy HNS and schema-v2 IPAM subnet information.
+Validation supports legacy HNS `Subnets[].AddressPrefix` and schema-v2
+`Ipams[].Subnets[].IpAddressPrefix` subnet information.
 An overlap with the configured control-plane, node pod, service slice, or
 loopback transit subnet stops installation with the conflicting CIDRs in the
 error. Overlap only with an aggregate pod or service range produces a warning.

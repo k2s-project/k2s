@@ -376,6 +376,9 @@ function Test-WslNetwork {
         }
         foreach ($subnet in $networkSubnets) {
             $cidr = $subnet.AddressPrefix
+            if ($null -eq $cidr) {
+                $cidr = $subnet.IpAddressPrefix
+            }
             Test-WslIpv4Subnet -Cidr $cidr -Source "HNS '$($network.Name)'"
             Write-Log "[WslNetwork] HNS '$($network.Name)' ($($network.Id)): $cidr"
             foreach ($k2sSubnet in $k2sSubnets) {

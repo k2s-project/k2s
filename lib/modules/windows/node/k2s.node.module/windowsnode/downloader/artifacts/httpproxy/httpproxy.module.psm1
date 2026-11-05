@@ -57,7 +57,8 @@ function Install-WinHttpProxy {
     &$kubeBinPath\nssm set httpproxy AppStopMethodWindow 0 | Out-Null
     &$kubeBinPath\nssm set httpproxy AppStopMethodThreads 0 | Out-Null
 
-    New-NetFirewallRule -DisplayName $proxyInboundFirewallRule -Group 'k2s' -Direction Inbound -LocalPort 8181 -Protocol TCP -Action Allow | Out-Null
+    # Only the cluster networks may reach the proxy; this mirrors the --allowed-cidr whitelist of httpproxy.
+    New-NetFirewallRule -DisplayName $proxyInboundFirewallRule -Group 'k2s' -Direction Inbound -LocalPort $httpProxyPort -Protocol TCP -RemoteAddress (Get-HttpProxyAllowedCIDRs) -Action Allow | Out-Null
     Start-Service httpproxy
 }
 
@@ -95,6 +96,23 @@ function Remove-WinHttpProxy {
     }
 }
 
+function Get-HttpProxyAllowedCIDRs {
+    # Cluster pods, services, the control plane network and the loopback adapter network are the only clients of the proxy.
+    $allowedCIDRs = @(
+        @(
+            Get-ConfiguredClusterCIDR
+            Get-ConfiguredClusterCIDRServices
+            Get-ConfiguredControlPlaneCIDR
+            Get-LoopbackAdapterCIDR
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if ($allowedCIDRs.Count -eq 0) {
+        throw '[HttpProxy] No cluster network CIDR configured, cannot restrict access to the httpproxy'
+    }
+    return $allowedCIDRs
+}
+
 function Set-ProxyConfigInHttpProxy {
     Param(
         [parameter(Mandatory = $false, HelpMessage = 'Proxy for Host')]
@@ -102,12 +120,7 @@ function Set-ProxyConfigInHttpProxy {
         [parameter(Mandatory = $false, HelpMessage = 'No Proxy for Host')]
         [string[]]$ProxyOverrides = @()
     )
-    $ipControlPlaneCIDR = Get-ConfiguredControlPlaneCIDR
-    $clusterCIDR = Get-ConfiguredClusterCIDR
-    $clusterCIDRServices = Get-ConfiguredClusterCIDRServices
-    $loopbackAdapterCIDR = Get-LoopbackAdapterCIDR
-
-    $appParameters = "--allowed-cidr $clusterCIDR --allowed-cidr $clusterCIDRServices --allowed-cidr $ipControlPlaneCIDR --allowed-cidr $loopbackAdapterCIDR"
+    $appParameters = (Get-HttpProxyAllowedCIDRs | ForEach-Object { "--allowed-cidr $_" }) -join ' '
     if ( $Proxy -ne '' ) {
         $appParameters = $appParameters + " --forwardproxy $Proxy"
     }

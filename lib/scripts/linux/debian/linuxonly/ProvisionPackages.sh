@@ -91,11 +91,8 @@ case "$operation" in
     if [[ -d "$buildah_dir" ]] && compgen -G "$buildah_dir/*.deb" >/dev/null 2>&1; then
       k2s_log INFO "Installing buildah packages from $buildah_dir"
       bash "$node_extension_dir/install-buildah-packages.sh" "$buildah_dir"
-    elif compgen -G "$target_dir/buildah*.deb" >/dev/null 2>&1; then
-      k2s_log INFO "Installing buildah packages from $target_dir"
-      bash "$node_extension_dir/install-buildah-packages.sh" "$target_dir"
     else
-      k2s_log ERROR "Buildah deb packages not found in $buildah_dir or $target_dir"
+      k2s_log ERROR "Buildah deb packages not found in $buildah_dir"
       exit 1
     fi
     ;;

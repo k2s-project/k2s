@@ -37,3 +37,18 @@ k2s_require_directory() {
     return 1
   fi
 }
+
+k2s_validate_registry_name() {
+  local registry="${1:-}"
+  if [[ -z "$registry" ]]; then
+    printf '%s\n' 'Registry name cannot be empty.' >&2
+    return 1
+  fi
+
+  # Registry must be a valid host[:port][/path] without quotes, newlines, or shell metacharacters
+  local registry_regex='^([a-zA-Z0-9_.-]+|\[[a-fA-F0-9:]+\])(:[0-9]+)?(/[a-zA-Z0-9_.-]+)*$'
+  if [[ ! "$registry" =~ $registry_regex ]]; then
+    printf "Invalid registry name: '%s'\n" "$registry" >&2
+    return 1
+  fi
+}

@@ -215,6 +215,11 @@ func TestFlexibleSize(t *testing.T) {
 			expected: "12345.5",
 		},
 		{
+			name:     "large float exceeding int64",
+			input:    `1e20`,
+			expected: "100000000000000000000",
+		},
+		{
 			name:     "null",
 			input:    `null`,
 			expected: "",

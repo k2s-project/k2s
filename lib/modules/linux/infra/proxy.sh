@@ -42,14 +42,21 @@ EOF
 }
 
 k2s_proxy_install() {
-  local gateway pod service primary args network_dependencies
+  local gateway pod service primary args network_dependencies container_bridge
   gateway=$(k2s_cfg '.smallsetup.kubeSwitch')
   pod=$(k2s_cfg '.smallsetup.podNetworkCIDR')
   service=$(k2s_cfg '.smallsetup.servicesCIDR')
+  # 10.88.0.0/16 is the default CNI/Netavark bridge subnet for CRI-O and Buildah containers.
+  # Traffic from this bridge is intentionally permitted so container image builds (such as
+  # RUN steps during buildah bud) can access the HTTP proxy.
+  container_bridge=$(k2s_cfg '.smallsetup.crioBridgeCIDR // empty' 2>/dev/null || true)
+  if [[ -z "$container_bridge" ]]; then
+    container_bridge='10.88.0.0/16'
+  fi
   primary=$(ip -4 route get 1.1.1.1 | awk '/src/ {for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}')
   [[ -x "$K2S_INSTALL_DIR/bin/httpproxy" && -n "$primary" ]] || return 1
 
-  args="--addr :8181 --allowed-cidr 127.0.0.0/8 --allowed-cidr $pod --allowed-cidr $service --allowed-cidr $(k2s_cfg '.smallsetup.masterNetworkCIDR') --allowed-cidr $primary/32 --allowed-cidr 10.88.0.0/16"
+  args="--addr :8181 --allowed-cidr 127.0.0.0/8 --allowed-cidr $pod --allowed-cidr $service --allowed-cidr $(k2s_cfg '.smallsetup.masterNetworkCIDR') --allowed-cidr $primary/32 --allowed-cidr $container_bridge"
   [[ -n "$K2S_PROXY" ]] && args="$args --forwardproxy $K2S_PROXY"
   network_dependencies='After=network-online.target'
   [[ ${K2S_LINUX_ONLY:-true} == true ]] && network_dependencies='After=network-online.target k2s-proxy-network.service

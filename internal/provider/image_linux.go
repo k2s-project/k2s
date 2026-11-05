@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -46,6 +47,9 @@ func (p *linuxImageProvider) scriptPath(script string) string {
 }
 
 // sshCmd executes a command on the Windows VM via SSH.
+// Uses cmd.Output() intentionally so only stdout is captured on success;
+// callers (e.g. crictl images -o json) require clean stdout without SSH banners or warnings.
+// On failure, stderr from ExitError is captured and returned in the error message.
 func sshCmd(command string) (string, error) {
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
@@ -761,7 +765,7 @@ func (f *flexibleSize) UnmarshalJSON(data []byte) error {
 
 	var fl float64
 	if err := json.Unmarshal(data, &fl); err == nil {
-		if float64(int64(fl)) == fl {
+		if fl >= math.MinInt64 && fl <= math.MaxInt64 && math.Trunc(fl) == fl {
 			*f = flexibleSize(strconv.FormatInt(int64(fl), 10))
 		} else {
 			*f = flexibleSize(strconv.FormatFloat(fl, 'f', -1, 64))

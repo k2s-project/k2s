@@ -149,28 +149,42 @@ func addPlacementMetadata(manifestPath, configPath, addonName, implementation st
 			Name              string
 			Implementation    string
 			InfraNodeSelector string
+			StorageNode       string
+			Ingress           string
+			OmitGrafana       *bool
+			OmitOpensearch    *bool
+			OmitCertMgr       *bool
 		}
 	}
 	if err := json.Unmarshal(bytes.TrimPrefix(configData, []byte{0xEF, 0xBB, 0xBF}), &config); err != nil {
 		slog.Warn("Skipping addon placement metadata; runtime config invalid", "path", configPath, "error", err)
 		return nil
 	}
-	selector := ""
-	for _, addon := range config.EnabledAddons {
-		if addon.Name == addonName && addon.Implementation == implementation {
-			selector = addon.InfraNodeSelector
+	var owner *struct {
+		Name              string
+		Implementation    string
+		InfraNodeSelector string
+		StorageNode       string
+		Ingress           string
+		OmitGrafana       *bool
+		OmitOpensearch    *bool
+		OmitCertMgr       *bool
+	}
+	for i := range config.EnabledAddons {
+		if config.EnabledAddons[i].Name == addonName && config.EnabledAddons[i].Implementation == implementation {
+			owner = &config.EnabledAddons[i]
 			break
 		}
 	}
-	if selector == "" && addonName == implementation {
-		for _, addon := range config.EnabledAddons {
-			if addon.Name == addonName && addon.Implementation == "" {
-				selector = addon.InfraNodeSelector
+	if owner == nil && addonName == implementation {
+		for i := range config.EnabledAddons {
+			if config.EnabledAddons[i].Name == addonName && config.EnabledAddons[i].Implementation == "" {
+				owner = &config.EnabledAddons[i]
 				break
 			}
 		}
 	}
-	if selector == "" {
+	if owner == nil || owner.InfraNodeSelector == "" {
 		return nil
 	}
 	data, err := os.ReadFile(manifestPath)
@@ -184,16 +198,48 @@ func addPlacementMetadata(manifestPath, configPath, addonName, implementation st
 	if manifest == nil {
 		return errors.New("invalid backup.json: expected an object")
 	}
-	encodedSelector, err := json.Marshal(selector)
-	if err != nil {
+	if err := setManifestField(manifest, "infraNodeSelector", owner.InfraNodeSelector); err != nil {
 		return err
 	}
-	manifest["infraNodeSelector"] = encodedSelector
+	if owner.StorageNode != "" {
+		if err := setManifestField(manifest, "storageNode", owner.StorageNode); err != nil {
+			return err
+		}
+	}
+	if owner.Ingress != "" {
+		if err := setManifestField(manifest, "ingress", owner.Ingress); err != nil {
+			return err
+		}
+	}
+	if owner.OmitGrafana != nil {
+		if err := setManifestField(manifest, "omitGrafana", *owner.OmitGrafana); err != nil {
+			return err
+		}
+	}
+	if owner.OmitOpensearch != nil {
+		if err := setManifestField(manifest, "omitOpensearch", *owner.OmitOpensearch); err != nil {
+			return err
+		}
+	}
+	if owner.OmitCertMgr != nil {
+		if err := setManifestField(manifest, "omitCertMgr", *owner.OmitCertMgr); err != nil {
+			return err
+		}
+	}
 	data, err = json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(manifestPath, data, 0o600)
+}
+
+func setManifestField(manifest map[string]json.RawMessage, key string, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	manifest[key] = encoded
+	return nil
 }
 
 func loadAddonAndImpl(args []string) (allAddons addons.Addons, addon addons.Addon, impl addons.Implementation, err error) {

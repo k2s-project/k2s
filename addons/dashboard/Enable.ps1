@@ -80,6 +80,10 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'dashboard' })) -eq $
 
 $InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'dashboard' -Selector $InfraNodeSelector
 
+if (-not [string]::IsNullOrWhiteSpace($InfraNodeSelector) -and ($EnableMetricsServer -or $Ingress -ne 'none')) {
+    throw 'Enable the requested ingress and metrics addons separately before enabling dashboard with infrastructure placement. Use --ingress none and --enable-metrics=false when enabling dashboard with infrastructure placement.'
+}
+
 $preflightValues = $null
 if (-not [string]::IsNullOrWhiteSpace($InfraNodeSelector)) {
     try {

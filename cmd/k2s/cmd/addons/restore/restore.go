@@ -41,6 +41,11 @@ type backupManifest struct {
 	Addon             string   `json:"addon"`
 	Implementation    string   `json:"implementation,omitempty"`
 	InfraNodeSelector string   `json:"infraNodeSelector,omitempty"`
+	StorageNode       string   `json:"storageNode,omitempty"`
+	Ingress           string   `json:"ingress,omitempty"`
+	OmitGrafana       *bool    `json:"omitGrafana,omitempty"`
+	OmitOpensearch    *bool    `json:"omitOpensearch,omitempty"`
+	OmitCertMgr       *bool    `json:"omitCertMgr,omitempty"`
 }
 
 var restoreExample = `
@@ -162,7 +167,30 @@ func selectorEnableParams(addonName string, manifest backupManifest) []string {
 	if !addonplacement.SupportsAddon(addonName) || strings.TrimSpace(manifest.InfraNodeSelector) == "" {
 		return nil
 	}
-	return []string{fmt.Sprintf(" -InfraNodeSelector %s", utils.EscapeWithSingleQuotes(strings.TrimSpace(manifest.InfraNodeSelector)))}
+	params := []string{fmt.Sprintf(" -InfraNodeSelector %s", utils.EscapeWithSingleQuotes(strings.TrimSpace(manifest.InfraNodeSelector)))}
+	if storageNode := strings.TrimSpace(manifest.StorageNode); storageNode != "" {
+		params = append(params, fmt.Sprintf(" -StorageNode %s", utils.EscapeWithSingleQuotes(storageNode)))
+	}
+	if ingress := strings.TrimSpace(manifest.Ingress); ingress != "" {
+		params = append(params, fmt.Sprintf(" -Ingress %s", utils.EscapeWithSingleQuotes(ingress)))
+	}
+	if manifest.OmitGrafana != nil {
+		params = append(params, fmt.Sprintf(" -OmitGrafana:%s", powershellBool(*manifest.OmitGrafana)))
+	}
+	if manifest.OmitOpensearch != nil {
+		params = append(params, fmt.Sprintf(" -OmitOpensearch:%s", powershellBool(*manifest.OmitOpensearch)))
+	}
+	if manifest.OmitCertMgr != nil {
+		params = append(params, fmt.Sprintf(" -OmitCertMgr:%s", powershellBool(*manifest.OmitCertMgr)))
+	}
+	return params
+}
+
+func powershellBool(value bool) string {
+	if value {
+		return "$true"
+	}
+	return "$false"
 }
 
 func getAndValidateZipPath(cmd *cobra.Command, addonsCmdName string) (string, error) {

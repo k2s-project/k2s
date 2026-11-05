@@ -6,6 +6,7 @@ package restore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,6 +42,31 @@ func TestReadAndValidateManifestSupportsOptionalInfrastructureSelector(t *testin
 				t.Fatalf("selector = %q, want %q", manifest.InfraNodeSelector, test.selector)
 			}
 		})
+	}
+}
+
+func TestSelectorEnableParamsIncludesOwnerOptions(t *testing.T) {
+	omitTrue := true
+	manifest := backupManifest{
+		InfraNodeSelector: "pool=infra",
+		StorageNode:       "worker1",
+		Ingress:           "nginx",
+		OmitGrafana:       &omitTrue,
+	}
+	params := selectorEnableParams("logging", manifest)
+	joined := strings.Join(params, "")
+	for _, want := range []string{"-InfraNodeSelector", "-StorageNode", "worker1", "-Ingress", "nginx", "-OmitGrafana:$true"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("params %v missing %q", params, want)
+		}
+	}
+}
+
+func TestSelectorEnableParamsOmitsUnsetOwnerOptions(t *testing.T) {
+	manifest := backupManifest{InfraNodeSelector: "pool=infra"}
+	params := selectorEnableParams("logging", manifest)
+	if len(params) != 1 {
+		t.Fatalf("params = %v, want only the selector argument", params)
 	}
 }
 

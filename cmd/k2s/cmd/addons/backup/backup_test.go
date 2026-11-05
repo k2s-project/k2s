@@ -121,4 +121,52 @@ func TestAddPlacementMetadataRejectsCorruptBackupManifest(t *testing.T) {
 	}
 }
 
+func TestAddPlacementMetadataPersistsOwnerOptions(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "setup.json")
+	manifestPath := filepath.Join(directory, "backup.json")
+	config := `{"EnabledAddons":[{"Name":"logging","InfraNodeSelector":"pool=infra","StorageNode":"worker1","Ingress":"nginx","OmitOpensearch":false}]}`
+	original := []byte(`{"k2sVersion":"1.0","addon":"logging","files":[]}`)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := addPlacementMetadata(manifestPath, configPath, "logging", "logging"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]json.RawMessage
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	var storageNode, ingress string
+	var omitOpensearch bool
+	if err := json.Unmarshal(manifest["storageNode"], &storageNode); err != nil {
+		t.Fatalf("storageNode not persisted: %v", err)
+	}
+	if storageNode != "worker1" {
+		t.Fatalf("storageNode = %q, want %q", storageNode, "worker1")
+	}
+	if err := json.Unmarshal(manifest["ingress"], &ingress); err != nil {
+		t.Fatalf("ingress not persisted: %v", err)
+	}
+	if ingress != "nginx" {
+		t.Fatalf("ingress = %q, want %q", ingress, "nginx")
+	}
+	if err := json.Unmarshal(manifest["omitOpensearch"], &omitOpensearch); err != nil {
+		t.Fatalf("omitOpensearch not persisted: %v", err)
+	}
+	if omitOpensearch != false {
+		t.Fatalf("omitOpensearch = %v, want %v", omitOpensearch, false)
+	}
+}
+
 func ptr(value string) *string { return &value }

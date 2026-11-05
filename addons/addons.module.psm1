@@ -459,6 +459,13 @@ function Test-AddonPlacementIntent {
 	return ($null -ne $intent -and (ConvertTo-CanonicalAddonSelector $intent.InfraNodeSelector) -ceq (ConvertTo-CanonicalAddonSelector $Selector))
 }
 
+function Test-AddonHasIncompleteInstallationIntent {
+	param ([string]$Name, [string]$Implementation = '')
+	$intents = @(Get-ConfigValue -Path (Get-SetupConfigFilePath) -Key 'AddonPlacementIntents')
+	$intent = $intents | Where-Object { $null -ne $_ -and $_.Name -eq $Name -and [string]$_.Implementation -eq $Implementation } | Select-Object -First 1
+	return ($null -ne $intent)
+}
+
 function Get-AddonPlacementOwnerOptions {
 	param ([string]$Name, [string]$Implementation = '', [System.Collections.IDictionary]$BoundParameters, [hashtable]$Defaults)
 	$schemas = @{
@@ -1151,8 +1158,14 @@ function Get-AddonInfrastructurePlacementStatus {
 
 function Get-AddonOwnedPlacementStatus {
 	param ([string]$Name, [pscustomobject]$Config, [string]$Selector)
+	$omitCertMgrProperty = $Config.PSObject.Properties['OmitCertMgr']
+	$omitCertMgr = $null -ne $omitCertMgrProperty -and [bool]$omitCertMgrProperty.Value
 	$namespaces = switch ($Name) {
-		'ingress' { switch ($Config.Implementation) { 'nginx' { 'ingress-nginx' }; 'traefik' { 'ingress-traefik' }; 'nginx-gw' { 'nginx-gw' } }; 'external-dns'; 'cert-manager' }
+		'ingress' {
+			switch ($Config.Implementation) { 'nginx' { 'ingress-nginx' }; 'traefik' { 'ingress-traefik' }; 'nginx-gw' { 'nginx-gw' } }
+			'external-dns'
+			if (-not $omitCertMgr) { 'cert-manager' }
+		}
 		default { $Name }
 	}
 	$properties = @(@{Name = 'Infrastructure node selector'; Value = $Selector; Okay = $null})
@@ -3199,7 +3212,7 @@ function Get-AddonSetupJsonProperty {
 }
 
 Export-ModuleMember -Function Assert-AddonStoragePlacement, Assert-SharedInfrastructurePlacement, Set-SharedInfrastructurePlacement, Invoke-AddonOwnedApply, Set-AddonPlacementIntent, Enable-AddonFromConfig, Get-EnabledAddons, Add-AddonToSetupJson, Remove-AddonFromSetupJson, Set-AddonSetupJsonProperty, Get-AddonSetupJsonProperty,
-Get-AddonPlacementOwnerOptions, New-AddonPlacementInput, Assert-AddonPlacementHost, New-AddonPlacementManifest, Test-AddonPlacementIntent, Get-AddonEffectiveInfrastructureSelector, Get-AddonInfrastructurePlacementStatus, Invoke-AddonEnableTransaction, Get-AddonPlacementSelectorConflictMessage, Get-AddonBackupInfrastructureSelector, Test-AddonInfrastructureSelectorOnCluster,
+Get-AddonPlacementOwnerOptions, New-AddonPlacementInput, Assert-AddonPlacementHost, New-AddonPlacementManifest, Test-AddonPlacementIntent, Test-AddonHasIncompleteInstallationIntent, Get-AddonEffectiveInfrastructureSelector, Get-AddonInfrastructurePlacementStatus, Invoke-AddonEnableTransaction, Get-AddonPlacementSelectorConflictMessage, Get-AddonBackupInfrastructureSelector, Test-AddonInfrastructureSelectorOnCluster,
 Install-DebianPackages, Get-DebianPackageAvailableOffline, Test-IsAddonEnabled, Invoke-AddonsHooks, Copy-ScriptsToHooksDir,
 Remove-ScriptsFromHooksDir, Get-AddonConfig, Backup-Addons, Restore-Addons, Get-AddonStatus, Find-AddonManifests,
 Get-ErrCodeAddonAlreadyDisabled, Get-ErrCodeAddonAlreadyEnabled, Get-ErrCodeAddonEnableFailed, Get-ErrCodeAddonNotFound, Get-ErrCodeInvalidParameter,

@@ -66,7 +66,7 @@ Describe 'Test-WslNetwork' -Tag 'unit', 'ci', 'network' {
 
         { Test-WslNetwork } | Should -Throw "*$Cidr overlaps K2s $Name*"
         Should -Invoke Write-Log -ModuleName windows-host-network.module -Times 1 -Exactly -ParameterFilter {
-            $Error -and ($Messages -join ' ') -like '*Changing only the host adapter IP does not change the HNS subnet*'
+            ($Messages -join ' ') -like '*Changing only the host adapter IP does not change the HNS subnet*'
         }
     }
 

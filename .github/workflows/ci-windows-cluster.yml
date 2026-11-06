@@ -25,7 +25,7 @@ jobs:
         shell: powershell
     env:
       K2S_LOG_ROOT: C:\var\log
-      KUBECONFIG: C:\k2s-ci\config
+      KUBECONFIG: C:\k2s\config
       SYSTEM_TEST_KEEP_RESOURCES_ON_ERROR: 'true'
       K2S_HTTP_PROXY: ${{ vars.K2S_HTTP_PROXY }}
       K2S_NO_PROXY: ${{ vars.K2S_NO_PROXY }}
@@ -124,7 +124,7 @@ jobs:
           . .\.github\scripts\windows-cluster-proxy.ps1
           Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           if ((Get-VM) -or (Get-VMSwitch | Where-Object SwitchType -eq 'External') -or
-              (Test-Path 'C:\ProgramData\K2s\setup.json') -or (Test-Path 'C:\k2s-ci')) {
+              (Test-Path 'C:\ProgramData\K2s\setup.json') -or (Test-Path 'C:\k2s')) {
               throw 'Runner is not clean. Use a fresh disposable VM without existing VMs, external switches or K2s state.'
           }
 
@@ -146,9 +146,9 @@ jobs:
               }
           }
 
-          New-Item -ItemType Directory -Path 'C:\k2s-ci' | Out-Null
+          New-Item -ItemType Directory -Path 'C:\k2s' | Out-Null
           # Preserve HEAD for build version metadata; checkout did not persist its token.
-          & robocopy.exe "$env:GITHUB_WORKSPACE" 'C:\k2s-ci' /E /R:2 /W:2 /NFL /NDL /NJH /NJS
+          & robocopy.exe "$env:GITHUB_WORKSPACE" 'C:\k2s' /E /R:2 /W:2 /NFL /NDL /NJH /NJS
           if ($LASTEXITCODE -ge 8) { throw "Source staging failed: robocopy exit $LASTEXITCODE" }
           exit 0
 
@@ -163,7 +163,7 @@ jobs:
         timeout-minutes: 30
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location 'C:\k2s-ci'
+          Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           # The helper throws on build failure, but git describe writes stderr on untagged commits.
@@ -186,7 +186,7 @@ jobs:
         timeout-minutes: 120
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location 'C:\k2s-ci'
+          Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           $installParams = @('install', '--master-cpus', '6', '--master-memory', '6GB',
@@ -202,7 +202,7 @@ jobs:
         timeout-minutes: 25
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location 'C:\k2s-ci'
+          Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Clear-K2sCiProxyEnvironment
           & .\k2s.exe status --output
@@ -227,7 +227,7 @@ jobs:
         timeout-minutes: 100
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location 'C:\k2s-ci'
+          Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           # go run uses the Ginkgo version pinned in go.mod; never run suites in parallel on this cluster.
@@ -244,7 +244,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $outDir = "$env:RUNNER_TEMP\k2s-test-results"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-          Set-Location 'C:\k2s-ci'
+          Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Clear-K2sCiProxyEnvironment
           foreach ($query in @(@('get', 'nodes', '-o', 'wide'), @('get', 'pods', '-A', '-o', 'wide'),
@@ -277,7 +277,7 @@ jobs:
         timeout-minutes: 20
         run: |
           $ErrorActionPreference = 'Stop'
-          Set-Location 'C:\k2s-ci'
+          Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Clear-K2sCiProxyEnvironment
           & .\k2s.exe uninstall --output

@@ -130,7 +130,7 @@ No preinstalled `k2s.exe`, K2s checkout, Ginkgo or Pester is needed. The
 `Microsoft-Hyper-V-All` command is client-specific; omit it on Server.
 
 Stop Docker Desktop/Engine. Start with no existing K2s installation, Hyper-V
-VMs, external virtual switches or `C:\k2s-ci` staging folder. Allow downloads
+VMs, external virtual switches or `C:\k2s` staging folder. Allow downloads
 and registry access from the host and nested VM, including the configured
 `shsk2s.azurecr.io` registry. Ensure host/VPN/cloud networks do not overlap the
 subnets in `cfg/config.json` (by default `172.19.1.0/24`, `172.20.0.0/16`,
@@ -169,7 +169,7 @@ in the base image; preflight rejects them rather than modifying persistent
 settings. K2s validates machine and process proxy environments, so clearing
 only the child environment would not isolate an invalid machine configuration.
 The runner's `.env`, JIT config and diagnostic credentials must remain outside
-`GITHUB_WORKSPACE`/`C:\k2s-ci`; they are not workflow artifacts.
+`GITHUB_WORKSPACE`/`C:\k2s`; they are not workflow artifacts.
 
 ### Dispatch, Results and Runner Disposal
 
@@ -198,11 +198,11 @@ runner necessarily executes the job that caused its creation. Include run
 attempts in dispatcher deduplication so reruns are not suppressed.
 
 Source (including credential-free Git metadata for build version information)
-is staged at `C:\k2s-ci` because installation on the system drive is recommended.
+is staged at `C:\k2s` because installation on the system drive is recommended.
 The workflow uses the repository's `BuildGoExe.ps1 -BuildAll` helper before:
 
 ```console
-C:\k2s-ci\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output
+C:\k2s\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output
 ```
 
 Ginkgo is invoked through `go run` at the version pinned in `go.mod`, with one

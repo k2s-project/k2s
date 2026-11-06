@@ -3389,6 +3389,19 @@ Start the installation passing this config:
 <p>To install the control-plane in <abbr title="Windows Subsystem for Linux">WSL</abbr> 2 instead of a dedicated <em>Linux</em> <abbr title="Virtual Machine">VM</abbr>, run:
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="go">&lt;repo&gt;\k2s.exe install --wsl</span>
 </code></pre></div></p>
+<p>Windows selects the underlying <abbr title="Windows Subsystem for Linux">WSL</abbr> HNS subnet automatically. Once <abbr title="Windows Subsystem for Linux">WSL</abbr> starts,
+K2s validates that subnet before changing the Windows <abbr title="Windows Subsystem for Linux">WSL</abbr> adapter address.
+Validation supports legacy HNS <code>Subnets[].AddressPrefix</code> and schema-v2
+<code>Ipams[].Subnets[].IpAddressPrefix</code> subnet information.
+An overlap with the configured control-plane, node pod, service slice, or
+loopback transit subnet stops installation with the conflicting CIDRs in the
+error. Overlap only with an aggregate pod or service range produces a warning.
+Missing or invalid HNS subnet information also stops installation.</p>
+<p>Changing the adapter <abbr title="Internet Protocol">IP</abbr> alone does not renumber the HNS network. K2s does not
+delete or recreate shared <abbr title="Windows Subsystem for Linux">WSL</abbr> networks to resolve a conflict. Use a host with
+non-overlapping <abbr title="Windows Subsystem for Linux">WSL</abbr> networking, or clean up the partial installation with
+<code>k2s uninstall</code> and install using Hyper-V (omit <code>--wsl</code>). A newly provisioned
+host must still pass validation; Windows can allocate another conflicting subnet.</p>
 <h3 id="option-2-development-only">[Option 2] Development-Only</h3>
 <p>To build and test containers without a <em><abbr title="Kubernetes">K8s</abbr></em> cluster, run:
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="go">&lt;repo&gt;\k2s.exe install buildonly</span>

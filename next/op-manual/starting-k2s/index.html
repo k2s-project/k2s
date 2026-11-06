@@ -1317,6 +1317,17 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
+  <a href="#wsl-network-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        WSL network validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#additional-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2892,6 +2903,17 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
+  <a href="#wsl-network-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        WSL network validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#additional-options" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2997,6 +3019,12 @@ reported instead of allowing incomplete recovery to appear successful.</p>
 a conflict appearing after recovery still fails startup. The already-running
 early-return path uses only the initial validation. If recovery fails, allow
 Windows networking to settle and retry <code>k2s start</code>.</p>
+<h3 id="wsl-network-validation"><abbr title="Windows Subsystem for Linux">WSL</abbr> network validation</h3>
+<p>When <code>k2s start</code> restarts the <abbr title="Windows Subsystem for Linux">WSL</abbr> control plane, K2s checks the actual <abbr title="Windows Subsystem for Linux">WSL</abbr> HNS
+subnets before changing the host adapter address. A conflicting, missing, or
+invalid subnet stops startup rather than allowing unverified networking.
+The check does not remove or renumber shared <abbr title="Windows Subsystem for Linux">WSL</abbr> networks. See
+<a href="../installing-k2s/#wsl"><abbr title="Windows Subsystem for Linux">WSL</abbr> installation</a> for conflict handling.</p>
 <h3 id="additional-options">Additional Options</h3>
 <h4 id="skip-starting-if-already-running">Skip Starting if Already Running</h4>
 <p>To skip starting the <em>K2s</em> cluster if it is already running, use the <code>--ignore-if-running</code> flag or its shortcut <code>-i</code>:

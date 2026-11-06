@@ -14,6 +14,8 @@ In order to provide a pause image, the following steps need to be done:
 ## 1. Build the OS specfic images
 
 ### Build the pause.exe
+`pause.exe` is not tracked in Git. Build it in this folder before building the images.
+
 cl pause.c
 ### or
 gcc pause.c -o pause.exe

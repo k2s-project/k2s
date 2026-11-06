@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: © 2023 The K2s Authors
+# SPDX-FileCopyrightText: © 2023 Siemens Healthineers AG
 #
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 ---
 apiVersion: apiextensions.k8s.io/v1
@@ -8,7 +8,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.22.0
-    operator.prometheus.io/version: 0.94.1
+    operator.prometheus.io/version: 0.94.2
   name: prometheusrules.monitoring.coreos.com
 spec:
   group: monitoring.coreos.com

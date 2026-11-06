@@ -274,7 +274,7 @@ if (!$Windows) {
     }
 }
 
-$GO_VERSION = '1.27.2'
+$GO_VERSION = '1.27.3'
 if ($null -ne $env:GOVERSION -and $env:GOVERSION -ne '') {
     Write-Log "Using local GOVERSION $Env:GOVERSION environment variable from the host machine"
     # $env:GOVERSION will be go1.24.2, remove the go part.

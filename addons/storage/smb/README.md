@@ -111,6 +111,64 @@ To revert a POSIX-enabled share to the previous default behavior:
 
 Existing data on the share is not affected by the rollback - no migration is required. Symbolic links created while POSIX was enabled remain on disk but may not be traversable over SMB once POSIX is disabled.
 
+## StorageClass Mount Options
+
+By default, the addon generates the CIFS mount options of each StorageClass, e.g. `dir_mode=0777` and `file_mode=0777`. Some workloads validate strict POSIX-style permissions and refuse to start on such volumes when running as a non-root user.
+
+### Configuration
+
+Add the optional **mountOptions** array to a SmbStorage.json entry to define the mount options of its StorageClass. The array **replaces** the generated mount options entirely - including the options derived from `enablePosixExtensions`, `useServerInode` and `smbDialect` - so it must contain every option the volume needs. Entries without `mountOptions` keep the generated defaults.
+
+Each array entry must be a single mount option, e.g. `dir_mode=0700`, consisting only of letters, digits and the characters `_ . = / + -`. Whitespace, commas, quotes and other YAML-special characters are rejected, as are empty arrays. Invalid options make `k2s addons enable storage smb` fail with an error naming the affected StorageClass, before any share or StorageClass is created.
+
+### PostgreSQL example
+
+PostgreSQL requires its data directory to be accessible only by its owner (`0700`) or by its owner and group (`0750`). Keep the general-purpose `smb` StorageClass unchanged and add a dedicated `smb-postgres` StorageClass whose volumes are owned by the PostgreSQL user (UID/GID `1001` in this example):
+
+```json
+[
+    {
+        "winMountPath": "C:\\k8s-smb-share",
+        "linuxMountPath": "/mnt/k8s-smb-share",
+        "linuxShareName": "linux-smb-share",
+        "winShareName": "win-smb-share",
+        "storageClassName": "smb"
+    },
+    {
+        "winMountPath": "C:\\k8s-smb-postgres",
+        "linuxMountPath": "/mnt/k8s-smb-postgres",
+        "linuxShareName": "linux-smb-postgres-share",
+        "winShareName": "win-smb-postgres-share",
+        "storageClassName": "smb-postgres",
+        "mountOptions": [
+            "dir_mode=0700",
+            "file_mode=0600",
+            "uid=1001",
+            "gid=1001",
+            "noperm",
+            "mfsymlinks",
+            "cache=strict",
+            "noserverino"
+        ]
+    }
+]
+```
+
+Disable the addon before editing `SmbStorage.json` and re-enable it afterwards (see [POSIX-enabled example](#posix-enabled-example)). Then verify the generated StorageClass and the PersistentVolume of a new PersistentVolumeClaim referencing `storageClassName: smb-postgres`:
+
+```
+kubectl get storageclass smb-postgres -o yaml
+kubectl get pv <pv-name> -o yaml
+```
+
+Both must list the configured options under `mountOptions`.
+
+### Limitations
+
+- Mount options are applied by the CSI driver when a volume is mounted on a Linux node; Windows nodes do not use them. They emulate the permissions and ownership reported to the workload; they do not change how the SMB host stores the files, and SMB POSIX extensions alone do not provide local-filesystem POSIX behavior.
+- Kubernetes copies the StorageClass mount options into a PersistentVolume when it is provisioned. Existing PersistentVolumes are not updated; delete and re-provision them to apply changed options.
+- Set `uid`/`gid` to the user and group the workload runs as (e.g. `securityContext.runAsUser`/`runAsGroup`); workloads such as PostgreSQL verify that they own their data directory.
+
 ## Examples
 
 After enabling the addon, reference the StorageClass name (as printed in the enable output and configured in `SmbStorage.json`) from a `PersistentVolumeClaim`. The example below provisions a 1Gi volume from the default `smb` StorageClass and mounts it into a workload at `/mnt/smb`:

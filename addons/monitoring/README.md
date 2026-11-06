@@ -10,6 +10,22 @@ SPDX-License-Identifier: Apache-2.0
 
 The `monitoring` addon provides a [Grafana web-based UI](https://github.com/grafana/grafana) for Kubernetes resource monitoring. It enables users to monitor cluster resources which are collected by Prometheus (e.g. node, pod and GPU resources). For this purpose, several predefined dashboards are provided.
 
+### Windows Exporter compatibility
+
+The shared Windows Exporter configuration supports 0.32.0 and does not enable
+the removed `thermalzone` collector, which otherwise prevents exporter startup.
+Custom collector configurations must follow the
+[upstream 0.32 upgrade guide](https://github.com/prometheus-community/windows_exporter/blob/v0.32.0/docs/upgrade/0.32.md).
+Temperature metrics are no longer collected by the shared configuration.
+
+The Windows Exporter acceptance suite requires a successful ServiceMonitor scrape
+for every Windows node, not merely a discovered target with `up=0`. On failure,
+it records exporter configuration, pod status/logs, endpoints, and the exporter
+targets' Prometheus scrape errors before addon cleanup.
+Its CPU check and the bundled Grafana CPU queries use the 0.32 metric name
+`windows_cpu_time_seconds_total`. Bundled dashboards do not query removed
+`windows_thermalzone_*` metrics.
+
 ## Grafana License Compliance
 
 K2s is licensed under the MIT License.

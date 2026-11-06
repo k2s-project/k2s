@@ -84,11 +84,7 @@ if ($nodeList.Count -eq 0) {
     # Default routing: Windows local host or Linux control-plane
     if ($Windows) {
         foreach ($image in $images) {
-            $importSuccess = Invoke-Ctr -Arguments '-n', 'k8s.io', 'images', 'import', $image
-            if ($importSuccess) {
-                Write-Log "$image imported successfully"
-            }
-            else {
+            if (-not (Invoke-LocalWindowsImageImport -ImagePath $image)) {
                 $hasFailures = $true
             }
         }
@@ -136,11 +132,7 @@ else {
                     }
                 }
                 'LocalWindows' {
-                    $importSuccess = Invoke-Ctr -Arguments '-n', 'k8s.io', 'images', 'import', $image
-                    if ($importSuccess) {
-                        Write-Log "$image imported successfully on local Windows host"
-                    }
-                    else {
+                    if (-not (Invoke-LocalWindowsImageImport -ImagePath $image)) {
                         $hasFailures = $true
                     }
                 }

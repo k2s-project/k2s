@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# v1.20.3
+# v1.20.4
 ---
 apiVersion: v1
 kind: ServiceAccount

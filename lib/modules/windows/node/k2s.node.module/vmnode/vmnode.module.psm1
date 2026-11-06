@@ -108,10 +108,15 @@ function Stop-VirtualMachine {
         [int]$TimeoutInSeconds = 360
     )
 
-    $private:vm = Get-VM | Where-Object Name -eq $VmName
+    $private:vm = Get-VM -ErrorAction SilentlyContinue | Where-Object Name -eq $VmName
 
-    if (($private:vm | Measure-Object).Count -ne 1) {
-        $message = "[VMStop] None or more than one VMs found for name '$VmName', aborting stop."
+    $vmCount = ($private:vm | Measure-Object).Count
+    if ($vmCount -eq 0) {
+        Write-Log "[VMStop] VM '$VmName' not found, skipping stop."
+        return
+    }
+    if ($vmCount -gt 1) {
+        $message = "[VMStop] More than one VM found for name '$VmName', aborting stop."
         Write-Log $message -Console
         throw $message
     }
@@ -192,10 +197,15 @@ function Remove-VirtualMachine {
         [bool] $DeleteVirtualDisk = $true
     )
 
-    $private:vm = Get-VM | Where-Object Name -eq $VmName
+    $private:vm = Get-VM -ErrorAction SilentlyContinue | Where-Object Name -eq $VmName
 
-    if (($private:vm | Measure-Object).Count -ne 1) {
-        Write-Log "None or more than one VMs found for name '$VmName', aborting removal."
+    $vmCount = ($private:vm | Measure-Object).Count
+    if ($vmCount -eq 0) {
+        Write-Log "VM '$VmName' not found, skipping removal."
+        return
+    }
+    if ($vmCount -gt 1) {
+        Write-Log "More than one VM found for name '$VmName', aborting removal."
         return
     }
 

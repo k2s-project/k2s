@@ -27,8 +27,8 @@ spec:
         port: http-web
         pathPrefix: "/"
         apiVersion: v2
-  image: "quay.io/prometheus/prometheus:v3.15.0"
-  version: v3.15.0
+  image: "quay.io/prometheus/prometheus:v3.15.1"
+  version: v3.15.1
   externalUrl: http://kube-prometheus-stack-prometheus.monitoring:9090
   paused: false
   replicas: 1

@@ -182,3 +182,128 @@ Describe 'Get-SambaSharePosixConfig' -Tag 'unit', 'ci', 'addon', 'storage smb' {
         }
     }
 }
+
+Describe 'Get-StorageClassMountOptions' -Tag 'unit', 'ci', 'addon', 'storage smb' {
+    Context 'mountOptions not configured' {
+        It 'returns the generated default options' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ EnablePosixExtensions = $false; UseServerInode = $false; SmbDialect = 'auto' }
+
+                $opts = Get-StorageClassMountOptions -Config $config
+
+                $opts | Should -Be @('dir_mode=0777', 'file_mode=0777', 'uid=1001', 'gid=1001', 'noperm', 'mfsymlinks', 'cache=strict', 'noserverino')
+            }
+        }
+    }
+
+    Context 'mountOptions configured' {
+        It 'returns exactly the configured options in order' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ EnablePosixExtensions = $false; UseServerInode = $false; SmbDialect = 'auto'; MountOptions = @('dir_mode=0700', 'file_mode=0600', 'uid=1001', 'gid=1001') }
+
+                $opts = Get-StorageClassMountOptions -Config $config
+
+                $opts | Should -Be @('dir_mode=0700', 'file_mode=0600', 'uid=1001', 'gid=1001')
+            }
+        }
+
+        It 'does not add POSIX or dialect specific options' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ EnablePosixExtensions = $true; UseServerInode = $false; SmbDialect = '3.1.1'; MountOptions = @('dir_mode=0700') }
+
+                $opts = Get-StorageClassMountOptions -Config $config
+
+                $opts | Should -Be @('dir_mode=0700')
+            }
+        }
+    }
+}
+
+Describe 'Get-StorageClassMountOptionsError' -Tag 'unit', 'ci', 'addon', 'storage smb' {
+    Context 'Config not specified' {
+        It 'throws' {
+            InModuleScope -ModuleName $moduleName {
+                { Get-StorageClassMountOptionsError } | Should -Throw -ExpectedMessage 'Config not specified'
+            }
+        }
+    }
+
+    Context 'valid configuration' {
+        It 'returns nothing when mountOptions is not configured' {
+            InModuleScope -ModuleName $moduleName {
+                Get-StorageClassMountOptionsError -Config ([pscustomobject]@{ StorageClassName = 'smb' }) | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'returns nothing for valid options' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = @('dir_mode=0700', 'file_mode=0600', 'uid=1001', 'noperm', 'cache=strict', 'vers=3.1.1', 'prefixpath=/data', 'iocharset=utf8') }
+
+                Get-StorageClassMountOptionsError -Config $config | Should -BeNullOrEmpty
+            }
+        }
+
+        It 'returns nothing for a single option parsed from JSON' {
+            InModuleScope -ModuleName $moduleName {
+                $config = '{ "storageClassName": "smb-postgres", "mountOptions": [ "dir_mode=0700" ] }' | ConvertFrom-Json
+
+                Get-StorageClassMountOptionsError -Config $config | Should -BeNullOrEmpty
+            }
+        }
+    }
+
+    Context 'invalid configuration' {
+        It 'rejects mountOptions that is not an array' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = 'dir_mode=0700' }
+
+                Get-StorageClassMountOptionsError -Config $config | Should -Match "^Invalid 'mountOptions' for StorageClass 'smb-postgres': expected a non-empty array"
+            }
+        }
+
+        It 'rejects an empty array' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = @() }
+
+                Get-StorageClassMountOptionsError -Config $config | Should -Match "^Invalid 'mountOptions' for StorageClass 'smb-postgres': expected a non-empty array"
+            }
+        }
+
+        It "rejects option '<Option>'" -ForEach @(
+            @{ Option = '' }
+            @{ Option = ' ' }
+            @{ Option = 'dir_mode=0700 file_mode=0600' }
+            @{ Option = 'dir_mode=0700,file_mode=0600' }
+            @{ Option = '-dir_mode=0700' }
+            @{ Option = 'dir_mode: 0700' }
+            @{ Option = 'uid=1001 # comment' }
+            @{ Option = '"noperm"' }
+            @{ Option = '[noperm]' }
+            @{ Option = 'password=$secret' }
+        ) {
+            InModuleScope -ModuleName $moduleName -Parameters @{ Option = $Option } {
+                param($Option)
+
+                $config = [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = @('noperm', $Option) }
+
+                Get-StorageClassMountOptionsError -Config $config | Should -Match "^Invalid 'mountOptions' for StorageClass 'smb-postgres': '.*' is not a valid mount option"
+            }
+        }
+
+        It 'rejects an option with a trailing line break' {
+            InModuleScope -ModuleName $moduleName {
+                $config = [pscustomobject]@{ StorageClassName = 'smb-postgres'; MountOptions = @("dir_mode=0700`n") }
+
+                Get-StorageClassMountOptionsError -Config $config | Should -Match "(?s)^Invalid 'mountOptions' for StorageClass 'smb-postgres': 'dir_mode=0700\n' is not a valid mount option"
+            }
+        }
+
+        It 'rejects non-string options' {
+            InModuleScope -ModuleName $moduleName {
+                $config = '{ "storageClassName": "smb-postgres", "mountOptions": [ 1001 ] }' | ConvertFrom-Json
+
+                Get-StorageClassMountOptionsError -Config $config | Should -Match "^Invalid 'mountOptions' for StorageClass 'smb-postgres': '1001' is not a valid mount option"
+            }
+        }
+    }
+}

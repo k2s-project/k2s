@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# v1.20.3
+# v1.20.4
 ---
 kind: DaemonSet
 apiVersion: apps/v1
@@ -40,7 +40,7 @@ spec:
       hostNetwork: true
       initContainers:
         - name: init
-          image: shsk2s.azurecr.io/sig-storage/smbplugin:v1.20.3-hp #windows_image
+          image: shsk2s.azurecr.io/sig-storage/smbplugin:v1.20.4-hp #windows_image
           imagePullPolicy: IfNotPresent
           command:
             - "powershell.exe"
@@ -75,7 +75,7 @@ spec:
               cpu: 30m
               memory: 40Mi
         - name: smb
-          image: shsk2s.azurecr.io/sig-storage/smbplugin:v1.20.3-hp #windows_image
+          image: shsk2s.azurecr.io/sig-storage/smbplugin:v1.20.4-hp #windows_image
           imagePullPolicy: IfNotPresent
           command:
             - "smbplugin.exe"

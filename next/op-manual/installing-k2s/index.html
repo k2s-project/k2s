@@ -3249,6 +3249,15 @@ Also make sure you have built the Go binaries (<code>.\bin\bgow</code> on <em>Wi
 <p><em>K2s</em> will start automatically after the installation has finished.</p>
 </div>
 <div class="admonition note">
+<p class="admonition-title">Control-plane base-image preparation</p>
+<p>When <code>k2s install</code> prepares a new control-plane base image, Buildah is installed
+separately from the Kubernetes packages. Registry configuration is restored
+after the Buildah packages are installed. Preparation stops on failed registry
+updates, <abbr title="Container Runtime Interface">CRI</abbr>-O restart/readiness checks, or required image pulls instead of
+producing an unusable base image. <abbr title="Container Runtime Interface">CRI</abbr>-O restart failures include service status
+and recent journal output in <code>k2s.log</code>.</p>
+</div>
+<div class="admonition note">
 <p class="admonition-title">Windows reboot recovery</p>
 <p>Post-reboot networking recovery defers to an active <code>k2s install</code> or
 <code>k2s start</code> operation, or a proxy reconfiguration (<code>k2s system proxy set</code>,

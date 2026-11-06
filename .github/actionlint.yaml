@@ -3,4 +3,4 @@
 
 self-hosted-runner:
   labels:
-    - k2s-hyperv
+    - k2s-win11-runner

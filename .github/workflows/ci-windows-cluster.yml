@@ -11,13 +11,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: k2s-windows-cluster
+  group: k2s-win11-runner
   cancel-in-progress: false
 
 jobs:
   install-and-test:
     name: Install and test Hyper-V cluster
-    runs-on: [self-hosted, Windows, X64, k2s-hyperv]
+    runs-on: [self-hosted, k2s-win11-runner]
     environment: k2s-windows-e2e
     timeout-minutes: 240
     defaults:
@@ -27,9 +27,12 @@ jobs:
       K2S_LOG_ROOT: C:\var\log
       KUBECONFIG: C:\k2s-ci\config
       SYSTEM_TEST_KEEP_RESOURCES_ON_ERROR: 'true'
+      K2S_HTTP_PROXY: ${{ vars.K2S_HTTP_PROXY }}
+      K2S_NO_PROXY: ${{ vars.K2S_NO_PROXY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           persist-credentials: false
 
@@ -51,8 +54,10 @@ jobs:
           }
           $hostInfo = Get-CimInstance Win32_ComputerSystem
           $osInfo = Get-CimInstance Win32_OperatingSystem
-          if ([int]$osInfo.BuildNumber -lt 20348 -or $osInfo.ProductType -eq 1) {
-              throw 'Use Windows Server 2022 or newer for this workflow.'
+          $isClient = $osInfo.ProductType -eq 1
+          if (($isClient -and [int]$osInfo.BuildNumber -lt 22000) -or
+              (-not $isClient -and [int]$osInfo.BuildNumber -lt 20348)) {
+              throw 'Use Windows 11 with Hyper-V support, or Windows Server 2022 or newer.'
           }
           if ($hostInfo.NumberOfLogicalProcessors -lt 8 -or $hostInfo.TotalPhysicalMemory -lt 16GB -or
               ($osInfo.FreePhysicalMemory * 1KB) -lt 10GB) {
@@ -61,8 +66,14 @@ jobs:
           if ((Get-PSDrive C).Free -lt 100GB) {
               throw 'Provide at least 100 GiB free on C: for source, downloads, VHDX files and container images.'
           }
-          foreach ($feature in @('Microsoft-Hyper-V', 'Microsoft-Hyper-V-Management-PowerShell',
-                                'Containers', 'VirtualMachinePlatform')) {
+          $features = @('Microsoft-Hyper-V', 'Microsoft-Hyper-V-Management-PowerShell',
+                        'Containers', 'VirtualMachinePlatform')
+          if ($isClient) {
+              $features += 'Microsoft-Hyper-V-All', 'Microsoft-Hyper-V-Tools-All',
+                  'Microsoft-Hyper-V-Hypervisor', 'Microsoft-Hyper-V-Management-Clients',
+                  'Microsoft-Hyper-V-Services'
+          }
+          foreach ($feature in $features) {
               if ((Get-WindowsOptionalFeature -Online -FeatureName $feature).State -ne 'Enabled') {
                   throw "Enable $feature and reboot BEFORE dispatching this workflow."
               }
@@ -105,9 +116,13 @@ jobs:
               [int]$Matches[1] -lt 8) {
               throw 'OpenSSH >= 8 is required.'
           }
-          if ($env:HTTP_PROXY -or $env:HTTPS_PROXY) {
-              throw 'Remove HTTP_PROXY/HTTPS_PROXY from the runner environment; use Windows proxy configuration.'
+          foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY')) {
+              if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, 'Machine'))) {
+                  throw "Remove machine-level $name from the base image; configure the runner process proxy instead."
+              }
           }
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           if ((Get-VM) -or (Get-VMSwitch | Where-Object SwitchType -eq 'External') -or
               (Test-Path 'C:\ProgramData\K2s\setup.json') -or (Test-Path 'C:\k2s-ci')) {
               throw 'Runner is not clean. Use a fresh disposable VM without existing VMs, external switches or K2s state.'
@@ -139,6 +154,7 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v5
+        timeout-minutes: 10
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -148,6 +164,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location 'C:\k2s-ci'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           # The helper throws on build failure, but git describe writes stderr on untagged commits.
           try {
               $ErrorActionPreference = 'Continue'
@@ -169,14 +187,24 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location 'C:\k2s-ci'
-          & .\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
+          $installParams = @('install', '--master-cpus', '6', '--master-memory', '6GB',
+                             '--master-disk', '50GB', '--output')
+          if ($env:HTTPS_PROXY) {
+              $installParams += '--proxy', $env:HTTPS_PROXY, '--no-proxy', $env:NO_PROXY
+          }
+          Clear-K2sCiProxyEnvironment
+          & .\k2s.exe @installParams
           if ($LASTEXITCODE -ne 0) { throw "k2s install failed with exit $LASTEXITCODE" }
 
       - name: Verify both nodes and system pods
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location 'C:\k2s-ci'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Clear-K2sCiProxyEnvironment
           & .\k2s.exe status --output
           if ($LASTEXITCODE -ne 0) { throw 'k2s status failed.' }
           $kubectl = '.\bin\kube\kubectl.exe'
@@ -200,6 +228,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location 'C:\k2s-ci'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
           # go run uses the Ginkgo version pinned in go.mod; never run suites in parallel on this cluster.
           & go run github.com/onsi/ginkgo/v2/ginkgo -v --procs=1 --fail-on-empty --timeout=90m `
               --label-filter='core && acceptance' --junit-report=core.xml `
@@ -215,6 +245,8 @@ jobs:
           $outDir = "$env:RUNNER_TEMP\k2s-test-results"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           Set-Location 'C:\k2s-ci'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Clear-K2sCiProxyEnvironment
           foreach ($query in @(@('get', 'nodes', '-o', 'wide'), @('get', 'pods', '-A', '-o', 'wide'),
                                @('get', 'events', '-A', '--sort-by=.lastTimestamp'))) {
               & .\bin\kube\kubectl.exe @query --request-timeout=15s 2>&1 |
@@ -231,6 +263,7 @@ jobs:
       - name: Upload results and K2s log before uninstall
         if: ${{ always() && steps.preflight.outcome == 'success' }}
         uses: actions/upload-artifact@v4
+        timeout-minutes: 5
         with:
           name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -245,6 +278,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location 'C:\k2s-ci'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Clear-K2sCiProxyEnvironment
           & .\k2s.exe uninstall --output
           if ($LASTEXITCODE -ne 0) {
               throw 'Uninstall failed. Discard the runner VM; do not reuse it.'

@@ -19,7 +19,7 @@ function Invoke-DownloadHelmArtifacts($downloadsBaseDirectory, $Proxy, $windowsN
     mkdir $helmDownloadsDirectory -ErrorAction SilentlyContinue | Out-Null
     $compressedFile = "$helmDownloadsDirectory\helm.zip"
     Write-Log "Download helm executable to $compressedFile"
-    Invoke-DownloadFile "$compressedFile" https://get.helm.sh/helm-v4.3.0-windows-amd64.zip $true $Proxy
+    Invoke-DownloadFile "$compressedFile" https://get.helm.sh/helm-v4.3.1-windows-amd64.zip $true $Proxy
     Write-Log '  ...done'
     Write-Log "Extract downloaded file '$compressedFile'"
     $ErrorActionPreference = 'SilentlyContinue'

@@ -14,6 +14,15 @@ The ultimate goal is to automate every test case and type, i.e.:
 !!! info
     Acceptance tests might require a running *K2s* cluster.
 
+### Provisioning Hostname Checks
+
+The provisioning hostname query allows up to four SSH attempts, with a
+three-second delay between failed attempts. This retries only the read-only
+`hostname` command, not installation or role-assignment operations. A failed
+query is reported as an SSH failure; hostname validation runs only after a
+successful query. The regression cases are in
+`common-setup.module.unit.tests.ps1` under the Windows Linux-node distro module.
+
 ### Windows Workload Readiness Diagnostics
 
 If the core acceptance suite exhausts its Windows HTTP readiness retries, it
@@ -27,6 +36,22 @@ not identify the failing component on their own.
 Diagnostic commands have a ten-second timeout and share a four-minute
 collection budget. Query and probe failures are recorded without replacing
 the original readiness failure or preventing independent probes.
+
+### Cross-Node Communication Diagnostics
+
+The node acceptance suite preserves curl error output (`-sS`) for pod
+communication checks. On failure, it probes the same destination's Service IP
+and direct Pod IP from the failing source container, without DNS or proxy use.
+The generated node workloads use port 80 for both paths.
+
+Failure-only collection also records the Service, EndpointSlices, pods, nodes,
+Flannel/kube-proxy logs, and Windows routes/HNS state. For participating Linux
+nodes with known SSH configuration, it collects host routes, route lookups,
+and iptables counters using the existing key and strict host-key checking.
+Missing tools, SSH access, and diagnostic failures are reported without
+replacing the original assertion failure. Collection has a two-minute overall
+budget and a ten-second limit per command; it does not retry the test or
+change network state. Evidence appears under `NODE-NET DIAG` in test output.
 
 ## Prerequisites
 [Install *Pester*](#install-pester) and [Install *Ginkgo*](https://onsi.github.io/ginkgo/#installing-ginkgo){target="_blank"}.

@@ -83,7 +83,7 @@ installBehavior:
 | `nodes[].resources.cpu` | integer | Virtual CPU count for the Linux control-plane VM |
 | `nodes[].resources.memory` | string | RAM with unit suffix (e.g. `6GB`) |
 | `nodes[].resources.disk` | string | Disk size with unit suffix (e.g. `50GB`) |
-| `env.httpProxy` | string | HTTP proxy URL for network access during install |
+| `env.httpProxy` | string | HTTP proxy for network access during install, in the form `[scheme://][user[:password]@]host[:port]`. Percent-encode special characters in the user and password (e.g. `$` as `%24`) |
 | `env.additionalHooksDir` | string | Path to custom hook scripts (see [Hook System](hook-system.md)) |
 | `env.restartPostInstallCount` | integer | Automatic restarts after install (useful for stabilization) |
 | `env.k8sBins` | string | Path to locally-built K8s binaries (kubelet, kubeadm, kubectl) |
@@ -97,7 +97,7 @@ installBehavior:
 | `kubeletOverrides.<role>.config.kubeReserved.cpu` | quantity string | CPU reserved for Kubernetes processes |
 | `kubeletOverrides.<role>.config.kubeReserved.memory` | quantity string | Memory reserved for Kubernetes processes |
 
-Unknown roles, fields, invalid quantity strings, and mistyped values are rejected before installation starts. Omitting `kubeletOverrides` preserves previous behavior. See [Customizing Kubelet Configuration](customizing-kubelet.md) for topology and lifecycle details.
+Malformed `cpu`, `memory`, `disk`, `restartPostInstallCount` and `httpProxy` values as well as unknown roles, fields, invalid quantity strings, and mistyped values are rejected before installation starts. Omitting `kubeletOverrides` preserves previous behavior. See [Customizing Kubelet Configuration](customizing-kubelet.md) for topology and lifecycle details.
 
 ---
 

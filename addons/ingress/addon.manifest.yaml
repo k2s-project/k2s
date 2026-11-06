@@ -26,7 +26,7 @@ spec:
             - ../../common/manifests/certmanager/cert-manager.yaml
         windows:
           curl:
-            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.1/cmctl_windows_amd64.exe
+            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.2/cmctl_windows_amd64.exe
               destination: bin\cmctl.exe
       commands:
         enable:
@@ -72,7 +72,7 @@ spec:
             - ../../common/manifests/certmanager/cert-manager.yaml
         windows:
           curl: 
-            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.1/cmctl_windows_amd64.exe
+            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.2/cmctl_windows_amd64.exe
               destination: bin\cmctl.exe
       commands:
         enable:
@@ -113,13 +113,13 @@ spec:
           - quay.io/jetstack/cert-manager-cainjector
           - quay.io/jetstack/cert-manager-controller
           - quay.io/jetstack/cert-manager-webhook
-          - ghcr.io/nginx/nginx-gateway-fabric/nginx:2.7.2
+          - ghcr.io/nginx/nginx-gateway-fabric/nginx:2.8.1
           additionalImagesFiles:
           - ../../common/manifests/external-dns/deployment.yaml
           - ../../common/manifests/certmanager/cert-manager.yaml
         windows:
           curl:
-            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.1/cmctl_windows_amd64.exe
+            - url: https://github.com/cert-manager/cmctl/releases/download/v2.6.2/cmctl_windows_amd64.exe
               destination: bin\cmctl.exe
       commands:
         enable:

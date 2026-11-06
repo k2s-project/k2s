@@ -4,7 +4,7 @@
 
 module github.com/k2s-project/k2s
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/Microsoft/hcsshim v0.14.1

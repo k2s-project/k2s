@@ -1,5 +1,5 @@
-# SPDX-FileCopyrightText: © 2026 The K2s Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: © 2026 Siemens Healthineers AG
+# SPDX-License-Identifier: MIT
 
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

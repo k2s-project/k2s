@@ -32,7 +32,7 @@ spec:
             - mountPath: /etc/orthanc
               name: json-configmap-volume
         - name: health-checker
-          image: docker.io/curlimages/curl:8.22.0
+          image: docker.io/curlimages/curl:8.23.0
           command:
             - sh
             - -c

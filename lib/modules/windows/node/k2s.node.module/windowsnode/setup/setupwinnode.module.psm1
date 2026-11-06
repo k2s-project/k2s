@@ -173,6 +173,9 @@ function Uninstall-WinNode {
     Uninstall-WinDocker -ShallowUninstallation $ShallowUninstallation
 
     Remove-K2sAppLockerRules
+
+    Write-Log 'Remove event log sources of the removed services'
+    Remove-K2sEventLogSources -InstallationPath $kubePath
 }
 
 

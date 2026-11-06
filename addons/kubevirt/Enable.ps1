@@ -185,12 +185,12 @@ if ( $UseSoftwareVirtualization ) {
 }
 
 # deploy kubevirt
-$VERSION_KV = 'v1.9.0'
+$VERSION_KV = 'v1.9.1'
 Write-Log "deploy kubevirt version $VERSION_KV"
 (Invoke-Kubectl -Params 'apply', '-f', "$PSScriptRoot\manifests\kubevirt-operator.yaml").Output | Write-Log
 
 # deploy virtctrl
-$VERSION_VCTRL = 'v1.9.0'
+$VERSION_VCTRL = 'v1.9.1'
 $IMPLICITPROXY = "http://$(Get-ConfiguredKubeSwitchIP):8181"
 Write-Log "deploy virtctl version $VERSION_VCTRL"
 if ( $K8sSetup -eq 'SmallSetup' ) {
@@ -235,7 +235,7 @@ $virtviewer = Get-VirtViewerMsiFileName
 if (!(Test-Path "$binPath\$virtviewer")) {
     Write-Log 'Installing VirtViewer ...'
     if (!(Test-Path "$binPath\$virtviewer")) {
-        Invoke-DownloadFile "$binPath\$virtviewer" "https://releases.pagure.org/virt-viewer/$virtviewer" $true -ProxyToUse $Proxy
+        Invoke-DownloadFile "$binPath\$virtviewer" "https://gitlab.com/virt-viewer/virt-viewer/-/releases/v11.0/downloads/$virtviewer" $true -ProxyToUse $Proxy
     }
     msiexec.exe /i "$binPath\$virtviewer" /L*VX "$binPath\msiinstall.log" /quiet /passive /norestart
 

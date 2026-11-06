@@ -39,7 +39,7 @@ spec:
           effect: NoSchedule
       initContainers:
         - name: init-cert
-          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.12
+          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.13
           imagePullPolicy: IfNotPresent
           args:
             - --init-cert
@@ -68,7 +68,7 @@ spec:
               memory: 64Mi
       containers:
         - name: webhook
-          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.12
+          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.13
           imagePullPolicy: IfNotPresent
           args:
             - --addr=:8443

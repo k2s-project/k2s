@@ -55,7 +55,11 @@ Function Assert-GeneralComputerPrerequisites {
     $remoteUserPwd = $UserPwd
 
     Write-Log 'Checking if the hostname contains only allowed characters...'
-    [string]$hostname = (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute 'hostname' -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output
+    $hostnameResult = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute 'hostname' -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd" -Retries 3 -Timeout 3
+    if (-not $hostnameResult.Success) {
+        throw "Could not retrieve the hostname of the computer with IP '$IpAddress': SSH command 'hostname' failed after retrying. Output: $($hostnameResult.Output)"
+    }
+    [string]$hostname = $hostnameResult.Output
     if ([string]::IsNullOrWhiteSpace($hostname) -eq $true) {
         throw "The hostname of the computer with IP '$IpAddress' could not be retrieved."
     }
@@ -686,9 +690,6 @@ Function Install-Tools {
     Write-Log '[TimeSync] Verifying hwclock installation'
     &$executeRemoteCommand "if sudo sh -c 'command -v hwclock >/dev/null 2>&1 || [ -x /usr/sbin/hwclock ] || [ -x /sbin/hwclock ]'; then echo '[TimeSync] hwclock installed at:'; sudo sh -c 'command -v hwclock || ls -l /usr/sbin/hwclock /sbin/hwclock 2>/dev/null'; sudo hwclock --version; else echo '[TimeSync] hwclock not installed'; fi 2>&1"
     
-    # Clean up any unnecessary packages
-    &$executeRemoteCommand 'sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove -qq --yes'
-
     # Temporary fix for [master] not recognized in buildah 1.22.3, we comment the section as this is only specific to container engine
     # Issue is fixed in buildah 1.26 but exists in experimental stage
     #&$executeRemoteCommand "sudo sed -i 's/\[machine/#&/' /usr/share/containers/containers.conf"
@@ -797,7 +798,7 @@ function Get-FlannelImages {
     Write-Log 'Get images used by flannel'
 
     &$executeRemoteCommand 'sudo crictl pull docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3'
-    &$executeRemoteCommand 'sudo crictl pull docker.io/flannel/flannel:0.28.9'
+    &$executeRemoteCommand 'sudo crictl pull docker.io/flannel/flannel:v0.28.10'
 }
 
 <#
@@ -967,7 +968,7 @@ function Get-ClusterIPWebhookImages {
 
     Write-Log 'Get images used by clusterip-webhook'
 
-    &$executeRemoteCommand 'sudo crictl pull shsk2s.azurecr.io/clusterip-webhook:v1.3.12'
+    &$executeRemoteCommand 'sudo crictl pull shsk2s.azurecr.io/clusterip-webhook:v1.3.13'
 }
 
 function AddRegistryMirrors {
@@ -1782,6 +1783,8 @@ function New-VmImageForKubernetesNode {
     $vmUserPwd = Get-DefaultUserPwdKubeNode
 
     $setUpKubenode = {
+        Invoke-Debian13NodeHardening -Stage prepare -InstalledDistribution 'debian13' -UserName $vmUserName -UserPwd $vmUserPwd -IpAddress $vmIpAddress
+
         $addToKubeNode = {
             AddRegistryMirrors -IpAddress $vmIpAddress -UserName $vmUserName -UserPwd $vmUserPwd
             Get-KubernetesImages -IpAddress $vmIpAddress -UserName $vmUserName -UserPwd $vmUserPwd -K8sVersion $kubernetesVersion
@@ -1803,6 +1806,8 @@ function New-VmImageForKubernetesNode {
         New-KubernetesNode @kubeNodeParameters
 
         &$addToKubeNode
+
+        Invoke-Debian13NodeHardening -Stage cleanup -InstalledDistribution 'debian13' -UserName $vmUserName -UserPwd $vmUserPwd -IpAddress $vmIpAddress
     }
 
     $kubenodeBaseImageCreationParams = @{
@@ -2369,6 +2374,29 @@ function Get-LinuxScriptPath {
     return $scriptPath
 }
 
+function Invoke-Debian13NodeHardening {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('prepare', 'cleanup')]
+        [string]$Stage,
+        [Parameter(Mandatory = $true)]
+        [string]$InstalledDistribution,
+        [Parameter(Mandatory = $true)]
+        [string]$UserName,
+        [Parameter(Mandatory = $true)]
+        [string]$IpAddress,
+        [string]$UserPwd = ''
+    )
+
+    if ($InstalledDistribution -ne 'debian13') {
+        return
+    }
+
+    $scriptPath = "$(Get-LinuxScriptPath -InstalledDistribution $InstalledDistribution)\harden-node.sh"
+    Invoke-RemoteScript -LocalScriptPath $scriptPath -UserName $UserName -IpAddress $IpAddress `
+        -UserPwd $UserPwd -Arguments @($Stage) -Retries 0 -CleanupAfterExecution -ErrorAction Stop
+}
+
 function Invoke-RemoteScript {
     param (
         [Parameter(Mandatory = $true)]
@@ -2411,9 +2439,10 @@ function Invoke-RemoteScript {
         Copy-ToRemoteComputerViaSshKey -Source $LocalScriptPath -Target $RemoteScriptPath -UserName $UserName -IpAddress $IpAddress
     }
     
-    # Build command with arguments
+    # Build command with arguments. Each argument is passed as a single-quoted shell word; embedded single
+    # quotes are written as '\'' so that no argument can terminate its quoting and inject shell code.
     $argumentString = if ($Arguments.Count -gt 0) { 
-        "'$($Arguments -join "' '")'" 
+        ($Arguments | ForEach-Object { "'" + ([string]$_).Replace("'", "'\''") + "'" }) -join ' '
     } else { 
         "" 
     }
@@ -2552,6 +2581,7 @@ Set-K2sLinuxKubeletOverride,
 Set-UpMasterNode,
 Set-HypervDynamicMemory,
 Get-LinuxScriptPath,
+Invoke-Debian13NodeHardening,
 Invoke-RemoteScript,
 Get-KubernetesPackageCachePath,
 Get-BuildahPackageCachePath

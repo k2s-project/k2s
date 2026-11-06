@@ -10,7 +10,7 @@
         "type": "application",
         "group": "aquasecurity",
         "name": "trivy",
-        "version": "0.75.0"
+        "version": "0.76.1"
       }
     ],
     "authors": [
@@ -166,9 +166,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-2.4.1-windows-amd64.tar.gz",
+      "group": "https://github.com/containerd/nerdctl/releases/download/v2.4.2/nerdctl-2.4.2-windows-amd64.tar.gz",
       "name": "nerdctl",
-      "version": "v2.4.1",
+      "version": "v2.4.2",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -185,7 +185,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containerd/nerdctl@v2.4.1",
+      "purl": "pkg:github/containerd/nerdctl@v2.4.2",
       "type": "application"
     },
     {
@@ -258,9 +258,9 @@
       "type": "application"
     },
     {
-      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.0.zip",
+      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.3.zip",
       "name": "dockerd",
-      "version": "v29.9.0",
+      "version": "v29.9.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -277,13 +277,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/moby/moby@29.9.0",
+      "purl": "pkg:github/moby/moby@29.9.3",
       "type": "application"
     },
     {
-      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.0.zip",
+      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.3.zip",
       "name": "docker",
-      "version": "v29.9.0",
+      "version": "v29.9.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -300,13 +300,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/moby/moby@29.9.0",
+      "purl": "pkg:github/moby/moby@29.9.3",
       "type": "application"
     },
     {
-      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.0.zip",
+      "group": "https://download.docker.com/win/static/stable/x86_64/docker-29.9.3.zip",
       "name": "docker-proxy",
-      "version": "v29.9.0",
+      "version": "v29.9.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -323,13 +323,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/moby/moby@29.9.0",
+      "purl": "pkg:github/moby/moby@29.9.3",
       "type": "application"
     },
     {
-      "group": "https://github.com/flannel-io/flannel/releases/download/0.28.9/flanneld.exe",
+      "group": "https://github.com/flannel-io/flannel/releases/download/v0.28.10/flanneld.exe",
       "name": "flanneld",
-      "version": "v0.28.9",
+      "version": "v0.28.10",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -346,7 +346,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/flannel-io/flannel@v0.28.9",
+      "purl": "pkg:github/flannel-io/flannel@v0.28.10",
       "type": "application"
     },
     {
@@ -465,9 +465,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/containerd/containerd/releases/download/v2.4.1/cri-containerd-cni-2.4.1-windows-amd64.tar.gz",
+      "group": "https://github.com/containerd/containerd/releases/download/v2.4.2/cri-containerd-cni-2.4.2-windows-amd64.tar.gz",
       "name": "containerd-shim-runhcs-v1.6.9",
-      "version": "v2.4.1",
+      "version": "v2.4.2",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -484,13 +484,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containerd/containerd@v2.4.1",
+      "purl": "pkg:github/containerd/containerd@v2.4.2",
       "type": "application"
     },
     {
-      "group": "https://github.com/containerd/containerd/releases/download/v2.4.1/cri-containerd-cni-2.4.1-windows-amd64.tar.gz",
+      "group": "https://github.com/containerd/containerd/releases/download/v2.4.2/cri-containerd-cni-2.4.2-windows-amd64.tar.gz",
       "name": "containerd-stress",
-      "version": "v2.4.1",
+      "version": "v2.4.2",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -507,13 +507,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containerd/containerd@v2.4.1",
+      "purl": "pkg:github/containerd/containerd@v2.4.2",
       "type": "application"
     },
     {
-      "group": "https://github.com/containerd/containerd/releases/download/v2.4.1/cri-containerd-cni-2.4.1-windows-amd64.tar.gz",
+      "group": "https://github.com/containerd/containerd/releases/download/v2.4.2/cri-containerd-cni-2.4.2-windows-amd64.tar.gz",
       "name": "containerd",
-      "version": "v2.4.1",
+      "version": "v2.4.2",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -530,13 +530,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containerd/containerd@v2.4.1",
+      "purl": "pkg:github/containerd/containerd@v2.4.2",
       "type": "application"
     },
     {
-      "group": "https://github.com/containerd/containerd/releases/download/v2.4.1/cri-containerd-cni-2.4.1-windows-amd64.tar.gz",
+      "group": "https://github.com/containerd/containerd/releases/download/v2.4.2/cri-containerd-cni-2.4.2-windows-amd64.tar.gz",
       "name": "ctr",
-      "version": "v2.4.1",
+      "version": "v2.4.2",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -553,7 +553,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containerd/containerd@v2.4.1",
+      "purl": "pkg:github/containerd/containerd@v2.4.2",
       "type": "application"
     },
     {
@@ -603,9 +603,9 @@
       "type": "application"
     },
     {
-      "group": "https://get.helm.sh/helm-v4.3.0-windows-amd64.zip",
+      "group": "https://get.helm.sh/helm-v4.3.1-windows-amd64.zip",
       "name": "helm",
-      "version": "v4.3.0",
+      "version": "v4.3.1",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -622,7 +622,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/helm/helm@v4.3.0",
+      "purl": "pkg:github/helm/helm@v4.3.1",
       "type": "application"
     },
     {

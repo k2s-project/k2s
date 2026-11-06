@@ -273,6 +273,8 @@ No CLI flags. Enables VM workload management on Kubernetes.
 
 When used offline, the addon installs QEMU, libvirt, and `virtctl` on the Linux VM, and `virt-viewer` MSI plus `virtctl` on the Windows host.
 
+Online enablement and addon export download the Windows `virt-viewer` 11.0 MSI from the [official GitLab release](https://gitlab.com/virt-viewer/virt-viewer/-/releases/v11.0).
+
 Additional helper scripts:
 
 - `BuildKubevirtImage.ps1` — build VM disk images for KubeVirt

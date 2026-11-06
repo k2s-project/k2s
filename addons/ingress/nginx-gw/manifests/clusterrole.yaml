@@ -7,10 +7,10 @@ kind: ClusterRole
 metadata:
   name: nginx-gw-controller
   labels:
-    helm.sh/chart: nginx-gateway-fabric-2.7.2
+    helm.sh/chart: nginx-gateway-fabric-2.8.1
     app.kubernetes.io/name: nginx-gw
     app.kubernetes.io/instance: nginx-gw
-    app.kubernetes.io/version: "2.7.2"
+    app.kubernetes.io/version: "2.8.1"
     app.kubernetes.io/managed-by: Helm
 rules:
   - apiGroups:
@@ -131,6 +131,17 @@ rules:
       - get
       - watch
   - apiGroups:
+      - monitoring.coreos.com
+    resources:
+      - servicemonitors
+    verbs:
+      - create
+      - update
+      - delete
+      - list
+      - get
+      - watch
+  - apiGroups:
       - discovery.k8s.io
     resources:
       - endpointslices
@@ -184,6 +195,7 @@ rules:
       - upstreamsettingspolicies
       - authenticationfilters
       - proxysettingspolicies
+      - accesspolicies
       - ratelimitpolicies
       - wafpolicies
     verbs:
@@ -198,6 +210,7 @@ rules:
       - upstreamsettingspolicies/status
       - authenticationfilters/status
       - proxysettingspolicies/status
+      - accesspolicies/status
       - ratelimitpolicies/status
       - wafpolicies/status
     verbs:

@@ -30,12 +30,17 @@ Write-Log "Uninstalling $installationType setup"
 
 Uninstall-WinNode
 
-$controlPlaneNodeParams = @{
-    ShowLogs = $ShowLogs
-    DeleteFilesForOfflineInstallation = $DeleteFilesForOfflineInstallation
-    SkipHeaderDisplay = $true
+try {
+    $controlPlaneNodeParams = @{
+        ShowLogs = $ShowLogs
+        DeleteFilesForOfflineInstallation = $DeleteFilesForOfflineInstallation
+        SkipHeaderDisplay = $true
+    }
+    & "$PSScriptRoot\..\..\..\control-plane\Uninstall.ps1" @controlPlaneNodeParams
 }
-& "$PSScriptRoot\..\..\..\control-plane\Uninstall.ps1" @controlPlaneNodeParams
+catch {
+    Write-Log "Warning: Control-plane cleanup encountered an error: $($_.Exception.Message)" -Console
+}
 
 Remove-K2sHostsFromNoProxyEnvVar
 

@@ -278,6 +278,19 @@ k2s image import [flags]
 | `--windows` | `-w` | Import as Windows image |
 | `--docker-archive` | | Import from docker-archive tar |
 
+!!! note "Multi-image Docker archives"
+    When importing a Linux image archive, K2s inspects its `manifest.json`. If the archive is a Docker archive containing several images (for example, created with `docker save image1 image2`), K2s detects this automatically, even without `--docker-archive`. It then imports each image separately with its tags from `manifest.json`; layers shared by the images are stored only once. Entries that are invalid (for example, referencing missing files) are skipped. If any image fails, the command reports an error, and images that were already imported are kept.
+
+    Single-image archives are imported as before. On Linux nodes, multi-image OCI archives (an `index.json` with several images and no Docker `manifest.json`) are not supported.
+
+    If an archive contains a `manifest.json` that is empty, malformed, not a list of image entries, present more than once, or unreadable, the archive is not imported on any node type, and the command reports an error. A fallback import could import only part of such an archive and still report success. An archive that cannot be listed at all is passed to the container runtime unchanged, which reports its own error. Paths in `manifest.json` must be relative to the archive root. When a multi-image archive is imported from a Windows host on a Linux node, an entry that references an absolute, drive-qualified, UNC, or `..` path outside the archive is skipped as invalid; on a native Linux host, Buildah fails to import such an entry. In both cases the other entries are imported and the command reports an error.
+
+    On a native Linux host (experimental), reading `manifest.json` requires `jq`, which the K2s Linux host installation already requires as a host prerequisite (no download happens at import time). If `jq` is missing, the import of a Docker archive fails with an error instead of falling back to a single-image import. On a native Linux host, a file that is not a tar archive is also rejected before Buildah runs. Because Buildah archive references use `:` as a separator, an archive whose path contains `:` is rejected on a native Linux host; rename or move it before importing. OCI archives without `manifest.json` do not need `jq`.
+
+    Windows image archives (`-w`, or a Windows node selected with `--node`/`--nodes`) are imported by containerd in a single operation, which imports all images of the archive and stores shared layers only once. Afterwards, K2s checks that every tag listed in `manifest.json` is present in the `k8s.io` namespace and reports the missing images as an error. Because containerd does not import untagged Docker archive entries, such an archive is reported as failed. If the image list cannot be read after the import, the import is also reported as failed, because the image names could not be verified. Archives without a Docker `manifest.json` (for example OCI archives) are imported as before, but their image names are not verified. If any layer of the archive is missing, containerd imports no image at all. On a native Linux host, `-w` imports into the Windows VM with `ctr` without this name check.
+
+    On both Linux and Windows, if several entries of an archive use the same tag, the tag refers to the last of them and a warning is logged.
+
 ### image rm
 
 Remove a container image.

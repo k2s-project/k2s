@@ -369,7 +369,7 @@ Function Remove-VirtualMachineForBaseImageProvisioning {
     Disconnect-VmFromSwitch -VmName $VmName
 
     Write-Log "Removing the VM $VmName"
-    $vm = Get-VM | Where-Object Name -Like $VmName
+    $vm = Get-VM -ErrorAction SilentlyContinue | Where-Object Name -Like $VmName
     if ($vm -ne $null) {
         Remove-VM -Name $VmName -Force
     }
@@ -398,9 +398,9 @@ function Disconnect-VmFromSwitch {
         )
 
 	Write-Log "Disconnect VM '$VmName' from switch"
-    $vmFound = Get-VM | Where-Object Name -eq $VmName | Select-Object -ExpandProperty VmName
+    $vmFound = Get-VM -ErrorAction SilentlyContinue | Where-Object Name -eq $VmName | Select-Object -ExpandProperty VmName
     if ($null -ne $vmFound) {
-	    Disconnect-VMNetworkAdapter -VmName $VmName -ErrorAction Stop
+	    Disconnect-VMNetworkAdapter -VmName $VmName -ErrorAction SilentlyContinue
     }
 }
 
@@ -663,7 +663,7 @@ function Stop-VirtualMachineForBaseImageProvisioning {
         [ValidateScript({ !([string]::IsNullOrWhiteSpace($_))})]
         [string] $Name = $(throw "Argument missing: Name")
     )
-    $virtualMachine = Get-VM -Name $Name
+    $virtualMachine = Get-VM -Name $Name -ErrorAction SilentlyContinue
     if ($null -ne $virtualMachine -and $virtualMachine.State -ne "Off") {
         Stop-VM -Name $Name
 

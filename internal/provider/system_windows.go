@@ -6,7 +6,6 @@
 package provider
 
 import (
-	"fmt"
 	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -42,7 +41,7 @@ func (p *windowsSystemProvider) Dump(cfg SystemDumpConfig) error {
 	psCmd := p.scriptPath("dump/dump.ps1")
 	var params string
 	if cfg.SkipOpenDump {
-		params += " -OpenDumpFolder `$false"
+		params += " -OpenDumpFolder $false"
 	}
 	if cfg.ShowOutput {
 		params += " -ShowLogs"
@@ -57,8 +56,8 @@ func (p *windowsSystemProvider) Upgrade(cfg SystemUpgradeConfig) error {
 	if cfg.NodeName != "" && cfg.NodePackagePath != "" {
 		psCmd := p.scriptPath("upgrade/Upgrade-K2sNode.ps1")
 		var params string
-		params += " -NodeName " + cfg.NodeName
-		params += fmt.Sprintf(" -NodePackagePath '%s'", cfg.NodePackagePath)
+		params += " -NodeName " + utils.EscapeWithSingleQuotes(cfg.NodeName)
+		params += " -NodePackagePath " + utils.EscapeWithSingleQuotes(cfg.NodePackagePath)
 		if cfg.ShowOutput {
 			params += " -ShowLogs"
 		}
@@ -87,13 +86,13 @@ func (p *windowsSystemProvider) clusterUpgradeCommand(cfg SystemUpgradeConfig) s
 		params += " -Config " + utils.EscapeWithSingleQuotes(cfg.ConfigFile)
 	}
 	if cfg.Proxy != "" {
-		params += " -Proxy " + cfg.Proxy
+		params += " -Proxy " + utils.EscapeWithSingleQuotes(cfg.Proxy)
 	}
 	if cfg.BackupDir != "" {
-		params += fmt.Sprintf(" -BackupDir '%s'", cfg.BackupDir)
+		params += " -BackupDir " + utils.EscapeWithSingleQuotes(cfg.BackupDir)
 	}
 	if cfg.AdditionalHooksDir != "" {
-		params += fmt.Sprintf(" -AdditionalHooksDir '%s'", cfg.AdditionalHooksDir)
+		params += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
 	}
 	if cfg.Force {
 		params += " -Force"
@@ -126,7 +125,7 @@ func (p *windowsSystemProvider) ResetNetwork(cfg SystemResetNetworkConfig) error
 		params = append(params, " -Force")
 	}
 	if cfg.AdditionalHooksDir != "" {
-		params = append(params, fmt.Sprintf(" -AdditionalHooksDir '%s'", cfg.AdditionalHooksDir))
+		params = append(params, " -AdditionalHooksDir "+utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir))
 	}
 	if cfg.ShowOutput {
 		params = append(params, " -ShowLogs")
@@ -174,13 +173,13 @@ func (p *windowsSystemProvider) Restore(cfg SystemRestoreConfig) error {
 	psCmd := p.scriptPath("restore/Start-SystemRestore.ps1")
 	var params string
 	if cfg.BackupFile != "" {
-		params += fmt.Sprintf(" -BackupFile '%s'", cfg.BackupFile)
+		params += " -BackupFile " + utils.EscapeWithSingleQuotes(cfg.BackupFile)
 	}
 	if cfg.ErrorOnFailure {
 		params += " -ErrorOnFailure"
 	}
 	if cfg.AdditionalHooksDir != "" {
-		params += fmt.Sprintf(" -AdditionalHooksDir '%s'", cfg.AdditionalHooksDir)
+		params += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
 	}
 	if cfg.ShowOutput {
 		params += " -ShowLogs"

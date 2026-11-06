@@ -29,7 +29,9 @@ Param(
     [parameter(Mandatory = $false, HelpMessage = 'Directory containing additional hooks to be executed after local hooks are executed')]
     [string] $AdditionalHooksDir = '',
     [parameter(Mandatory = $false, HelpMessage = 'Deletes the needed files to perform an offline installation')]
-    [switch] $DeleteFilesForOfflineInstallation = $false
+    [switch] $DeleteFilesForOfflineInstallation = $false,
+    [parameter(Mandatory = $false, HelpMessage = 'Skips showing uninstall header display')]
+    [switch] $SkipHeaderDisplay = $false
 )
 
 $infraModule = "$PSScriptRoot\..\..\..\..\modules\windows\infra\k2s.infra.module\k2s.infra.module.psm1"
@@ -41,7 +43,7 @@ Import-Module $infraModule, $nodeModule, $clusterModule, $addonsModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
 
-if ($HideHeaders -eq $false) {
+if (-not $SkipHeaderDisplay) {
     Write-Log 'Uninstalling Linux-only K2s'
 }
 
@@ -49,23 +51,20 @@ Invoke-AddonsHooks -HookType 'BeforeUninstall'
 
 $ErrorActionPreference = 'Continue'
 
-$controlPlaneParams = " -AdditionalHooksDir '$AdditionalHooksDir'"
-if ($DeleteFilesForOfflineInstallation.IsPresent) {
-    $controlPlaneParams += ' -DeleteFilesForOfflineInstallation'
+$controlPlaneParams = @{
+    SkipPurge                         = $SkipPurge
+    ShowLogs                          = $ShowLogs
+    AdditionalHooksDir                = $AdditionalHooksDir
+    DeleteFilesForOfflineInstallation = $DeleteFilesForOfflineInstallation
+    SkipHeaderDisplay                 = $SkipHeaderDisplay
 }
-if ($ShowLogs.IsPresent) {
-    $controlPlaneParams += ' -ShowLogs'
-}
-if ($SkipPurge.IsPresent) {
-    $controlPlaneParams += ' -SkipPurge'
-}
-& powershell.exe "$PSScriptRoot\..\..\..\control-plane\Uninstall.ps1" $controlPlaneParams
+& "$PSScriptRoot\..\..\..\control-plane\Uninstall.ps1" @controlPlaneParams
 
 Remove-K2sHostsFromNoProxyEnvVar
 
 Invoke-AddonsHooks -HookType 'AfterUninstall'
 
-if ($HideHeaders -eq $false) {
+if (-not $SkipHeaderDisplay) {
     Write-Log 'K2s Linux-only uninstalled.'
 }
 

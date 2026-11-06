@@ -94,7 +94,7 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'rollout'; Implementa
 
 $rolloutNamespace = 'rollout'
 
-$VERSION_ARGOCD = 'v3.5.4'
+$VERSION_ARGOCD = 'v3.6.1'
 
 Write-Log 'Creating rollout namespace'
 (Invoke-Kubectl -Params 'create', 'namespace', $rolloutNamespace).Output | Write-Log

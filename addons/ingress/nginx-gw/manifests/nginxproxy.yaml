@@ -8,10 +8,10 @@ metadata:
   name: nginx-gw-proxy-config
   namespace: nginx-gw
   labels:
-    helm.sh/chart: nginx-gateway-fabric-2.7.2
+    helm.sh/chart: nginx-gateway-fabric-2.8.1
     app.kubernetes.io/name: nginx-gw
     app.kubernetes.io/instance: nginx-gw
-    app.kubernetes.io/version: "2.7.2"
+    app.kubernetes.io/version: "2.8.1"
     app.kubernetes.io/managed-by: Helm
 spec:
   kubernetes:
@@ -21,7 +21,7 @@ spec:
         image:
           pullPolicy: IfNotPresent
           repository: ghcr.io/nginx/nginx-gateway-fabric/nginx
-          tag: 2.7.2
+          tag: 2.8.1
     service:
       externalTrafficPolicy: Local
       type: LoadBalancer

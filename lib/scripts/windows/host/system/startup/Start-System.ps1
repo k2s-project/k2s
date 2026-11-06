@@ -67,8 +67,6 @@ function Wait-NetInterfaceAdapterUp {
 
 function Select-K2sIsRunning {
     $processName = 'k2s.exe'
-    $requiredArgs = @('install', 'start') # Create an array of required arguments
-
     # Get the process information using Get-CimInstance (recommended over Get-WmiObject for modern PowerShell)
     # This allows access to the CommandLine property.
     $k2sProcess = Get-CimInstance Win32_Process | Where-Object {
@@ -82,9 +80,8 @@ function Select-K2sIsRunning {
         foreach ($process in $k2sProcess) {
             $commandLine = $process.CommandLine
 
-            # Check if the command line contains any of the required arguments
-            # We use -clike for case-insensitive contains, and wildcard for flexibility
-            if ($requiredArgs | ForEach-Object { $commandLine -clike "*$_*" }) {
+            # Proxy mutations own Flannel's stop/start sequence when restarting httpproxy.
+            if ($commandLine -match '^\s*(?:"[^"]+"|\S+)\s+(?:install|start|system\s+proxy\s+(?:set|reset|override\s+(?:add|delete)))(?:\s|$)') {
                 $found = $true
                 break # Exit the loop once a matching argument is found for this process
             }
@@ -95,7 +92,7 @@ function Select-K2sIsRunning {
             return $true
         }
         else {
-            Write-Log "[$logUseCase] K2s is not doing an install or start."
+            Write-Log "[$logUseCase] K2s is not doing an install, start or proxy reconfiguration."
             return $false
         }
     }

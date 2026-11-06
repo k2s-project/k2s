@@ -529,21 +529,19 @@ func testInterNodeCommunication(ctx context.Context, podsByNode map[string][]v1.
 func checkCommunication(ctx context.Context, sourcePod, targetPod v1.Pod, sidecarName string) {
 	By(fmt.Sprintf("Checking communication from pod %s (node: %s) to pod %s (node: %s)", sourcePod.Name, sourcePod.Spec.NodeName, targetPod.Name, targetPod.Spec.NodeName))
 
-	// get app label of target pod
-	targetAppLabel := targetPod.Labels["app"]
-	cliPath := filepath.Join(suite.RootDir(), "bin", "kube", "kubectl.exe")
-
-	command := ""
-	if sidecarName != "" {
-		// For Linux, use curl-sidecar
-		command = fmt.Sprintf("%s exec %s -n %s -c %s -- curl -si --connect-timeout %s --max-time %s http://%s.%s.svc.cluster.local/%s", cliPath, sourcePod.Name, namespace, sidecarName, curlConnTime, curlMaxTime, targetAppLabel, namespace, targetAppLabel)
-	} else {
-		// For Windows, use the main container
-		command = fmt.Sprintf("%s exec %s -n %s -- curl -si --connect-timeout %s --max-time %s http://%s.%s.svc.cluster.local/%s", cliPath, sourcePod.Name, namespace, curlConnTime, curlMaxTime, targetAppLabel, namespace, targetAppLabel)
-	}
-
-	output := suite.Cli("cmd.exe").MustExec(ctx, "/c", command)
+	probePassed := false
+	DeferCleanup(func() {
+		if !probePassed {
+			collectNodeCommunicationDiagnostics(sourcePod, targetPod, sidecarName)
+		}
+	})
+	app := targetPod.Labels["app"]
+	args := podCommandArgs(sourcePod.Name, sidecarName, "curl", "-sS", "-i",
+		"--connect-timeout", curlConnTime, "--max-time", curlMaxTime,
+		fmt.Sprintf("http://%s.%s.svc.cluster.local/%s", app, namespace, app))
+	output := suite.Kubectl().MustExec(ctx, args...)
 	Expect(strings.TrimSpace(output)).To(ContainSubstring("200"), "Unexpected response")
+	probePassed = true
 }
 
 func checkInternetCommunication(ctx context.Context, pod v1.Pod, sidecarName string) {

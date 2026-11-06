@@ -193,6 +193,41 @@ var _ = Describe("config", func() {
 				Expect(actual).To(Equal(iConfig))
 			})
 		})
+
+		When("converted config contains a malformed value", func() {
+			It("returns an error", func() {
+				configFileName := "test-file"
+				configFilePath := fmt.Sprintf("embed/%s", configFileName)
+
+				kind := Kind("test-kind")
+				flags := &pflag.FlagSet{}
+				vConfig := viper.New()
+				iConfig := &InstallConfig{Env: EnvConfig{Proxy: "http://proxy:8080'; calc; '"}}
+
+				configFileMap = map[Kind]string{kind: configFileName}
+
+				embeddedReaderMock := &mockObject{}
+				embeddedReaderMock.On(r.GetFunctionName(embeddedReaderMock.readFile), configFilePath).Return(readTestConfig())
+
+				converterMock := &mockObject{}
+				converterMock.On(r.GetFunctionName(converterMock.convert), vConfig).Return(iConfig, nil)
+
+				overwriterMock := &mockObject{}
+				overwriterMock.On(r.GetFunctionName(overwriterMock.overwrite), iConfig, vConfig, flags)
+
+				sut := installConfigAccess{
+					embeddedFileReader: embeddedReaderMock,
+					config:             vConfig,
+					converter:          converterMock,
+					overwriter:         overwriterMock,
+				}
+
+				actual, err := sut.Load(kind, flags)
+
+				Expect(actual).To(BeNil())
+				Expect(err).To(MatchError(ContainSubstring("invalid proxy")))
+			})
+		})
 	})
 
 	Describe("GetNodeByRole", func() {
@@ -1043,6 +1078,112 @@ var _ = Describe("config", func() {
 				err := validateWslCompatibility(config)
 				Expect(err).To(BeNil())
 			})
+		})
+	})
+
+	Describe("validateResourceValues", func() {
+		newConfig := func(resources ResourceConfig) *InstallConfig {
+			return &InstallConfig{Nodes: []NodeConfig{{Role: ControlPlaneRoleName, Resources: resources}}}
+		}
+
+		DescribeTable("accepts well-formed values",
+			func(resources ResourceConfig) {
+				Expect(validateResourceValues(newConfig(resources))).To(Succeed())
+			},
+			Entry("defaults", ResourceConfig{Cpu: "6", Memory: "6GB", Disk: "50GB"}),
+			Entry("dynamic memory", ResourceConfig{Cpu: "4", Memory: "4GB", MemoryMin: "2GB", MemoryMax: "8GB", Disk: "50GB"}),
+			Entry("lowercase and short units", ResourceConfig{Memory: "4gb", MemoryMin: "512M", MemoryMax: "1T", Disk: "100g"}),
+			Entry("decimal sizes as reported by the upgrade", ResourceConfig{Memory: "5.86GB", Disk: "49.5GB"}),
+			Entry("plain bytes", ResourceConfig{Memory: "6442450944"}),
+			Entry("empty values", ResourceConfig{}),
+		)
+
+		DescribeTable("rejects malformed values",
+			func(resources ResourceConfig, expectedError string) {
+				Expect(validateResourceValues(newConfig(resources))).To(MatchError(ContainSubstring(expectedError)))
+			},
+			Entry("CPU with command", ResourceConfig{Cpu: "4; calc"}, "invalid CPU count '4; calc'"),
+			Entry("negative CPU", ResourceConfig{Cpu: "-4"}, "invalid CPU count"),
+			Entry("memory with sub-expression", ResourceConfig{Memory: "6GB$(calc)"}, "invalid memory '6GB$(calc)'"),
+			Entry("minimum memory with whitespace", ResourceConfig{MemoryMin: "2 GB"}, "invalid minimum memory"),
+			Entry("maximum memory with unknown unit", ResourceConfig{MemoryMax: "8XB"}, "invalid maximum memory"),
+			Entry("disk with command", ResourceConfig{Disk: "50GB -ForceOnlineInstallation"}, "invalid disk size"),
+		)
+
+		It("validates every node", func() {
+			config := &InstallConfig{Nodes: []NodeConfig{
+				{Role: ControlPlaneRoleName, Resources: ResourceConfig{Cpu: "6"}},
+				{Role: WorkerRoleName, Resources: ResourceConfig{Cpu: "x"}},
+			}}
+
+			Expect(validateResourceValues(config)).To(MatchError(ContainSubstring("node role 'worker'")))
+		})
+	})
+
+	Describe("validateEnvValues", func() {
+		It("accepts empty values", func() {
+			Expect(validateEnvValues(&InstallConfig{})).To(Succeed())
+		})
+
+		It("accepts well-formed values", func() {
+			config := &InstallConfig{Env: EnvConfig{Proxy: "http://proxy:8080", RestartPostInstall: "2"}}
+
+			Expect(validateEnvValues(config)).To(Succeed())
+		})
+
+		It("rejects a malformed restart count", func() {
+			config := &InstallConfig{Env: EnvConfig{RestartPostInstall: "2; calc"}}
+
+			Expect(validateEnvValues(config)).To(MatchError(ContainSubstring("invalid restartPostInstallCount")))
+		})
+
+		It("rejects a malformed proxy", func() {
+			config := &InstallConfig{Env: EnvConfig{Proxy: "http://proxy:8080 -Force"}}
+
+			Expect(validateEnvValues(config)).To(MatchError(ContainSubstring("invalid proxy")))
+		})
+	})
+
+	Describe("ValidateProxy", func() {
+		DescribeTable("accepts proxy addresses",
+			func(proxy string) {
+				Expect(ValidateProxy(proxy)).To(Succeed())
+			},
+			Entry("empty", ""),
+			Entry("http URL", "http://proxy.example:8080"),
+			Entry("https URL with trailing slash", "https://proxy.example:8443/"),
+			Entry("socks URL", "socks5://proxy:1080"),
+			Entry("host and port without scheme", "192.168.178.100:8765"),
+			Entry("host only", "proxy"),
+			Entry("K2s cluster proxy", "http://172.19.1.1:8181"),
+			Entry("IPv6 host", "http://[fd00::1]:3128"),
+			Entry("credentials", "http://user:secret@proxy:8080"),
+			Entry("percent-encoded credentials", "http://dom%5Cuser:p%24ss%27w0rd@proxy:8080"),
+			Entry("user without password", "http://user@proxy:8080"),
+		)
+
+		DescribeTable("rejects malformed proxy addresses",
+			func(proxy string) {
+				Expect(ValidateProxy(proxy)).To(MatchError(ContainSubstring("invalid proxy")))
+			},
+			Entry("PowerShell quote injection", "http://x'; calc; #"),
+			Entry("PowerShell sub-expression", "http://$(calc):8080"),
+			Entry("double quote for apt config injection", `http://x";DPkg::Post-Invoke{"id";};"`),
+			Entry("whitespace", "http://proxy:8080 -Force"),
+			Entry("newline", "http://proxy:8080\nAcquire::x"),
+			Entry("shell command separator", "http://proxy:8080;id"),
+			Entry("shell backticks", "http://`id`:8080"),
+			Entry("unencoded special characters in password", "http://user:p$ss@proxy:8080"),
+			Entry("leading dash", "-oProxyCommand=id"),
+			Entry("path", "http://proxy:8080/path"),
+			Entry("non-numeric port", "http://proxy:port"),
+		)
+
+		It("does not include the proxy in the error, since it might contain credentials", func() {
+			err := ValidateProxy("http://user:top secret@proxy:8080")
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).ToNot(ContainSubstring("top secret"))
 		})
 	})
 

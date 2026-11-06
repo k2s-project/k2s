@@ -10,7 +10,7 @@
         "type": "application",
         "group": "aquasecurity",
         "name": "trivy",
-        "version": "0.76.1"
+        "version": "0.76.2"
       }
     ],
     "authors": [

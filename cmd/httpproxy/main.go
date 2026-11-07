@@ -29,7 +29,7 @@ func main() {
 	forwardProxy := flag.String("forwardproxy", "", "forward proxy to be used")
 
 	versionFlag := cli.NewVersionFlag(cliName)
-	flag.Var(&allowedCIDRs, "allowed-cidr", "network interfaces on which HTTP proxy is available")
+	flag.Var(&allowedCIDRs, "allowed-cidr", "source network (CIDR) allowed to use the HTTP proxy; repeatable, at least one is required")
 	flag.Parse()
 
 	if *versionFlag {
@@ -46,10 +46,13 @@ func main() {
 	// start proxy
 	slog.Info("Start of proxy.")
 	proxyConfig := newProxyConfig(verbose, addr, forwardProxy, allowedCIDRs)
-	proxyHandler := newProxyHttpHandler(proxyConfig)
+	proxyHandler, err := newProxyHttpHandler(proxyConfig)
+	if err != nil {
+		slog.Error("Failed to create proxy handler", "error", err)
+		return
+	}
 
 	// Keep a reference to the listener
-	var err error
 	listener, err = net.Listen("tcp", *proxyConfig.ListenAddress)
 	if err != nil {
 		slog.Error("Failed to listen", "error", err)

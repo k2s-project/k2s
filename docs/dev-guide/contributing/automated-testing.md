@@ -58,6 +58,187 @@ change network state. Evidence appears under `NODE-NET DIAG` in test output.
 
 !!! tip
     When running the [Main Script: execute_all_tests.ps1](#main-script-execute_all_testsps1) for the first time, those prerequisites are installed automatically in the correct version.
+
+## Windows Cluster GitHub Actions Workflow
+
+The **CI - Windows Cluster** workflow (`.github/workflows/ci-windows-cluster.yml`)
+builds all ten Windows executables, runs `k2s install`, verifies that both the
+Linux control plane and Windows worker are Ready, and runs the existing
+`test/e2e/cluster/core` acceptance suite. The suite deploys Linux and Windows
+workloads and checks DNS, Service forwarding, cross-node connectivity and
+internet access. This is a core cluster test, not the complete addon or
+lifecycle test matrix.
+
+### Runner Contract with the KubeVirt Dispatcher
+
+The default target is the **disposable x64 Windows 11 `cibox-win11` VM**
+provisioned by the `k2s-support` dispatcher. The job requests exactly
+`runs-on: [self-hosted, k2s-win11-runner]`; the dispatcher must include both
+labels in its JIT registration. Windows 11 editions with Hyper-V support
+(including appropriately licensed Enterprise/IoT Enterprise), and Windows
+Server 2022/2025 are accepted by the preflight checks. Do not assume that
+`windows-latest` or an arbitrary larger runner exposes nested virtualization.
+The workflow requires at least 8 logical CPUs, 16 GiB RAM (32 GiB recommended),
+10 GiB free RAM and 100 GiB free disk space on the `C:` system drive. The
+control-plane VM receives 6 CPUs, 6 GiB static memory and a 50 GiB disk.
+
+The support-side Argo automation boots the Windows VM without cloning,
+building or installing K2s. It downloads the Actions runner, supplies a
+short-lived JIT configuration and runs `run.cmd --jitconfig <encoded-config>`.
+This workflow owns checkout, builds, install, tests and native per-step logs.
+No Argo API, Kubernetes credentials, GitHub App key or runner-administration
+permission is needed in the Actions job; its token has only `contents: read`.
+The dispatcher and runner connect outbound through the corporate proxy;
+no public Kubernetes API or inbound webhook is needed.
+
+On KubeVirt, expose VMX/SVM to the Windows guest and retain the already-tested
+nested Hyper-V configuration in the base image. On an outer Hyper-V host,
+configure the powered-off runner VM there, not inside the job:
+
+```powershell
+Set-VMProcessor -VMName '<runner-vm>' -ExposeVirtualizationExtensions $true
+Set-VMMemory -VMName '<runner-vm>' -DynamicMemoryEnabled $false
+```
+
+For Azure or another cloud, select a VM family/size and security configuration
+that explicitly supports nested Hyper-V; enabling Windows features alone does
+not provide this capability. For physical runners, enable virtualization in
+firmware. The workflow creates, starts and removes a diskless probe VM to
+verify actual VM startup, rather than relying only on CPU flags.
+
+Prepare the base image with these features in elevated Windows PowerShell,
+then **reboot before generating/starting the JIT runner**:
+
+```powershell
+Enable-WindowsOptionalFeature -Online -FeatureName @(
+    'Microsoft-Hyper-V',
+    'Microsoft-Hyper-V-Management-PowerShell',
+    'Containers',
+    'VirtualMachinePlatform'
+) -All -NoRestart
+# On Windows 11, also enable the complete client Hyper-V feature set.
+Enable-WindowsOptionalFeature -Online -FeatureName 'Microsoft-Hyper-V-All' -All -NoRestart
+Set-ExecutionPolicy RemoteSigned -Force
+Restart-Computer
+```
+
+Install the Microsoft Visual C++ v14 **x64** redistributable, `curl.exe`
+>= 7.71.0, OpenSSH >= 8, and Git. Run the Actions runner with an elevated local
+administrator token and a usable profile; the job uses Windows PowerShell 5.1.
+Go is installed by `actions/setup-go`, using the version from `go.mod`.
+No preinstalled `k2s.exe`, K2s checkout, Ginkgo or Pester is needed. The
+`Microsoft-Hyper-V-All` command is client-specific; omit it on Server.
+
+Stop Docker Desktop/Engine. Start with no existing K2s installation, Hyper-V
+VMs, external virtual switches or `C:\k2s` staging folder. Allow downloads
+and registry access from the host and nested VM, including the configured
+`shsk2s.azurecr.io` registry. Ensure host/VPN/cloud networks do not overlap the
+subnets in `cfg/config.json` (by default `172.19.1.0/24`, `172.20.0.0/16`,
+`172.21.0.0/16` and `172.22.1.0/24`). Preserve GitHub runner connectivity when
+K2s creates switches and changes DNS/routing. K2s uses internal switches/NAT;
+do not create an external switch on the runner to provide nested networking.
+
+### Corporate Proxy Configuration
+
+Configure the Actions runner's **process environment** (or runner `.env`)
+with its proxy before launching `run.cmd`. Checkout, setup-go and artifact
+upload need that configuration independently of the PowerShell steps. Node
+proxy settings do not automatically configure the Windows guest or its
+nested Linux VM. Install any corporate TLS CA certificates in each relevant
+trust store; do not disable certificate validation.
+
+For Go builds, tests and K2s installation, the workflow uses the optional
+`K2S_HTTP_PROXY` environment/repository variable, then inherited `HTTPS_PROXY`,
+then `HTTP_PROXY`. Configure an absolute HTTP(S) URL reachable from both the
+Windows host and Kubemaster, without embedded credentials. No corporate
+address is hard-coded. If these are unset, K2s can use the runner account's
+Windows proxy settings through its existing installer behavior; Go and the
+Actions agent still need their own working connectivity.
+
+`K2S_NO_PROXY` optionally supplies additional comma-separated corporate
+bypasses. Build/test steps merge these with inherited `NO_PROXY` and the
+cluster addresses/CIDRs read from `cfg/config.json`. Installation passes the
+proxy and bypasses through `k2s install --proxy ... --no-proxy ...`, then clears
+proxy environment variables only in that step's child process. CLI-only
+status, diagnostics and uninstall steps also clear their child-process
+proxy variables. The parent runner retains its connectivity for job control
+and artifact upload.
+
+Do not set machine-level `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` or `ALL_PROXY`
+in the base image; preflight rejects them rather than modifying persistent
+settings. K2s validates machine and process proxy environments, so clearing
+only the child environment would not isolate an invalid machine configuration.
+The runner's `.env`, JIT config and diagnostic credentials must remain outside
+`GITHUB_WORKSPACE`/`C:\k2s`; they are not workflow artifacts.
+
+### Dispatch, Results and Runner Disposal
+
+Create the `k2s-windows-e2e` GitHub environment with required reviewers and
+deployment branch restrictions, and restrict the runner group to trusted
+repositories/workflows. Under **Actions > CI - Windows Cluster > Run workflow**,
+select a reviewed branch. To test a PR, dispatch its reviewed head branch
+within this repository; do not execute untrusted fork code on this runner.
+There are deliberately no `pull_request` or `pull_request_target` triggers.
+Runs share the `k2s-win11-runner` concurrency group and do not cancel an active
+installation. Other workflows targeting this same support-side pool/shared
+reporting PVC must use the same group, or the dispatcher must enforce a
+global capacity limit. GitHub concurrency alone does not coordinate Argo
+workflows or other repositories.
+
+Configure the protected environment **before** dispatching, including required
+reviewers and deployment branch restrictions; merely naming an environment in
+YAML does not establish an approval policy. The dispatcher must only provision
+approved, runnable jobs and should restrict eligible workflow paths/refs.
+
+JIT guarantees a single-use runner, **not binding to the polled job ID**:
+GitHub assigns a matching queued job using labels/group access. Deterministic
+Argo names deduplicate provisioning attempts, not GitHub job assignment.
+Use compatible labels, restricted access and pool limits; do not assume the
+runner necessarily executes the job that caused its creation. Include run
+attempts in dispatcher deduplication so reruns are not suppressed.
+
+Source (including credential-free Git metadata for build version information)
+is staged at `C:\k2s` because installation on the system drive is recommended.
+The workflow uses the repository's `BuildGoExe.ps1 -BuildAll` helper before:
+
+```console
+C:\k2s\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output
+```
+
+Ginkgo is invoked through `go run` at the version pinned in `go.mod`, with one
+process and `--fail-on-empty`. JUnit results, failure-only Kubernetes/Hyper-V
+diagnostics and `k2s.log` are retained for seven days. Logs may contain internal
+network information; review them before sharing. Kubeconfigs, SSH keys and
+full system dumps are not uploaded.
+
+The job attempts `k2s uninstall --output` even after installation/test failure
+and uploads evidence first. The support-side provisioner must wait for the
+runner to finish the entire job, including post-job actions, before its Argo
+`onExit` destroys the VMI, SSH Service and per-job writable storage.
+**Discard/reimage the runner VM after every run**, including success,
+cancellation or timeout; single-use registration alone does not delete it.
+Uninstall cannot restore all machine changes: installation modifies networking, Windows services,
+registry settings and Defender settings. Partial installs may also leave
+provisioning VMs. Never reuse this runner for unrelated jobs or treat workflow
+cleanup as a substitute for VM disposal.
+
+The Actions job timeout is **240 minutes**. The support-side deadline must
+allow VM boot, registration, all 240 job minutes, runner exit and teardown:
+use at least **5 hours**, increasing it if provisioning requires longer.
+A four-hour Argo deadline could destroy a still-running job. Bound idle
+registration/queue waiting separately; a JIT runner must not be assumed to
+exit immediately when no job is assigned. Timeouts/cancellation may prevent
+Actions cleanup, so Argo needs independent cleanup plus a stale-resource
+reaper. Delete per-job JIT Secrets and stale runner registrations too.
+
+Dispatcher implementation and RBAC live in `k2s-support`, not this repository.
+JIT Secret creation followed by Workflow submission is not an atomic claim:
+handle duplicate/partial submissions and reconcile orphan Secrets/runners.
+Its documented dispatcher permissions must cover every API operation it
+actually uses (including reading existing claims and any token-cache Secret),
+without exposing those permissions or credentials to the Windows guest.
+Mount the per-job JIT Secret in each Argo pod that actually copies/uses it;
+mounts in a caller pod are not automatically inherited by referenced templates.
   
 ## Main Script: execute_all_tests.ps1
 The main entry point for automated testing is the script `execute_all_tests.ps1`, whether being executed locally or in CI/CD workflows. It is not mandatory, but recommended to use this script instead of running *Pester* or *Ginkgo* commands directly due to the following features of the `execute_all_tests.ps1` script:

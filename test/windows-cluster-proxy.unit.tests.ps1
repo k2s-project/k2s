@@ -4,7 +4,8 @@
 BeforeAll {
     . "$PSScriptRoot\..\.github\scripts\windows-cluster-proxy.ps1"
     $configPath = Join-Path $PSScriptRoot '..\cfg\config.json'
-    $proxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'K2S_HTTP_PROXY', 'K2S_NO_PROXY')
+    $proxyVariables = @('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'K2S_HTTP_PROXY', 'K2S_NO_PROXY',
+                        'K2S_CONFIG_HTTP_PROXY', 'K2S_CONFIG_NO_PROXY')
 }
 
 Describe 'Windows cluster CI proxy configuration' -Tag 'unit' {
@@ -45,6 +46,63 @@ Describe 'Windows cluster CI proxy configuration' -Tag 'unit' {
 
         $env:HTTPS_PROXY | Should -Be 'http://runner-proxy.example:81'
         $env:HTTP_PROXY | Should -Be 'http://runner-proxy.example:81'
+    }
+
+    It 'preserves inherited K2s overrides when GitHub configuration is empty' {
+        $env:K2S_CONFIG_HTTP_PROXY = ''
+        $env:K2S_CONFIG_NO_PROXY = ''
+        $env:K2S_HTTP_PROXY = 'http://k2s-proxy.example:81'
+        $env:K2S_NO_PROXY = 'inherited.example'
+        $env:HTTPS_PROXY = 'http://runner-proxy.example:81'
+
+        Initialize-K2sCiProxy -ConfigPath $configPath
+
+        $env:HTTPS_PROXY | Should -Be 'http://k2s-proxy.example:81'
+        ($env:NO_PROXY -split ',') | Should -Contain 'inherited.example'
+    }
+
+    It 'prefers nonempty GitHub proxy configuration and merges both bypass sources' {
+        $env:K2S_CONFIG_HTTP_PROXY = 'http://configured-proxy.example:81'
+        $env:K2S_CONFIG_NO_PROXY = 'configured.example'
+        $env:K2S_HTTP_PROXY = 'http://inherited-proxy.example:81'
+        $env:K2S_NO_PROXY = 'inherited.example'
+
+        Initialize-K2sCiProxy -ConfigPath $configPath
+
+        $env:HTTPS_PROXY | Should -Be 'http://configured-proxy.example:81'
+        ($env:NO_PROXY -split ',') | Should -Contain 'configured.example'
+        ($env:NO_PROXY -split ',') | Should -Contain 'inherited.example'
+    }
+
+    It 'merges Windows proxy exceptions on the install fallback path' {
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like 'HKCU:*' }
+        Mock Get-ItemProperty {
+            [pscustomobject]@{ ProxyEnable = 1; ProxyOverride = 'windows.example;duplicate.example,<local>' }
+        } -ParameterFilter { $LiteralPath -like 'HKCU:*' }
+        $env:NO_PROXY = 'environment.example,duplicate.example'
+        $env:K2S_NO_PROXY = 'inherited.example'
+        $env:K2S_CONFIG_NO_PROXY = 'configured.example'
+
+        Initialize-K2sCiProxy -ConfigPath $configPath -IncludeWindowsProxyBypass
+
+        $env:HTTPS_PROXY | Should -BeNullOrEmpty
+        $entries = $env:NO_PROXY -split ','
+        foreach ($expected in @('windows.example', 'environment.example', 'inherited.example',
+                                 'configured.example', '<local>')) {
+            $entries | Should -Contain $expected
+        }
+        @($entries | Where-Object { $_ -eq 'duplicate.example' }).Count | Should -Be 1
+    }
+
+    It 'does not include disabled Windows proxy exceptions' {
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like 'HKCU:*' }
+        Mock Get-ItemProperty {
+            [pscustomobject]@{ ProxyEnable = 0; ProxyOverride = 'disabled.example' }
+        } -ParameterFilter { $LiteralPath -like 'HKCU:*' }
+
+        Initialize-K2sCiProxy -ConfigPath $configPath -IncludeWindowsProxyBypass
+
+        ($env:NO_PROXY -split ',') | Should -Not -Contain 'disabled.example'
     }
 
     It 'preserves corporate bypasses and adds configured K2s destinations once' {

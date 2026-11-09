@@ -4,10 +4,12 @@
 function Initialize-K2sCiProxy {
     param (
         [Parameter(Mandatory = $true)]
-        [string] $ConfigPath
+        [string] $ConfigPath,
+        [switch] $IncludeWindowsProxyBypass
     )
 
-    $proxy = $env:K2S_HTTP_PROXY
+    $proxy = $env:K2S_CONFIG_HTTP_PROXY
+    if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = $env:K2S_HTTP_PROXY }
     if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = $env:HTTPS_PROXY }
     if ([string]::IsNullOrWhiteSpace($proxy)) { $proxy = $env:HTTP_PROXY }
     if (-not [string]::IsNullOrWhiteSpace($proxy)) {
@@ -30,6 +32,16 @@ function Initialize-K2sCiProxy {
     $bypass = @('localhost', '127.0.0.1', '::1', '.local', '.cluster.local')
     $bypass += $requiredFields | ForEach-Object { $network.$_ }
     $bypass += @($env:NO_PROXY, $env:K2S_NO_PROXY) | ForEach-Object { $_ -split ',' }
+    $bypass += $env:K2S_CONFIG_NO_PROXY -split ','
+    if ($IncludeWindowsProxyBypass -and [string]::IsNullOrWhiteSpace($proxy)) {
+        $settingsPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        if (Test-Path -LiteralPath $settingsPath) {
+            $settings = Get-ItemProperty -LiteralPath $settingsPath -ErrorAction Stop
+            if ($settings.ProxyEnable) {
+                $bypass += $settings.ProxyOverride -split '[;,]'
+            }
+        }
+    }
     $env:NO_PROXY = ($bypass | ForEach-Object { $_.Trim() } |
         Where-Object { $_ } | Sort-Object -Unique) -join ','
 }

@@ -148,21 +148,29 @@ nested Linux VM. Install any corporate TLS CA certificates in each relevant
 trust store; do not disable certificate validation.
 
 For Go builds, tests and K2s installation, the workflow uses the optional
-`K2S_HTTP_PROXY` environment/repository variable, then inherited `HTTPS_PROXY`,
-then `HTTP_PROXY`. Configure an absolute HTTP(S) URL reachable from both the
+`K2S_HTTP_PROXY` repository/environment configuration variable when nonempty,
+then the runner's inherited `K2S_HTTP_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY`.
+GitHub configuration is exposed under separate `K2S_CONFIG_*` names so unset
+configuration variables cannot erase runner-provided overrides.
+Configure an absolute HTTP(S) URL reachable from both the
 Windows host and Kubemaster, without embedded credentials. No corporate
 address is hard-coded. If these are unset, K2s can use the runner account's
 Windows proxy settings through its existing installer behavior; Go and the
 Actions agent still need their own working connectivity.
 
 `K2S_NO_PROXY` optionally supplies additional comma-separated corporate
-bypasses. Build/test steps merge these with inherited `NO_PROXY` and the
+bypasses. Build/test steps merge both configuration and inherited K2s bypasses
+with inherited `NO_PROXY` and the
 cluster addresses/CIDRs read from `cfg/config.json`. Installation passes the
 proxy and bypasses through `k2s install --proxy ... --no-proxy ...`, then clears
 proxy environment variables only in that step's child process. CLI-only
 status, diagnostics and uninstall steps also clear their child-process
 proxy variables. The parent runner retains its connectivity for job control
 and artifact upload.
+
+When falling back to Windows proxy settings, installation still passes
+`--no-proxy`, merging all configured/inherited bypasses with the enabled
+Windows proxy's registry exceptions rather than dropping or replacing them.
 
 Do not set machine-level `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` or `ALL_PROXY`
 in the base image; preflight rejects them rather than modifying persistent

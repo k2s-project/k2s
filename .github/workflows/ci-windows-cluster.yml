@@ -27,8 +27,8 @@ jobs:
       K2S_LOG_ROOT: C:\var\log
       KUBECONFIG: C:\k2s\config
       SYSTEM_TEST_KEEP_RESOURCES_ON_ERROR: 'true'
-      K2S_HTTP_PROXY: ${{ vars.K2S_HTTP_PROXY }}
-      K2S_NO_PROXY: ${{ vars.K2S_NO_PROXY }}
+      K2S_CONFIG_HTTP_PROXY: ${{ vars.K2S_HTTP_PROXY }}
+      K2S_CONFIG_NO_PROXY: ${{ vars.K2S_NO_PROXY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -182,11 +182,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
-          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json' -IncludeWindowsProxyBypass
           $installParams = @('install', '--master-cpus', '6', '--master-memory', '6GB',
-                             '--master-disk', '50GB', '--output')
+                             '--master-disk', '50GB', '--output', '--no-proxy', $env:NO_PROXY)
           if ($env:HTTPS_PROXY) {
-              $installParams += '--proxy', $env:HTTPS_PROXY, '--no-proxy', $env:NO_PROXY
+              $installParams += '--proxy', $env:HTTPS_PROXY
           }
           Clear-K2sCiProxyEnvironment
           & .\k2s.exe @installParams

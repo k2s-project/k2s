@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI - Windows Cluster
+
+# Never run untrusted pull-request code on an elevated self-hosted runner.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k2s-win11-runner
+  cancel-in-progress: false
+
+jobs:
+  install-and-test:
+    name: Install and test Hyper-V cluster
+    runs-on: [self-hosted, k2s-win11-runner]
+    environment: k2s-windows-e2e
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: powershell
+    env:
+      K2S_LOG_ROOT: C:\var\log
+      KUBECONFIG: C:\k2s\config
+      SYSTEM_TEST_KEEP_RESOURCES_ON_ERROR: 'true'
+      K2S_CONFIG_HTTP_PROXY: ${{ vars.K2S_HTTP_PROXY }}
+      K2S_CONFIG_NO_PROXY: ${{ vars.K2S_NO_PROXY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+
+      - name: Check runner prerequisites and stage source on C drive
+        id: preflight
+        timeout-minutes: 10
+        run: .\.github\scripts\windows-cluster-preflight.ps1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        timeout-minutes: 10
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build all K2s executables
+        timeout-minutes: 30
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
+          & .\bin\bgow
+          if ($LASTEXITCODE -ne 0) { throw "bgow failed with exit $LASTEXITCODE" }
+          foreach ($binary in @('k2s.exe', 'bin\cloudinitisobuilder.exe', 'bin\devgon.exe',
+                               'bin\httpproxy.exe', 'bin\yaml2json.exe', 'bin\zap.exe',
+                               'bin\cni\bridge.exe', 'bin\cni\l4proxy.exe',
+                               'bin\cni\vfprules.exe', 'bin\cni\cplauncher.exe')) {
+              if (-not (Test-Path $binary)) { throw "Build did not produce $binary" }
+          }
+
+      - name: Install K2s with Linux control plane and Windows worker
+        id: install
+        timeout-minutes: 120
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json' -IncludeWindowsProxyBypass
+          $installParams = @('install', '--master-cpus', '6', '--master-memory', '6GB',
+                             '--master-disk', '50GB', '--output', '--no-proxy', $env:NO_PROXY)
+          if ($env:HTTPS_PROXY) {
+              $installParams += '--proxy', $env:HTTPS_PROXY
+          }
+          Clear-K2sCiProxyEnvironment
+          & .\k2s.exe @installParams
+          if ($LASTEXITCODE -ne 0) { throw "k2s install failed with exit $LASTEXITCODE" }
+
+      - name: Verify both nodes and system pods
+        timeout-minutes: 25
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Clear-K2sCiProxyEnvironment
+          & .\k2s.exe status --output wide
+          if ($LASTEXITCODE -ne 0) { throw 'k2s status failed.' }
+          $kubectl = '.\bin\kube\kubectl.exe'
+          & $kubectl wait --for=condition=Ready nodes --all --timeout=600s
+          if ($LASTEXITCODE -ne 0) { throw 'Nodes did not become Ready.' }
+          $nodeJson = & $kubectl get nodes -o json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not query nodes.' }
+          $nodes = ($nodeJson -join "`n" | ConvertFrom-Json).items
+          if ($nodes.Count -ne 2 -or
+              @($nodes | Where-Object { $_.metadata.labels.'kubernetes.io/os' -eq 'linux' }).Count -ne 1 -or
+              @($nodes | Where-Object { $_.metadata.labels.'kubernetes.io/os' -eq 'windows' }).Count -ne 1) {
+              throw 'Expected exactly one Linux control-plane node and one Windows worker node.'
+          }
+          foreach ($namespace in @('kube-system', 'kube-flannel')) {
+              & $kubectl wait --for=condition=Ready pods --all -n $namespace --timeout=300s
+              if ($LASTEXITCODE -ne 0) { throw "System pods in $namespace did not become Ready." }
+          }
+
+      - name: Run core cluster acceptance suite
+        timeout-minutes: 100
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
+          # go run uses the Ginkgo version pinned in go.mod; never run suites in parallel on this cluster.
+          & go run github.com/onsi/ginkgo/v2/ginkgo -v --procs=1 --fail-on-empty --timeout=90m `
+              --label-filter='core && acceptance' --junit-report=core.xml `
+              --output-dir="$env:RUNNER_TEMP\k2s-test-results" .\test\e2e\cluster\core
+          if ($LASTEXITCODE -ne 0) { throw "Core acceptance suite failed with exit $LASTEXITCODE" }
+
+      - name: Collect failure diagnostics
+        if: ${{ failure() && steps.install.outcome != 'skipped' && steps.preflight.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $outDir = "$env:RUNNER_TEMP\k2s-test-results"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Clear-K2sCiProxyEnvironment
+          foreach ($query in @(@('get', 'nodes', '-o', 'wide'), @('get', 'pods', '-A', '-o', 'wide'),
+                               @('get', 'events', '-A', '--sort-by=.lastTimestamp'))) {
+              & .\bin\kube\kubectl.exe @query --request-timeout=15s 2>&1 |
+                  Out-File "$outDir\cluster-diagnostics.txt" -Append
+              if ($LASTEXITCODE -ne 0) { Write-Warning "Diagnostic query failed: $query" }
+          }
+          Get-VM | Format-List Name, State, Status | Out-File "$outDir\hyperv.txt"
+          foreach ($log in @('Microsoft-Windows-Hyper-V-VMMS-Admin', 'Microsoft-Windows-Hyper-V-Worker-Admin')) {
+              Get-WinEvent -LogName $log -MaxEvents 50 |
+                  Format-List TimeCreated, Id, LevelDisplayName, Message |
+                  Out-File "$outDir\hyperv.txt" -Append
+          }
+
+      - name: Upload results and K2s log before uninstall
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 5
+        with:
+          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/k2s-test-results/
+            C:/var/log/k2s.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Uninstall K2s
+        if: ${{ always() && steps.install.outcome != 'skipped' && steps.preflight.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Clear-K2sCiProxyEnvironment
+          & .\k2s.exe uninstall --output
+          if ($LASTEXITCODE -ne 0) {
+              throw 'Uninstall failed. Discard the runner VM; do not reuse it.'
+          }

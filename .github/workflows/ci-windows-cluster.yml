@@ -166,14 +166,8 @@ jobs:
           Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
-          # The helper throws on build failure, but git describe writes stderr on untagged commits.
-          try {
-              $ErrorActionPreference = 'Continue'
-              & .\smallsetup\common\BuildGoExe.ps1 -BuildAll
-          }
-          finally {
-              $ErrorActionPreference = 'Stop'
-          }
+          & .\bin\bgow
+          if ($LASTEXITCODE -ne 0) { throw "bgow failed with exit $LASTEXITCODE" }
           foreach ($binary in @('k2s.exe', 'bin\cloudinitisobuilder.exe', 'bin\devgon.exe',
                                'bin\httpproxy.exe', 'bin\yaml2json.exe', 'bin\zap.exe',
                                'bin\cni\bridge.exe', 'bin\cni\l4proxy.exe',

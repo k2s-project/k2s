@@ -199,7 +199,8 @@ attempts in dispatcher deduplication so reruns are not suppressed.
 
 Source (including credential-free Git metadata for build version information)
 is staged at `C:\k2s` because installation on the system drive is recommended.
-The workflow uses the repository's `BuildGoExe.ps1 -BuildAll` helper before:
+The workflow uses the documented Windows `.\bin\bgow` shortcut to build all
+Go executables before:
 
 ```console
 C:\k2s\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	"github.com/k2s-project/k2s/internal/core/addonplacement"
 	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
@@ -27,6 +28,15 @@ func newWindowsAddonProvider(cfg ProviderConfig) *windowsAddonProvider {
 }
 
 func (p *windowsAddonProvider) Enable(cfg AddonEnableConfig) error {
+	if cfg.Params["InfraNodeSelector"] != "" && !addonplacement.SupportsAddon(cfg.Name) {
+		return NotSupportedError("infra-node-selector",
+			fmt.Sprintf("addon '%s' does not have a selector-aware pre-creation renderer", cfg.Name))
+	}
+	if selector := cfg.Params["InfraNodeSelector"]; selector != "" {
+		if _, err := addonplacement.ParseSelector(selector); err != nil {
+			return err
+		}
+	}
 	scriptPath := utils.FormatScriptFilePath(filepath.Join(p.installDir, "addons", cfg.Name, "Enable.ps1"))
 
 	var params string
@@ -189,6 +199,11 @@ func (p *windowsAddonProvider) Import(cfg AddonImportConfig) error {
 }
 
 func (p *windowsAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {
+	if cfg.ParameterValues["InfraNodeSelector"] != "" &&
+		(!addonplacement.SupportsAddon(cfg.AddonName) || cfg.CommandName != "enable") {
+		return NotSupportedError("infra-node-selector",
+			fmt.Sprintf("addon '%s' command '%s' does not support infrastructure placement", cfg.AddonName, cfg.CommandName))
+	}
 	scriptPath := utils.FormatScriptFilePath(filepath.Join(cfg.AddonDirectory, cfg.ScriptSubPath))
 	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](scriptPath, "CmdResult", p.stdWriter, cfg.Params...)
 	if err != nil {

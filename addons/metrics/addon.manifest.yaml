@@ -27,11 +27,20 @@ spec:
       commands:
         enable:
           cli:
+            flags:
+              - name: infra-node-selector
+                default: ""
+                description: Constrain the metrics-server Pod to nodes matching all label requirements
             examples:
               - cmd: k2s addons enable metrics
                 comment: Enable metrics in k2s
+              - cmd: k2s addons enable metrics --infra-node-selector kubernetes.io/hostname=kubemaster
+                comment: Run metrics-server on kubemaster; node-local Windows Exporter remains distributed
           script:
             subPath: Enable.ps1
+            parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
         disable:
           cli:
             examples:

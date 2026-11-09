@@ -88,7 +88,7 @@ jobs:
           Set-Location 'C:\k2s'
           . .\.github\scripts\windows-cluster-proxy.ps1
           Clear-K2sCiProxyEnvironment
-          & .\k2s.exe status --output
+          & .\k2s.exe status --output wide
           if ($LASTEXITCODE -ne 0) { throw 'k2s status failed.' }
           $kubectl = '.\bin\kube\kubectl.exe'
           & $kubectl wait --for=condition=Ready nodes --all --timeout=600s

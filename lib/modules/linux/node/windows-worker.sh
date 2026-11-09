@@ -294,19 +294,32 @@ k2s_windows_worker_wait_for_ssh() {
 # over the SSH channel we already have, using the Linux host's own (NTP-synced) clock as the
 # source of truth.
 k2s_windows_worker_sync_clock() {
-  local now_utc deadline=$((SECONDS + 300))
+  local now_utc started_at finished_at elapsed_ms deadline=$((SECONDS + 300))
   # A single unprotected SSH call here is exactly as exposed to the worker's occasional
   # multi-minute connectivity blips (see k2s_windows_worker_wait_for_ssh) as any other; retry
   # instead of letting one transient hiccup abort the whole install.
-  until now_utc=$(date -u +'%Y-%m-%d %H:%M:%S') && k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date '$now_utc'\""; do
+  while (( SECONDS < deadline )); do
+    started_at=$(date -u +%s%3N) || return 1
+    now_utc=$(date -u -d "@$((started_at / 1000))" +'%Y-%m-%d %H:%M:%S') || return 1
+    if k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date ([DateTimeOffset]::FromUnixTimeMilliseconds($started_at).UtcDateTime)\""; then
+      finished_at=$(date -u +%s%3N) || return 1
+      elapsed_ms=$((finished_at - started_at))
+      if (( elapsed_ms <= 5000 )); then
+        k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc; SSH round trip ${elapsed_ms}ms)."
+        return 0
+      fi
+      k2s_log WARN "Windows worker clock sync took ${elapsed_ms}ms, exceeding the 5000ms skew bound; retrying with a fresh timestamp."
+    else
+      k2s_log WARN 'Setting the Windows worker clock failed; retrying.'
+    fi
     if (( SECONDS >= deadline )); then
       k2s_log ERROR 'Timed out setting the Windows worker clock.'
       return 1
     fi
-    k2s_log WARN 'Setting the Windows worker clock failed; retrying.'
     sleep 10
   done
-  k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc)."
+  k2s_log ERROR 'Timed out setting the Windows worker clock.'
+  return 1
 }
 
 k2s_windows_worker_log_ssh_diagnostics() {
@@ -508,12 +521,16 @@ catch {
 EOF
   scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
-  # Best-effort: the worker's disk is a fresh qcow2 overlay on every install, so a stale
-  # marker from a previous run cannot actually exist here. Do not abort the join over a
-  # transient hiccup in this throwaway cleanup call.
-  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || true
+  # The worker disk may be reused after a failed provisioning attempt. Do not launch the
+  # join unless the previous result marker is confirmed absent.
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return $?
   # The SSH session may die mid-run if the worker's NIC gets rebound; that is expected.
-  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\JoinWorker.ps1' || true
+  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\JoinWorker.ps1'
+  local result=$?
+  if (( result != 0 && result != 255 )); then
+    k2s_log ERROR "Windows worker join script exited with status $result."
+    return "$result"
+  fi
   k2s_windows_worker_wait_for_join_result
 }
 
@@ -599,8 +616,14 @@ EOF
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
   # The worker disk persists across stop/start, so remove any previous result before launching.
   k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return 1
-  # The SSH session is expected to die mid-run, so its exit status says nothing.
-  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\StartWorker.ps1' || true
+  # A transport error (255) is ambiguous because the worker may have disconnected after
+  # starting the script; poll its marker in that case, but propagate definitive remote errors.
+  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\StartWorker.ps1'
+  local result=$?
+  if (( result != 0 && result != 255 )); then
+    k2s_log ERROR "Windows worker start script exited with status $result."
+    return "$result"
+  fi
   k2s_windows_worker_wait_for_start_result
 }
 

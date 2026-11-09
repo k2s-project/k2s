@@ -207,6 +207,8 @@ attempts in dispatcher deduplication so reruns are not suppressed.
 
 Source (including credential-free Git metadata for build version information)
 is staged at `C:\k2s` because installation on the system drive is recommended.
+The workflow delegates prerequisite checks, the nested Hyper-V startup probe
+and source staging to `.github/scripts/windows-cluster-preflight.ps1`.
 The workflow uses the documented Windows `.\bin\bgow` shortcut to build all
 Go executables before:
 

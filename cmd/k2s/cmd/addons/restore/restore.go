@@ -22,6 +22,7 @@ import (
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
+	"github.com/k2s-project/k2s/internal/core/addonplacement"
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/internal/core/config"
 	k2sos "github.com/k2s-project/k2s/internal/os"
@@ -35,10 +36,16 @@ const (
 )
 
 type backupManifest struct {
-	K2sVersion     string   `json:"k2sVersion"`
-	Files          []string `json:"files"`
-	Addon          string   `json:"addon"`
-	Implementation string   `json:"implementation,omitempty"`
+	K2sVersion        string   `json:"k2sVersion"`
+	Files             []string `json:"files"`
+	Addon             string   `json:"addon"`
+	Implementation    string   `json:"implementation,omitempty"`
+	InfraNodeSelector string   `json:"infraNodeSelector,omitempty"`
+	StorageNode       string   `json:"storageNode,omitempty"`
+	Ingress           string   `json:"ingress,omitempty"`
+	OmitGrafana       *bool    `json:"omitGrafana,omitempty"`
+	OmitOpensearch    *bool    `json:"omitOpensearch,omitempty"`
+	OmitCertMgr       *bool    `json:"omitCertMgr,omitempty"`
 }
 
 var restoreExample = `
@@ -141,7 +148,7 @@ func runRestore(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	} else {
-		if err := executeScript(enableScriptPath, outputFlag); err != nil {
+		if err := executeScript(enableScriptPath, outputFlag, selectorEnableParams(addon.Metadata.Name, manifest)...); err != nil {
 			return err
 		}
 	}
@@ -154,6 +161,36 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	slog.Info("Addon restore completed", "addon", addon.Metadata.Name, "implementation", impl.Name)
 	cmdSession.Finish()
 	return nil
+}
+
+func selectorEnableParams(addonName string, manifest backupManifest) []string {
+	if !addonplacement.SupportsAddon(addonName) || strings.TrimSpace(manifest.InfraNodeSelector) == "" {
+		return nil
+	}
+	params := []string{fmt.Sprintf(" -InfraNodeSelector %s", utils.EscapeWithSingleQuotes(strings.TrimSpace(manifest.InfraNodeSelector)))}
+	if storageNode := strings.TrimSpace(manifest.StorageNode); storageNode != "" {
+		params = append(params, fmt.Sprintf(" -StorageNode %s", utils.EscapeWithSingleQuotes(storageNode)))
+	}
+	if ingress := strings.TrimSpace(manifest.Ingress); ingress != "" && !strings.EqualFold(addonName, "dashboard") {
+		params = append(params, fmt.Sprintf(" -Ingress %s", utils.EscapeWithSingleQuotes(ingress)))
+	}
+	if manifest.OmitGrafana != nil {
+		params = append(params, fmt.Sprintf(" -OmitGrafana:%s", powershellBool(*manifest.OmitGrafana)))
+	}
+	if manifest.OmitOpensearch != nil {
+		params = append(params, fmt.Sprintf(" -OmitOpensearch:%s", powershellBool(*manifest.OmitOpensearch)))
+	}
+	if manifest.OmitCertMgr != nil {
+		params = append(params, fmt.Sprintf(" -OmitCertMgr:%s", powershellBool(*manifest.OmitCertMgr)))
+	}
+	return params
+}
+
+func powershellBool(value bool) string {
+	if value {
+		return "$true"
+	}
+	return "$false"
 }
 
 func getAndValidateZipPath(cmd *cobra.Command, addonsCmdName string) (string, error) {
@@ -242,6 +279,14 @@ func createStagingDir(pattern string) (dir string, cleanup func(), err error) {
 func validateManifestTargets(manifest backupManifest, addonName, implementationName string) error {
 	if !strings.EqualFold(manifest.Addon, addonName) {
 		return fmt.Errorf("backup is for addon '%s', not '%s'", manifest.Addon, addonName)
+	}
+	if strings.TrimSpace(manifest.InfraNodeSelector) != "" && !addonplacement.SupportsAddon(addonName) {
+		return fmt.Errorf("addon '%s' cannot replay the backup's infrastructure placement; its installation owner is not integrated", addonName)
+	}
+	if manifest.InfraNodeSelector != "" {
+		if _, err := addonplacement.ParseSelector(manifest.InfraNodeSelector); err != nil {
+			return fmt.Errorf("invalid backup infrastructure placement: %w", err)
+		}
 	}
 	if addonName != implementationName {
 		if !strings.EqualFold(manifest.Implementation, implementationName) {

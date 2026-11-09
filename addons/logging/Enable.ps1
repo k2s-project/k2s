@@ -17,6 +17,7 @@ Logs can be analyzed via opensearch dashboards.
 powershell <installation folder>\addons\logging\Enable.ps1
 #>
 Param(
+    [string] $InfraNodeSelector = '',
     [parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
     [switch] $ShowLogs = $false,
     [parameter(Mandatory = $false, HelpMessage = 'External access option')]
@@ -41,6 +42,12 @@ $loggingModule = "$PSScriptRoot\logging.module.psm1"
 Import-Module $infraModule, $clusterModule, $addonsModule, $nodeModule, $loggingModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
+trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
+$ownerOptions = Get-AddonPlacementOwnerOptions -Name 'logging' -BoundParameters $PSBoundParameters -Defaults @{StorageNode = $StorageNode; Ingress = $Ingress; OmitOpensearch = $OmitOpensearch.IsPresent}
+$StorageNode = $ownerOptions.StorageNode
+$Ingress = $ownerOptions.Ingress
+$OmitOpensearch = [switch]$ownerOptions.OmitOpensearch
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'logging' -Selector $InfraNodeSelector
 
 Write-Log 'Checking cluster status' -Console
 
@@ -80,12 +87,21 @@ if ($OmitOpensearch -and $Ingress -ne 'none') {
     $Ingress = 'none'
 }
 
+if ($InfraNodeSelector -and $OmitOpensearch) { throw 'Infrastructure placement is not applicable with --omitOpensearch: Fluent Bit is node-local and remains distributed.' }
+if ($InfraNodeSelector -and $Ingress -ne 'none') { throw 'Enable ingress separately before enabling logging with infrastructure placement.' }
 if ($Ingress -ne 'none') {
     Enable-IngressAddon -Ingress:$Ingress
 }
 
 if ([string]::IsNullOrEmpty($StorageNode)) {
     $StorageNode = Get-ConfigControlPlaneNodeHostname
+}
+$placement = $null
+if ($InfraNodeSelector) {
+    Assert-AddonPlacementHost -Selector $InfraNodeSelector -NodeName $StorageNode -Reason 'OpenSearch local PV and vm.max_map_count prerequisite'
+    Assert-AddonStoragePlacement -Namespace 'logging' -VolumeNames 'opensearch-cluster-master-pv' -NodeName $StorageNode
+    $placement = New-AddonPlacementInput -AddonName 'logging' -Path "$PSScriptRoot\manifests\logging" -Selector $InfraNodeSelector -StorageNode $StorageNode -Kustomize
+    Set-AddonPlacementIntent -Addon ([pscustomobject]@{Name = 'logging'; InfraNodeSelector = $InfraNodeSelector; StorageNode = $StorageNode; Ingress = $Ingress; OmitOpensearch = $OmitOpensearch.IsPresent})
 }
 
 $controlPlaneHostname = Get-ConfigControlPlaneNodeHostname
@@ -200,13 +216,14 @@ else {
     # Inject storage node hostname into PV manifest
     $pvFile = "$PSScriptRoot\manifests\logging\opensearch\persistentvolume.yaml"
     $pvOrig = [System.IO.File]::ReadAllText($pvFile)
-    [System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode))
+    if (-not $placement) { [System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode)) }
     try {
-        $createResult = Invoke-Kubectl -Params 'create', '-k', "$manifestsPath\"
+        $createResult = if ($placement) { Invoke-Kubectl -Params 'apply', '-f', $placement.Path } else { Invoke-Kubectl -Params 'create', '-k', "$manifestsPath\" }
     }
     finally {
         # Restore PV manifest placeholder
-        [System.IO.File]::WriteAllText($pvFile, $pvOrig)
+        if (-not $placement) { [System.IO.File]::WriteAllText($pvFile, $pvOrig) }
+        if ($placement) { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue }
     }
     $createResult.Output | Write-Log
     if (!$createResult.Success) { Stop-WithError "Failed to create logging resources: $($createResult.Output)" }
@@ -253,7 +270,14 @@ else {
     &"$PSScriptRoot\Update.ps1"
 }
 
-Add-AddonToSetupJson -Addon ([pscustomobject] @{Name = 'logging'; OmitOpensearch = $OmitOpensearch.IsPresent })
+$addonConfig = [pscustomobject]@{Name = 'logging'; OmitOpensearch = $OmitOpensearch.IsPresent}
+if ($InfraNodeSelector) {
+    $addonConfig | Add-Member -NotePropertyName StorageNode -NotePropertyValue $StorageNode
+    $addonConfig | Add-Member -NotePropertyName Ingress -NotePropertyValue $Ingress
+    $addonConfig | Add-Member -NotePropertyName InfraNodeSelector -NotePropertyValue $InfraNodeSelector
+}
+Add-AddonToSetupJson -Addon $addonConfig
+if ($InfraNodeSelector) { Set-AddonPlacementIntent -Addon $addonConfig -Clear }
 Write-Log 'Logging Stack installed successfully'
 
 if (-not $OmitOpensearch) {

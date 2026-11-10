@@ -62,7 +62,8 @@ jobs:
           if [ "${{ inputs.include_gpu }}" = "true" ]; then
             gpu_flag="--include-gpu"
           fi
-          sudo /tmp/k2s-cli system package --node-package --os debian13 --arch arm64 $gpu_flag \
+          sudo install -m 755 /tmp/k2s-cli "${{ github.workspace }}/k2s"
+          sudo "${{ github.workspace }}/k2s" system package --node-package --os debian13 --arch arm64 $gpu_flag \
             --target-dir /tmp/node-package-out \
             --name "k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
 

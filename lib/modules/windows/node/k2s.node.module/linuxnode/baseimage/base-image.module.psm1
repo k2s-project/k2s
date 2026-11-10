@@ -38,6 +38,14 @@ function Invoke-Download($destination, $source, $forceDownload,
         Write-Error "Download '$source' failed"
         exit 1
     }
+
+    # Windows' bundled curl.exe applies Mark-of-the-Web (Zone.Identifier) via the Attachment
+    # Execution Service, same as a browser download would. Harmless for non-executables;
+    # for anything later run directly (or extracted from a zip and run - Expand-Archive
+    # propagates the marking to extracted files), it's what triggers a blocking SmartScreen
+    # reputation-check prompt with no interactive user to dismiss it. See qemu-img.exe's
+    # own Unblock-File a few lines below for where this was first caught.
+    Unblock-File -Path $destination
 }
 
 function Invoke-DownloadLinuxImage {

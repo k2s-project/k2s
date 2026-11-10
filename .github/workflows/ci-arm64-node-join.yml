@@ -185,14 +185,15 @@ jobs:
         run: |
           export KUBECONFIG="$HOME/.kube/config"
           kubectl get nodes -o wide
-          kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers | grep -q . || {
-            echo "::error::no arm64 node found in the cluster"
-            exit 1
-          }
-          kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers | grep -qw Ready || {
-            echo "::error::arm64 node did not reach Ready"
-            exit 1
-          }
+          deadline=$((SECONDS + 180))
+          until kubectl get nodes -l kubernetes.io/arch=arm64 -o name | grep -q .; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::arm64 node never registered"
+              exit 1
+            fi
+            sleep 5
+          done
+          kubectl wait --for=condition=Ready node -l kubernetes.io/arch=arm64 --timeout=180s
 
       - name: Signal the worker that the join is done
         if: always()

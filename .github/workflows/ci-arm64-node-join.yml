@@ -14,9 +14,9 @@
 # its runtime/stability needs to be proven out manually before it runs unattended on a
 # schedule (see the k2s-support CLAUDE.md-equivalent plan notes for #3052).
 #
-# The 'worker' runner is ubuntu-24.04-arm (real ARM silicon, not Debian 13 - see
-# ci-arm64-node-smoke.yml for the same caveat). The 'control-plane' runner is
-# ubuntu-latest (amd64); mixed-arch clusters are the normal case here.
+# Both runners must be self-hosted Debian 13 machines with the 'debian-13' label;
+# the worker also needs ARM64 and the control plane needs X64. The runners provide
+# the services and networking required by the native installer and Tailscale mesh.
 #
 # The two jobs run concurrently (not via 'needs', which would make GitHub Actions wait
 # for the worker job to fully *finish* before the control-plane job even starts - but
@@ -36,7 +36,7 @@ env:
 jobs:
   worker:
     name: arm64 worker (stand-in for the real external node)
-    runs-on: ubuntu-24.04-arm
+    runs-on: [self-hosted, linux, ARM64, debian-13]
     timeout-minutes: 30
     steps:
       - name: Join Tailscale mesh
@@ -114,7 +114,7 @@ jobs:
 
   control-plane:
     name: Linux Host control plane - bootstrap and join the arm64 worker
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64, debian-13]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

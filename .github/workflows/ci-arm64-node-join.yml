@@ -141,7 +141,10 @@ jobs:
 
       - name: Generate an SSH keypair and publish the public half to the worker
         run: |
+          mkdir -p ~/.ssh
           ssh-keygen -t rsa -b 4096 -N '' -f ~/.ssh/id_rsa
+          sudo install -d -m 700 /root/.ssh
+          sudo install -m 600 ~/.ssh/id_rsa /root/.ssh/id_rsa
           mkdir -p /tmp/cp-pubkey
           cp ~/.ssh/id_rsa.pub /tmp/cp-pubkey/id_rsa.pub
 

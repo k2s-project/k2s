@@ -86,6 +86,34 @@ func countDebFiles(dir string) int {
 	return count
 }
 
+func validateBuildHostOS(targetOS, osReleasePath string) error {
+	data, err := os.ReadFile(osReleasePath)
+	if err != nil {
+		return fmt.Errorf("could not determine this host's distribution from %s: %w", osReleasePath, err)
+	}
+
+	var id, versionID string
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(value, `"'`)
+		switch key {
+		case "ID":
+			id = value
+		case "VERSION_ID":
+			versionID = value
+		}
+	}
+
+	hostOS := id + versionID
+	if id == "" || versionID == "" || hostOS != targetOS {
+		return fmt.Errorf("--%s '%s' does not match this host's distribution and release '%s'; run this command on a matching host instead", OSFlagName, targetOS, hostOS)
+	}
+	return nil
+}
+
 // downloadNvidiaGpuPackages mirrors Get-NvidiaGpuDebPackagesFromInternet, run locally
 // instead of over SSH into a VM. targetPath and proxy are both ultimately attacker-
 // controllable (--target-dir / --proxy, run as root) so neither is ever interpolated
@@ -226,6 +254,10 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) error {
 	actualArch := strings.TrimSpace(string(actualArchRaw))
 	if actualArch != arch {
 		return fmt.Errorf("--%s '%s' does not match this host's architecture '%s'; there is no cross-build path for node packages, run this command on a %s host instead", ArchFlagName, arch, actualArch, arch)
+	}
+
+	if err := validateBuildHostOS(osName, "/etc/os-release"); err != nil {
+		return err
 	}
 
 	installDir := utils.InstallDir()

@@ -290,6 +290,14 @@ Function Get-QemuExecutable {
     Expand-Archive $zipFilePath -DestinationPath $OutputDirectory -Force
 
     $qemuExePath = Join-Path $OutputDirectory "qemu-img.exe"
+
+    # Expand-Archive propagates the downloaded zip's Mark-of-the-Web (Zone.Identifier) to
+    # extracted files. Without unblocking, the first time qemu-img.exe actually runs (below,
+    # via Invoke-Tool), Windows SmartScreen intercepts it with a reputation-check consent
+    # dialog that blocks indefinitely on any machine with no interactive user to click
+    # through it - exactly what happens on a CI/automation host.
+    Unblock-File -Path $qemuExePath
+
     Write-Log "Qemu-img downloaded and available as '$qemuExePath'"
 
     return $qemuExePath

@@ -49,20 +49,14 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Install kubeadm/kubelet/kubectl/CRI-O
+      - name: Provision the worker with Debian node-extension assets
         # 'k2s node add' (internal/provider/node_linux.go) only runs 'kubeadm join' over
-        # SSH - it does not provision the node. This mirrors the simple
-        # k2s_install_debian_packages() helper in lib/modules/linux/node/packages.sh
-        # (plain dpkg -i + apt --fix-broken install, no registry/mirror setup), which is
-        # enough for kubeadm join to succeed; it is not the full offline
-        # install-k8s-packages.sh path (that needs a registry token this throwaway
-        # runner doesn't have).
+        # SSH - it does not provision the node. Run the node-extension installer here
+        # to install Kubernetes packages and configure the kernel and CRI-O for the join.
         run: |
           mkdir -p /tmp/k8s-packages
           sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
-          sudo dpkg -i /tmp/k8s-packages/*.deb || true
-          sudo apt-get --fix-broken install -y
-          sudo systemctl enable --now crio
+          sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" "" false
           sudo systemctl enable kubelet
 
       - name: Start sshd and wait for the control-plane's public key

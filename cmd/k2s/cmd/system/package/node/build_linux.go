@@ -128,10 +128,11 @@ func downloadNvidiaGpuPackages(targetPath, proxy string) error {
 			return fmt.Errorf("could not download %s: %w", pkg, err)
 		}
 		depsScript := `
+			set -o pipefail
 			cd "$K2S_GPU_TARGET_PATH" &&
 			DEBIAN_FRONTEND=noninteractive apt-get --reinstall install -y --no-install-recommends --no-install-suggests \
 				--simulate ./"$K2S_GPU_PKG"*.deb 2>/dev/null \
-				| grep 'Inst ' | cut -d ' ' -f 2 | sort -u | xargs -r apt-get download || true
+				| { grep 'Inst ' || true; } | cut -d ' ' -f 2 | sort -u | xargs -r apt-get download
 		`
 		if err := runShellWithEnv(depsScript, env); err != nil {
 			return fmt.Errorf("could not download dependencies for %s: %w", pkg, err)

@@ -174,7 +174,7 @@ jobs:
           cat > /tmp/k2s-install-operation.json <<EOF
           {
             "installDir": "${{ github.workspace }}",
-            "configDir": "/etc/k2s",
+            "configDir": "/var/lib/k2s",
             "linuxOnly": true,
             "skipStart": false,
             "skipPurge": false

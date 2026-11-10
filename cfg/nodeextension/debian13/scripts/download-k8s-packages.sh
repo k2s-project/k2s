@@ -379,9 +379,10 @@ download_required_kubernetes_package "kubeadm"
 
 # Cleanup extra versions (keep only the requested upstream version)
 log_info "Cleaning up extra package versions"
+NODE_ARCH="$(dpkg --print-architecture)"
 cd "$TARGET_PATH" && sudo find . -maxdepth 1 -type f \
     \( -name 'kubeadm_*.deb' -o -name 'kubectl_*.deb' -o -name 'kubelet_*.deb' \) \
-    ! -name "*_${SHORT_K8S_VERSION}-*_amd64.deb" \
+    ! -name "*_${SHORT_K8S_VERSION}-*_${NODE_ARCH}.deb" \
     -exec sudo rm -f {} + || true
 
 if ! ls "$TARGET_PATH"/cri-tools*.deb >/dev/null 2>&1; then

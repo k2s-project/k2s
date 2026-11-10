@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Full arm64 worker join flow for k2s-project/k2s#3052.
+#
+# This validates the shared kubeadm-join code path (internal/provider/node_linux.go)
+# and the arm64 worker-provisioning scripts (cfg/nodeextension/debian13/scripts/*) on
+# real ARM silicon - but against K2s's experimental "Linux Host" control-plane variant
+# (docs/user-guide/hosting-variants.md), not the default Windows-hosted product. That
+# is a deliberate, documented gap: the Linux Host variant is a test harness for this
+# workflow, not a product deliverable of #3052.
+#
+# workflow_dispatch only, by design: this is a new, two-runner, mesh-networked test and
+# its runtime/stability needs to be proven out manually before it runs unattended on a
+# schedule (see the k2s-support CLAUDE.md-equivalent plan notes for #3052).
+#
+# The 'worker' runner is ubuntu-24.04-arm (real ARM silicon, not Debian 13 - see
+# ci-arm64-node-smoke.yml for the same caveat). The 'control-plane' runner is
+# ubuntu-latest (amd64); mixed-arch clusters are the normal case here.
+#
+# The two jobs run concurrently (not via 'needs', which would make GitHub Actions wait
+# for the worker job to fully *finish* before the control-plane job even starts - but
+# the worker has to stay up and reachable over SSH while control-plane joins it). They
+# rendezvous over the Tailscale mesh and hand off the SSH trust (control-plane's public
+# key) and the worker's mesh IP via upload-artifact/download-artifact, polling until the
+# other side's artifact appears.
+name: CI - arm64 Node Join
+
+on:
+  workflow_dispatch:
+
+env:
+  JOIN_TIMEOUT_SECONDS: 1200
+
+jobs:
+  worker:
+    name: arm64 worker (stand-in for the real external node)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Join Tailscale mesh
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:k2s-ci
+          hostname: arm64-node-join-worker-${{ github.run_id }}
+
+      - name: Start sshd and wait for the control-plane's public key
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server
+          sudo systemctl enable --now ssh
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+
+          echo "Waiting for control-plane public key artifact..."
+          for i in $(seq 1 60); do
+            if gh run download "${{ github.run_id }}" -n cp-pubkey --dir /tmp/cp-pubkey 2>/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          test -f /tmp/cp-pubkey/id_rsa.pub || { echo "::error::control-plane public key never arrived"; exit 1; }
+          cat /tmp/cp-pubkey/id_rsa.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish this worker's mesh IP and username
+        run: |
+          mkdir -p /tmp/worker-ready
+          tailscale ip -4 > /tmp/worker-ready/ip
+          whoami > /tmp/worker-ready/user
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-ready
+          path: /tmp/worker-ready
+          retention-days: 1
+
+      - name: Wait for the control-plane to signal the join is done
+        run: |
+          deadline=$(( $(date +%s) + JOIN_TIMEOUT_SECONDS ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if gh run download "${{ github.run_id }}" -n join-done --dir /tmp/join-done 2>/dev/null; then
+              echo "Join signaled complete: $(cat /tmp/join-done/status 2>/dev/null || true)"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::timed out waiting for the control-plane to signal join completion"
+          exit 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOIN_TIMEOUT_SECONDS: ${{ env.JOIN_TIMEOUT_SECONDS }}
+
+  control-plane:
+    name: Linux Host control plane - bootstrap and join the arm64 worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Join Tailscale mesh
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:k2s-ci
+          hostname: arm64-node-join-cp-${{ github.run_id }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: "**/*.sum"
+
+      - name: Build the Linux k2s CLI
+        run: |
+          cd cmd/k2s
+          GOOS=linux GOARCH=amd64 go build -o /usr/local/bin/k2s .
+
+      - name: Generate an SSH keypair and publish the public half to the worker
+        run: |
+          ssh-keygen -t rsa -b 4096 -N '' -f ~/.ssh/id_rsa
+          mkdir -p /tmp/cp-pubkey
+          cp ~/.ssh/id_rsa.pub /tmp/cp-pubkey/id_rsa.pub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cp-pubkey
+          path: /tmp/cp-pubkey
+          retention-days: 1
+
+      - name: Wait for the worker's mesh IP
+        run: |
+          for i in $(seq 1 60); do
+            if gh run download "${{ github.run_id }}" -n worker-ready --dir /tmp/worker-ready 2>/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          test -f /tmp/worker-ready/ip || { echo "::error::worker never published its mesh IP"; exit 1; }
+          echo "WORKER_IP=$(cat /tmp/worker-ready/ip)" >> "$GITHUB_ENV"
+          echo "WORKER_USER=$(cat /tmp/worker-ready/user)" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Bootstrap the K2s Linux Host variant (control plane only, no VM)
+        run: |
+          sudo mkdir -p /etc/k2s
+          cat > /tmp/k2s-install-operation.json <<EOF
+          {
+            "installDir": "${{ github.workspace }}",
+            "configDir": "/etc/k2s",
+            "linuxOnly": true,
+            "skipStart": false,
+            "skipPurge": false
+          }
+          EOF
+          chmod 600 /tmp/k2s-install-operation.json
+          sudo bash lib/scripts/linux/debian/linuxonly/Install.sh --operation-file /tmp/k2s-install-operation.json
+
+      - name: Add the arm64 worker node
+        run: |
+          sudo k2s node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
+
+      - name: Assert the worker joined as arm64 and is Ready
+        run: |
+          export KUBECONFIG=/etc/k2s/kubeconfig
+          kubectl get nodes -o wide
+          kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers | grep -q . || {
+            echo "::error::no arm64 node found in the cluster"
+            exit 1
+          }
+          kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers | grep -qw Ready || {
+            echo "::error::arm64 node did not reach Ready"
+            exit 1
+          }
+
+      - name: Signal the worker that the join is done
+        if: always()
+        run: |
+          mkdir -p /tmp/join-done
+          echo "${{ job.status }}" > /tmp/join-done/status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: join-done
+          path: /tmp/join-done
+          retention-days: 1

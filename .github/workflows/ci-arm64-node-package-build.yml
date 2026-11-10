@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds an arm64 Debian 13 node package natively on real ARM silicon
+# (k2s-project/k2s#3052). This is a release-process input, not a PR check -
+# workflow_dispatch only.
+#
+# ubuntu-24.04-arm is Ubuntu, not Debian 13 (same caveat as ci-arm64-node-smoke.yml):
+# this validates that the package *build* succeeds on real arm64 hardware, not that it
+# was built on an exact Debian 13 environment. The resulting .deb packages still target
+# Debian 13 (apt resolves them from the Debian 13 Kubernetes/CRI-O repos regardless of
+# the host OS).
+#
+# Unlike the amd64 packages built via New-K2sNodePackage.ps1 on Windows, this does not
+# pre-stage container images as OCI archives - see BuildLinux's doc comment in
+# cmd/k2s/cmd/system/package/node/build_linux.go and
+# docs/op-manual/creating-offline-package.md for the documented gap.
+name: CI - arm64 Node Package Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_gpu:
+        description: "Include NVIDIA Container Toolkit packages"
+        type: boolean
+        default: true
+
+env:
+  GOVERSION: "1.27.3"
+
+jobs:
+  build-arm64-node-package:
+    name: Build debian13 arm64 node package
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+          cache-dependency-path: "**/*.sum"
+
+      - name: Build the Linux k2s CLI
+        run: |
+          cd cmd/k2s
+          GOOS=linux GOARCH=amd64 go build -o /tmp/k2s-cli .
+          # The CLI binary's own architecture doesn't matter here - it just orchestrates
+          # local apt/dpkg calls, which already target this runner's real arm64.
+
+      - name: Determine package version for naming
+        id: version
+        run: |
+          version="$(git describe --tags --always)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build the arm64 node package
+        run: |
+          mkdir -p /tmp/node-package-out
+          gpu_flag=""
+          if [ "${{ inputs.include_gpu }}" = "true" ]; then
+            gpu_flag="--include-gpu"
+          fi
+          sudo /tmp/k2s-cli system package --node-package --os debian13 --arch arm64 $gpu_flag \
+            --target-dir /tmp/node-package-out \
+            --name "k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+
+      - name: Verify package contents
+        run: |
+          zip_path="/tmp/node-package-out/k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+          mkdir -p /tmp/node-package-extract
+          unzip -q "$zip_path" -d /tmp/node-package-extract
+          find /tmp/node-package-extract -name '*.deb' | while read -r deb; do
+            echo "=== $deb ==="
+            dpkg --info "$deb" | grep -E 'Package|Architecture'
+          done
+          find /tmp/node-package-extract -name '*.deb' | grep -q . || {
+            echo "::error::no .deb packages found in the built zip"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian13-arm64-node-package
+          path: /tmp/node-package-out/*.zip
+          retention-days: 14

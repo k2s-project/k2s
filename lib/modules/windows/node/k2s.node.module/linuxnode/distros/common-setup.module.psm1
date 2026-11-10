@@ -340,8 +340,35 @@ Function Get-InstalledDistribution {
     }
     
     $installedDistribution = "$distributionName$distributionReleaseNumber".ToLower()
-    
+
     return $installedDistribution
+}
+
+Function Get-RemoteArchitecture {
+    <#
+    .SYNOPSIS
+        Detects the CPU architecture of a remote Linux computer via SSH, normalized to
+        Go-style names (amd64/arm64), matching the normalization already used for the
+        control-plane in install-cli-tools.sh.
+    #>
+    param (
+        [ValidateScript({ !([string]::IsNullOrWhiteSpace($_)) })]
+        [string]$UserName = $(throw 'Argument missing: UserName'),
+        [ValidateScript({ Get-IsValidIPv4Address($_) })]
+        [string]$IpAddress = $(throw 'Argument missing: IpAddress')
+    )
+
+    $unameOutput = (Invoke-CmdOnVmViaSSHKey -CmdToExecute 'uname -m' -UserName $UserName -IpAddress $IpAddress).Output
+    if ([string]::IsNullOrWhiteSpace($unameOutput)) {
+        throw "Cannot get the CPU architecture from the computer with IP '$IpAddress'"
+    }
+    $arch = ([string]$unameOutput).Trim()
+
+    switch ($arch) {
+        'x86_64' { return 'amd64' }
+        'aarch64' { return 'arm64' }
+        default { return $arch }
+    }
 }
 
 
@@ -2592,6 +2619,7 @@ Install-BuildahDebPackages,
 Set-UpComputerBeforeProvisioning,
 Copy-DebPackagesFromControlPlaneToWindowsHost,
 Get-InstalledDistribution,
+Get-RemoteArchitecture,
 Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost,
 Get-DirectoryOfKubenodeImagesOnWindowsHost,
 Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost,

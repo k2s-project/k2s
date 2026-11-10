@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -49,6 +50,9 @@ var (
 
 	# Creates a node package with GPU support (includes NVIDIA Container Toolkit packages)
 	k2s system package --node-package --os debian12 --include-gpu --target-dir "C:\output" --name "debian12-node-gpu.zip" --proxy http://172.19.1.1:8181
+
+	# Creates an arm64 node package - must run on a Linux arm64 host (no cross-build/VM path exists)
+	sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 
 	# Creates a node-only delta package (between two node package zips)
 	k2s system package --node-package --delta-package --package-version-from "C:\tmp\debian13-node-v1.7.0.zip" --package-version-to "C:\tmp\debian13-node-v1.8.0.zip" --target-dir "C:\output" --name "debian13-node-delta-v1.7.0-to-v1.8.0.zip"
@@ -189,6 +193,21 @@ func init() {
 
 func systemPackage(cmd *cobra.Command, args []string) error {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
+
+	// Node-package building on Linux runs entirely natively (no PowerShell, no VM):
+	// it's required for arm64, since Hyper-V cannot provision an arm64 guest on an
+	// x86 host, so the package has to be built directly on an arm64 Linux host.
+	if nodepackage.IsSet(cmd.Flags()) && runtime.GOOS == "linux" {
+		targetDir := cmd.Flags().Lookup(TargetDirectoryFlagName).Value.String()
+		zipName := cmd.Flags().Lookup(ZipPackageFileNameFlagName).Value.String()
+		proxy := cmd.Flags().Lookup(ProxyFlagName).Value.String()
+		if err := nodepackage.BuildLinux(cmd.Flags(), targetDir, zipName, proxy); err != nil {
+			return err
+		}
+		cmdSession.Finish()
+		return nil
+	}
+
 	systemPackageCommand, params, err := buildSystemPackageCmd(cmd.Flags())
 	if err != nil {
 		return err

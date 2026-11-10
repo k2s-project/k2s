@@ -12,6 +12,9 @@ REMOVAL_CANDIDATES=(man-db manpages manpages-dev groff groff-base doc-debian inf
     nano vim-tiny ed exim4 exim4-base exim4-config exim4-daemon-light exim4-daemon-heavy avahi-daemon)
 APT_UNITS=(apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer)
 AUDIT_DIR=/var/lib/k2s/hardening
+# dpkg qualifies Multi-Arch packages as "pkg:<arch>"; derive the running node's native arch
+# (amd64/arm64/...) instead of assuming amd64, so this hardening works on arm64 nodes too.
+ARCH="$(dpkg --print-architecture)"
 
 log() { printf '[Hardening] %s\n' "$*"; }
 fail() { log "ERROR: $*" >&2; return 1; }
@@ -76,7 +79,7 @@ validate_removal_plan() {
         case "$action" in
             Inst|Conf) fail "Removal would install/configure $package; refusing offline cleanup"; return 1 ;;
             Remv|Purg)
-                record="$(awk -F '\t' -v package="$package" '$1 == package || $1 == package ":amd64" { print; exit }' "$inventory")"
+                record="$(awk -F '\t' -v package="$package" -v arch="$ARCH" '$1 == package || $1 == package ":" arch { print; exit }' "$inventory")"
                 [[ -n "$record" ]] || { fail "No installed-package metadata for planned removal $package"; return 1; }
                 IFS=$'\t' read -r package rest essential priority <<< "$record"
                 held=no
@@ -132,7 +135,7 @@ cleanup_node() {
         | awk -F '\t' '$5 == "installed" { print $1 "\t" $2 "\t" ($3 == "yes" ? "yes" : "no") "\t" $4 }' > "$inventory"
     held_packages="$(apt-mark showhold)"
     for package in "${REMOVAL_CANDIDATES[@]}"; do
-        if awk -F '\t' -v package="$package" '$1 == package || $1 == package ":amd64" { found=1 } END { exit !found }' "$inventory"; then
+        if awk -F '\t' -v package="$package" -v arch="$ARCH" '$1 == package || $1 == package ":" arch { found=1 } END { exit !found }' "$inventory"; then
             candidates+=("$package")
         fi
     done
@@ -155,7 +158,7 @@ cleanup_node() {
             return 1
         fi
         for package in "${candidates[@]}"; do
-            if awk -F '\t' -v package="$package" '$1 == package || $1 == package ":amd64" { found=1 } END { exit !found }' "$post_inventory"; then
+            if awk -F '\t' -v package="$package" -v arch="$ARCH" '$1 == package || $1 == package ":" arch { found=1 } END { exit !found }' "$post_inventory"; then
                 fail "Candidate still installed after cleanup: $package"
                 return 1
             fi

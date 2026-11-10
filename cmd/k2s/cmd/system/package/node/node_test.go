@@ -5,6 +5,7 @@ package nodepackage
 
 import (
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -98,6 +99,47 @@ var _ = Describe("nodepackage", func() {
 			err := Validate(cmd.Flags(), supportedOS)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(PackageVersionToFlagName))
+		})
+
+		It("returns nil when --arch defaults to amd64", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "debian12")
+
+			Expect(Validate(cmd.Flags(), supportedOS)).To(Succeed())
+		})
+
+		It("returns error for an unsupported --arch value", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "debian13")
+			cmd.Flags().Set(ArchFlagName, "mips")
+
+			err := Validate(cmd.Flags(), supportedOS)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mips"))
+		})
+
+		It("returns error for --arch arm64 on a non-Debian --os", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "ubuntu22")
+			cmd.Flags().Set(ArchFlagName, "arm64")
+			supportedWithUbuntu := append([]string{"ubuntu22"}, supportedOS...)
+
+			err := Validate(cmd.Flags(), supportedWithUbuntu)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Debian-family"))
+		})
+
+		It("fails fast for --arch arm64 when not running on Linux", func() {
+			if runtime.GOOS == "linux" {
+				Skip("this assertion only applies to non-Linux builds")
+			}
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "debian13")
+			cmd.Flags().Set(ArchFlagName, "arm64")
+
+			err := Validate(cmd.Flags(), supportedOS)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Linux arm64 host"))
 		})
 	})
 

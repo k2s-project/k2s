@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -20,8 +21,71 @@ func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
 	return &linuxNodeProvider{installDir: cfg.InstallDir}
 }
 
+// sshCmdToNode runs command on the target node (identified by user/ip) via SSH,
+// unlike sshCmd which always targets the fixed Windows worker VM.
+func sshCmdToNode(user, ip, command string) (string, error) {
+	cmd := exec.Command("ssh",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ConnectTimeout=10",
+		fmt.Sprintf("%s@%s", user, ip),
+		command,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(exitErr.Stderr))
+		}
+		return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(out))
+	}
+	return string(out), nil
+}
+
+// normalizeArch maps 'uname -m' output to Go-style architecture names, matching the
+// normalization already used for the control-plane in install-cli-tools.sh.
+func normalizeArch(unameM string) string {
+	switch strings.TrimSpace(unameM) {
+	case "x86_64":
+		return "amd64"
+	case "aarch64":
+		return "arm64"
+	default:
+		return strings.TrimSpace(unameM)
+	}
+}
+
+// assertSupportedNodeArchitecture fails fast if the target node's architecture/distro
+// combination is not supported, before any provisioning is attempted. Only arm64 Debian
+// external nodes are supported in addition to amd64.
+func assertSupportedNodeArchitecture(user, ip string) error {
+	unameOut, err := sshCmdToNode(user, ip, "uname -m")
+	if err != nil {
+		return fmt.Errorf("failed to detect architecture on remote node: %w", err)
+	}
+	arch := normalizeArch(unameOut)
+	if arch != "arm64" {
+		return nil
+	}
+
+	osIDOut, err := sshCmdToNode(user, ip, ". /etc/os-release 2>/dev/null; echo \"$ID\"")
+	if err != nil {
+		return fmt.Errorf("failed to detect distribution on remote node: %w", err)
+	}
+	osID := strings.ToLower(strings.TrimSpace(osIDOut))
+	if osID != "debian" {
+		return fmt.Errorf("unsupported architecture/distro combination: arch '%s' is only supported on Debian-family distributions, detected OS ID '%s'", arch, osID)
+	}
+
+	return nil
+}
+
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "name", cfg.NodeName)
+
+	if err := assertSupportedNodeArchitecture(cfg.UserName, cfg.IpAddress); err != nil {
+		return err
+	}
 
 	// Generate join token on control plane
 	output, err := exec.Command("kubeadm", "token", "create", "--print-join-command").Output()
@@ -31,7 +95,7 @@ func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	joinCmd := strings.TrimSpace(string(output))
 
 	// Execute join on the target node via SSH
-	_, err = sshCmd(joinCmd)
+	_, err = sshCmdToNode(cfg.UserName, cfg.IpAddress, joinCmd)
 	if err != nil {
 		return fmt.Errorf("kubeadm join failed on remote node: %w", err)
 	}

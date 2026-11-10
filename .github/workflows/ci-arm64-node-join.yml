@@ -136,7 +136,8 @@ jobs:
       - name: Build the Linux k2s CLI
         run: |
           cd cmd/k2s
-          GOOS=linux GOARCH=amd64 go build -o /usr/local/bin/k2s .
+          GOOS=linux GOARCH=amd64 go build -o "${{ github.workspace }}/k2s" .
+          sudo ln -sf "${{ github.workspace }}/k2s" /usr/local/bin/k2s
 
       - name: Generate an SSH keypair and publish the public half to the worker
         run: |

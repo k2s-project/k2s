@@ -189,7 +189,7 @@ jobs:
 
       - name: Assert the worker joined as arm64 and is Ready
         run: |
-          export KUBECONFIG=/etc/k2s/kubeconfig
+          export KUBECONFIG="$HOME/.kube/config"
           kubectl get nodes -o wide
           kubectl get nodes -l kubernetes.io/arch=arm64 --no-headers | grep -q . || {
             echo "::error::no arm64 node found in the cluster"

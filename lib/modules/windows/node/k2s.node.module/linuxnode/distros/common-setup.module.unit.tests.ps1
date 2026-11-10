@@ -7,6 +7,53 @@ BeforeAll {
     $moduleName = (Import-Module $modulePath -PassThru -Force).Name
 }
 
+Describe 'Linux worker artifacts by architecture' -Tag 'unit', 'ci' {
+    BeforeEach {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Copy-DebPackagesFromWindowsHostToRemoteComputer {}
+            Mock Get-KubernetesArtifactsFromInternet {}
+            Mock Get-BuildahDebPackagesFromInternet {}
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $true; Output = '' } }
+            Mock Assert-ProvisioningCommandResult {}
+            Mock Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost {}
+        }
+    }
+
+    It 'downloads Kubernetes and buildah packages for an architecture that differs from the control plane' {
+        InModuleScope $moduleName {
+            Add-KubernetesArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/kubernetes' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64
+            Add-BuildahArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/buildah' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64
+
+            Should -Invoke Copy-DebPackagesFromWindowsHostToRemoteComputer -Times 0 -Exactly
+            Should -Invoke Get-KubernetesArtifactsFromInternet -Times 1 -Exactly
+            Should -Invoke Get-BuildahDebPackagesFromInternet -Times 1 -Exactly
+        }
+    }
+
+    It 'uses the explicitly supplied node package for its worker architecture' {
+        InModuleScope $moduleName {
+            Mock Test-Path { $true }
+            Add-KubernetesArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/kubernetes' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+            Add-BuildahArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/buildah' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+
+            Should -Invoke Copy-DebPackagesFromWindowsHostToRemoteComputer -Times 2 -Exactly
+            Should -Invoke Get-KubernetesArtifactsFromInternet -Times 0 -Exactly
+            Should -Invoke Get-BuildahDebPackagesFromInternet -Times 0 -Exactly
+        }
+    }
+
+    It 'pulls Kubernetes and flannel images on a worker with a different architecture' {
+        InModuleScope $moduleName {
+            Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 3 -Exactly
+            Should -Invoke Assert-ProvisioningCommandResult -Times 3 -Exactly
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+}
+
 Describe 'Invoke-Debian13NodeHardening' -Tag 'unit', 'ci' {
     BeforeEach {
         InModuleScope $moduleName {

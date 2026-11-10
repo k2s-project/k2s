@@ -275,6 +275,7 @@ function Add-LinuxWorkerNode {
         [string] $Proxy = '',
         [string] $AdditionalHooksDir = '',
         [string] $installedDistributionOnRemoteComputer = $(throw 'Argument missing: installedDistributionOnRemoteComputer'),
+        [string] $Architecture = 'amd64',
         [string] $NodePackagePath = '',
         [ValidateSet('HOST', 'VM-EXISTING')]
         [string] $NodeType = 'HOST',
@@ -326,7 +327,7 @@ function Add-LinuxWorkerNode {
             Write-Log "[GPU] GPU detection failed: $_ - GPU packages will be skipped" -Console
         }
 
-        Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -InstalledDistribution $installedDistributionOnRemoteComputer -NodePackagePath $NodePackagePath -SkipGpuPackages:(!$gpuDetected)
+        Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -NodePackagePath $NodePackagePath -SkipGpuPackages:(!$gpuDetected)
 
         Invoke-Debian13NodeHardening -Stage cleanup -InstalledDistribution $installedDistributionOnRemoteComputer -UserName $UserName -IpAddress $IpAddress
 
@@ -580,6 +581,7 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
         [string] $Proxy = '',
         [string] $installedDistributionOnRemoteComputer = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
         [string] $NodePackagePath = '',
         [switch] $SkipGpuPackages = $false
     )
@@ -718,6 +720,7 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
     # ---------------------------------------------------------------------------
     $controlPlaneUserName = Get-DefaultUserNameControlPlane
     $controlPlaneIpAddress = Get-ConfiguredIPControlPlane
+    $controlPlaneArchitecture = Get-RemoteArchitecture -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
     $installedDistributionOnControlPlane = Get-InstalledDistribution -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
     Write-Log "Installed distribution in the control plane: $installedDistributionOnControlPlane"
     Write-Log "Installed distribution in the machine with IP '$IpAddress': $installedDistributionOnRemoteComputer"
@@ -748,14 +751,14 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
     } 
     
     $kubernetesDebPackagesTargetPath = Get-KubernetesDebPackagesPath -UserName $UserName
-    Add-KubernetesArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $kubernetesDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
+    Add-KubernetesArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $kubernetesDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
     Install-KubernetesArtifacts -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -SourcePath $kubernetesDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
 
     $buildahDebPackagesTargetPath = Get-BuildahDebPackagesPath -UserName $UserName
-    Add-BuildahArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
+    Add-BuildahArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
     Install-BuildahDebPackages -UserName $UserName -IpAddress $IpAddress -SourcePath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
 
-    Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName $UserName -IpAddress $IpAddress
+    Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture
 }
 
 function Test-SupportedWorkerOS {

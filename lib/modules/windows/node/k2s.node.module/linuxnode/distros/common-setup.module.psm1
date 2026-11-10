@@ -245,16 +245,22 @@ Function Add-KubernetesArtifactsToRemoteComputer {
         [string] $Proxy = '',
         [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
         [string] $TargetPath = $(throw 'Argument missing: TargetPath'),
-        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution')
+        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
     #binPath\linuxnode\packages\debian12\ kubernetes
     $debPackagesSourcePath = "$SourcePath\$kubernetesDebPackagesDirectory"
     
-    if (Test-Path -Path $debPackagesSourcePath) {
+    if ((($Architecture -eq $ControlPlaneArchitecture) -or $UseNodePackageArtifacts) -and (Test-Path -Path $debPackagesSourcePath)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
     }
     else {
+        if (($Architecture -ne $ControlPlaneArchitecture) -and !$UseNodePackageArtifacts) {
+            Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading Kubernetes packages for the worker."
+        }
         Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
     }
 }
@@ -265,15 +271,21 @@ Function Add-BuildahArtifactsToRemoteComputer {
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
         [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
         [string] $TargetPath = $(throw 'Argument missing: TargetPath'),
-        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution')
+        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
     $debPackagesSourcePath = "$SourcePath\$buildahDebPackagesDirectory"
     
-    if (Test-Path -Path $debPackagesSourcePath) {
+    if ((($Architecture -eq $ControlPlaneArchitecture) -or $UseNodePackageArtifacts) -and (Test-Path -Path $debPackagesSourcePath)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
     }
     else {
+        if (($Architecture -ne $ControlPlaneArchitecture) -and !$UseNodePackageArtifacts) {
+            Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading buildah packages for the worker."
+        }
         Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
     }
 }
@@ -529,8 +541,22 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
         [ValidateScript({ !([string]::IsNullOrWhiteSpace($_)) })]
         [string] $UserName = $(throw 'Argument missing: UserName'),
         [ValidateScript({ Get-IsValidIPv4Address($_) })]
-        [string] $IpAddress = $(throw 'Argument missing: IpAddress')
+        [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64'
     )
+
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        $remoteUser = "$UserName@$IpAddress"
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; pulling compatible Kubernetes and flannel images on the worker."
+        $kubernetesImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo kubeadm config images pull --kubernetes-version $kubernetesVersion" -UserName $UserName -IpAddress $IpAddress
+        Assert-ProvisioningCommandResult -Result $kubernetesImageResult -RemoteUser $remoteUser
+        foreach ($image in @('docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3', 'docker.io/flannel/flannel:v0.28.10')) {
+            $flannelImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo crictl pull $image" -UserName $UserName -IpAddress $IpAddress
+            Assert-ProvisioningCommandResult -Result $flannelImageResult -RemoteUser $remoteUser
+        }
+        return
+    }
 
     $executeRemoteCommandOnRemoteComputer = { 
         param(

@@ -37,8 +37,21 @@ func runLogged(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func runShell(script string) error {
-	return runLogged("bash", "-c", script)
+// runShellWithEnv runs script with the given extra environment variables appended to
+// the current process's environment, referenced in script as "$NAME" rather than
+// interpolated into the script text - the values (e.g. a user-supplied --proxy) are
+// never passed through shell string formatting/quoting, so they can't be used to
+// inject shell commands no matter what characters they contain.
+func runShellWithEnv(script string, env map[string]string) error {
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	fmt.Printf("[NodePkg] + bash -c %q (env: %d extra var(s))\n", script, len(env))
+	return cmd.Run()
 }
 
 // resolveDefaultK8sVersion extracts the version Get-DefaultK8sVersion returns, without
@@ -74,15 +87,16 @@ func countDebFiles(dir string) int {
 }
 
 // downloadNvidiaGpuPackages mirrors Get-NvidiaGpuDebPackagesFromInternet, run locally
-// instead of over SSH into a VM.
+// instead of over SSH into a VM. targetPath and proxy are both ultimately attacker-
+// controllable (--target-dir / --proxy, run as root) so neither is ever interpolated
+// into shell source - both cross into bash only via $K2S_GPU_* environment variables.
 func downloadNvidiaGpuPackages(targetPath, proxy string) error {
 	if err := os.MkdirAll(targetPath, 0o755); err != nil {
 		return err
 	}
+	env := map[string]string{"K2S_GPU_TARGET_PATH": targetPath, "K2S_GPU_PROXY": proxy}
 
-	var curlProxy string
 	if proxy != "" {
-		curlProxy = "-x " + proxy
 		proxyConf := fmt.Sprintf("Acquire::http::Proxy %q;\nAcquire::https::Proxy %q;\n", proxy, proxy)
 		if err := os.WriteFile("/etc/apt/apt.conf.d/95k2s-proxy", []byte(proxyConf), 0o644); err != nil {
 			return fmt.Errorf("could not write apt proxy config: %w", err)
@@ -90,11 +104,16 @@ func downloadNvidiaGpuPackages(targetPath, proxy string) error {
 		defer os.Remove("/etc/apt/apt.conf.d/95k2s-proxy")
 	}
 
-	repoSetup := fmt.Sprintf(
-		"curl --retry 3 --retry-all-errors -fsSL https://nvidia.github.io/libnvidia-container/gpgkey %s | gpg --dearmor --batch --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && "+
-			"curl --retry 3 --retry-all-errors -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list %s | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list",
-		curlProxy, curlProxy)
-	if err := runShell(repoSetup); err != nil {
+	repoSetup := `
+		curlProxy=""
+		[ -n "$K2S_GPU_PROXY" ] && curlProxy="-x $K2S_GPU_PROXY"
+		curl --retry 3 --retry-all-errors -fsSL https://nvidia.github.io/libnvidia-container/gpgkey $curlProxy \
+			| gpg --dearmor --batch --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg &&
+		curl --retry 3 --retry-all-errors -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list $curlProxy \
+			| sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+			| tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+	`
+	if err := runShellWithEnv(repoSetup, env); err != nil {
 		return fmt.Errorf("could not set up NVIDIA Container Toolkit apt repository: %w", err)
 	}
 
@@ -104,13 +123,17 @@ func downloadNvidiaGpuPackages(targetPath, proxy string) error {
 
 	for _, pkg := range gpuDebPackages {
 		fmt.Printf("[NodePkg][GpuPkg] Downloading GPU package: %s\n", pkg)
-		if err := runShell(fmt.Sprintf("cd %q && apt-get download %s", targetPath, pkg)); err != nil {
+		env["K2S_GPU_PKG"] = pkg
+		if err := runShellWithEnv(`cd "$K2S_GPU_TARGET_PATH" && apt-get download "$K2S_GPU_PKG"`, env); err != nil {
 			return fmt.Errorf("could not download %s: %w", pkg, err)
 		}
-		depsScript := fmt.Sprintf(
-			`cd %q && DEBIAN_FRONTEND=noninteractive apt-get --reinstall install -y --no-install-recommends --no-install-suggests --simulate ./%s*.deb 2>/dev/null | grep 'Inst ' | cut -d ' ' -f 2 | sort -u | xargs -r apt-get download || true`,
-			targetPath, pkg)
-		if err := runShell(depsScript); err != nil {
+		depsScript := `
+			cd "$K2S_GPU_TARGET_PATH" &&
+			DEBIAN_FRONTEND=noninteractive apt-get --reinstall install -y --no-install-recommends --no-install-suggests \
+				--simulate ./"$K2S_GPU_PKG"*.deb 2>/dev/null \
+				| grep 'Inst ' | cut -d ' ' -f 2 | sort -u | xargs -r apt-get download || true
+		`
+		if err := runShellWithEnv(depsScript, env); err != nil {
 			return fmt.Errorf("could not download dependencies for %s: %w", pkg, err)
 		}
 	}
@@ -121,6 +144,24 @@ func downloadNvidiaGpuPackages(targetPath, proxy string) error {
 		return fmt.Errorf("no NVIDIA Container Toolkit packages were downloaded")
 	}
 	return nil
+}
+
+// buildZip writes srcRoot (recursively, under a "packages" prefix) into a new zip file
+// at destZipPath. Callers are responsible for only exposing destZipPath to the rest of
+// the system once this returns successfully - see its caller in BuildLinux.
+func buildZip(destZipPath, srcRoot string) error {
+	zf, err := os.Create(destZipPath)
+	if err != nil {
+		return fmt.Errorf("could not create %s: %w", destZipPath, err)
+	}
+	defer zf.Close()
+
+	zw := zip.NewWriter(zf)
+	if err := zipDir(zw, srcRoot, "packages"); err != nil {
+		zw.Close()
+		return fmt.Errorf("could not zip packages: %w", err)
+	}
+	return zw.Close()
 }
 
 func zipDir(zw *zip.Writer, srcRoot, destPrefix string) error {
@@ -250,18 +291,18 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) error {
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("could not create target directory: %w", err)
 	}
-	zf, err := os.Create(zipTarget)
-	if err != nil {
-		return fmt.Errorf("could not create %s: %w", zipTarget, err)
+	// Build the zip under a temp name and rename into place only once it's fully
+	// written: a partial zip left at zipTarget after a failed/interrupted run would
+	// otherwise be mistaken for a finished package by the "already exists" check above
+	// on the next invocation.
+	tmpZipTarget := zipTarget + ".tmp"
+	if err := buildZip(tmpZipTarget, filepath.Join(stagingDir, "packages")); err != nil {
+		os.Remove(tmpZipTarget)
+		return err
 	}
-	defer zf.Close()
-	zw := zip.NewWriter(zf)
-	if err := zipDir(zw, filepath.Join(stagingDir, "packages"), "packages"); err != nil {
-		zw.Close()
-		return fmt.Errorf("could not zip packages: %w", err)
-	}
-	if err := zw.Close(); err != nil {
-		return fmt.Errorf("could not finalize zip: %w", err)
+	if err := os.Rename(tmpZipTarget, zipTarget); err != nil {
+		os.Remove(tmpZipTarget)
+		return fmt.Errorf("could not finalize %s: %w", zipTarget, err)
 	}
 
 	gpuMsg := ""

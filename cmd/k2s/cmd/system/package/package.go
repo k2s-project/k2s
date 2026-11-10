@@ -197,7 +197,11 @@ func systemPackage(cmd *cobra.Command, args []string) error {
 	// Node-package building on Linux runs entirely natively (no PowerShell, no VM):
 	// it's required for arm64, since Hyper-V cannot provision an arm64 guest on an
 	// x86 host, so the package has to be built directly on an arm64 Linux host.
-	if nodepackage.IsSet(cmd.Flags()) && runtime.GOOS == "linux" {
+	// --delta-package has no native-Linux implementation; fall through to the
+	// PowerShell path below so it fails with the existing, explicit platform-guard
+	// error rather than this branch silently building a full package instead.
+	deltaRequested, _ := strconv.ParseBool(cmd.Flags().Lookup(DeltaPackageFlagName).Value.String())
+	if nodepackage.IsSet(cmd.Flags()) && runtime.GOOS == "linux" && !deltaRequested {
 		targetDir := cmd.Flags().Lookup(TargetDirectoryFlagName).Value.String()
 		zipName := cmd.Flags().Lookup(ZipPackageFileNameFlagName).Value.String()
 		proxy := cmd.Flags().Lookup(ProxyFlagName).Value.String()

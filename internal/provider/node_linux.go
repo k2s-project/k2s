@@ -94,8 +94,11 @@ func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	}
 	joinCmd := strings.TrimSpace(string(output))
 
-	// Execute join on the target node via SSH
-	_, err = sshCmdToNode(cfg.UserName, cfg.IpAddress, joinCmd)
+	// kubeadm join must run as root (it writes /etc/kubernetes, starts kubelet, etc.);
+	// the SSH user is assumed to have passwordless sudo, matching every other
+	// bare-metal provisioning path in this codebase (e.g. harden-node.sh re-execs
+	// itself via sudo when not already root).
+	_, err = sshCmdToNode(cfg.UserName, cfg.IpAddress, "sudo "+joinCmd)
 	if err != nil {
 		return fmt.Errorf("kubeadm join failed on remote node: %w", err)
 	}

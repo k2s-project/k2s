@@ -45,9 +45,9 @@ jobs:
       - name: Build the Linux k2s CLI
         run: |
           cd cmd/k2s
-          GOOS=linux GOARCH=amd64 go build -o /tmp/k2s-cli .
-          # The CLI binary's own architecture doesn't matter here - it just orchestrates
-          # local apt/dpkg calls, which already target this runner's real arm64.
+          go build -o /tmp/k2s-cli .
+          # No GOOS/GOARCH override: this binary runs directly on this runner (it execs
+          # local apt/dpkg/bash), so it must match the runner's own arm64, not amd64.
 
       - name: Determine package version for naming
         id: version

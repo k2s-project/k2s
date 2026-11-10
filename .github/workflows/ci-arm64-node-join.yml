@@ -46,6 +46,24 @@ jobs:
           tags: tag:k2s-ci
           hostname: arm64-node-join-worker-${{ github.run_id }}
 
+      - uses: actions/checkout@v4
+
+      - name: Install kubeadm/kubelet/kubectl/CRI-O
+        # 'k2s node add' (internal/provider/node_linux.go) only runs 'kubeadm join' over
+        # SSH - it does not provision the node. This mirrors the simple
+        # k2s_install_debian_packages() helper in lib/modules/linux/node/packages.sh
+        # (plain dpkg -i + apt --fix-broken install, no registry/mirror setup), which is
+        # enough for kubeadm join to succeed; it is not the full offline
+        # install-k8s-packages.sh path (that needs a registry token this throwaway
+        # runner doesn't have).
+        run: |
+          mkdir -p /tmp/k8s-packages
+          sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
+          sudo dpkg -i /tmp/k8s-packages/*.deb || true
+          sudo apt-get --fix-broken install -y
+          sudo systemctl enable --now crio
+          sudo systemctl enable kubelet
+
       - name: Start sshd and wait for the control-plane's public key
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server

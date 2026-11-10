@@ -31,6 +31,7 @@ on:
 
 env:
   JOIN_TIMEOUT_SECONDS: 1200
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   worker:

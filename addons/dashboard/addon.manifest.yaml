@@ -17,7 +17,7 @@ spec:
           deb: []
           curl: []
           additionalImages:
-            - shsk2s.azurecr.io/headlamp-plugin-flux:0.7.0
+            - shsk2s.azurecr.io/headlamp-plugin-flux:0.8.0
             - shsk2s.azurecr.io/headlamp-plugin-cert-manager:0.1.1
             - shsk2s.azurecr.io/headlamp-plugin-prometheus:0.9.1
             - shsk2s.azurecr.io/headlamp-plugin-keda:0.1.2

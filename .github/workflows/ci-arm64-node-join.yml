@@ -131,7 +131,6 @@ jobs:
         run: |
           cd cmd/k2s
           GOOS=linux GOARCH=amd64 go build -o "${{ github.workspace }}/k2s" .
-          sudo ln -sf "${{ github.workspace }}/k2s" /usr/local/bin/k2s
 
       - name: Generate an SSH keypair and publish the public half to the worker
         run: |
@@ -179,7 +178,7 @@ jobs:
 
       - name: Add the arm64 worker node
         run: |
-          sudo k2s node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
+          sudo "${{ github.workspace }}/k2s" node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
 
       - name: Assert the worker joined as arm64 and is Ready
         run: |

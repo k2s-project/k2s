@@ -69,7 +69,7 @@ prepare_node() {
         esac
     fi
     wait_for_package_work
-    systemctl reset-failed apt-daily.timer apt-daily-upgrade.timer
+    systemctl reset-failed apt-daily.timer apt-daily-upgrade.timer || true
     log 'Automatic APT triggers disabled; controlled package operations remain available'
 }
 

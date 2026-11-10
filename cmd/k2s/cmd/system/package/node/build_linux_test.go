@@ -1,7 +1,7 @@
+//go:build linux
+
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier:   MIT
-
-//go:build linux
 
 package nodepackage
 
@@ -70,5 +70,81 @@ func TestValidateBuildHostOS(t *testing.T) {
 				t.Fatalf("validateBuildHostOS() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRestoreFilesRestoresExistingFilesAndRemovesNewFiles(t *testing.T) {
+	dir := t.TempDir()
+	existingPath := filepath.Join(dir, "existing.list")
+	newPath := filepath.Join(dir, "new.list")
+	if err := os.WriteFile(existingPath, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots, err := snapshotFiles([]string{existingPath, newPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existingPath, []byte("modified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := restoreFiles(snapshots); err != nil {
+		t.Fatal(err)
+	}
+
+	content, err := os.ReadFile(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "original" {
+		t.Fatalf("restored content = %q, want %q", content, "original")
+	}
+	info, err := os.Stat(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("restored mode = %o, want %o", info.Mode().Perm(), 0o640)
+	}
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Fatalf("new file still exists or could not be checked: %v", err)
+	}
+}
+
+func TestRestoreFilesRestoresSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "target")
+	linkPath := filepath.Join(dir, "source.list")
+	if err := os.WriteFile(targetPath, []byte("target"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots, err := snapshotFiles([]string{linkPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linkPath, []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := restoreFiles(snapshots); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkTarget != targetPath {
+		t.Fatalf("restored symlink target = %q, want %q", linkTarget, targetPath)
 	}
 }

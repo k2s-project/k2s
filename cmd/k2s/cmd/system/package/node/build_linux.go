@@ -7,6 +7,7 @@ package nodepackage
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/spf13/pflag"
@@ -220,6 +222,122 @@ func zipDir(zw *zip.Writer, srcRoot, destPrefix string) error {
 	})
 }
 
+var hostAptFiles = []string{
+	"/etc/apt/apt.conf.d/10sandbox-for-k2s",
+	"/etc/apt/apt.conf.d/90k2s-proxy",
+	"/etc/apt/apt.conf.d/95k2s-proxy",
+	"/etc/apt/sources.list.d/kubernetes.list",
+	"/etc/apt/sources.list.d/cri-o.list",
+	"/etc/apt/sources.list.d/nvidia-container-toolkit.list",
+	"/usr/share/keyrings/kubernetes-apt-keyring.gpg",
+	"/usr/share/keyrings/cri-o-apt-keyring.gpg",
+	"/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
+}
+
+type fileSnapshot struct {
+	path       string
+	content    []byte
+	mode       os.FileMode
+	uid        int
+	gid        int
+	linkTarget string
+	exists     bool
+}
+
+func snapshotFiles(paths []string) ([]fileSnapshot, error) {
+	snapshots := make([]fileSnapshot, 0, len(paths))
+	for _, path := range paths {
+		snapshot := fileSnapshot{path: path}
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				snapshots = append(snapshots, snapshot)
+				continue
+			}
+			return nil, fmt.Errorf("could not inspect %s: %w", path, err)
+		}
+		snapshot.exists = true
+		snapshot.mode = info.Mode()
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			snapshot.uid = int(stat.Uid)
+			snapshot.gid = int(stat.Gid)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			snapshot.linkTarget, err = os.Readlink(path)
+		} else if info.Mode().IsRegular() {
+			snapshot.content, err = os.ReadFile(path)
+		} else {
+			return nil, fmt.Errorf("cannot snapshot non-regular APT file %s", path)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("could not snapshot %s: %w", path, err)
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
+}
+
+func restoreFiles(snapshots []fileSnapshot) error {
+	var restoreErr error
+	for _, snapshot := range snapshots {
+		if !snapshot.exists {
+			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("could not remove %s: %w", snapshot.path, err))
+			}
+			continue
+		}
+
+		if snapshot.mode&os.ModeSymlink != 0 {
+			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("could not replace %s: %w", snapshot.path, err))
+				continue
+			}
+			if err := os.Symlink(snapshot.linkTarget, snapshot.path); err != nil {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("could not restore symlink %s: %w", snapshot.path, err))
+			}
+			continue
+		}
+
+		temp, err := os.CreateTemp(filepath.Dir(snapshot.path), ".k2s-apt-restore-*")
+		if err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("could not create restore file for %s: %w", snapshot.path, err))
+			continue
+		}
+		tempPath := temp.Name()
+		if _, err := temp.Write(snapshot.content); err == nil {
+			err = temp.Chmod(snapshot.mode.Perm())
+		}
+		if err == nil {
+			if current, statErr := os.Stat(tempPath); statErr == nil {
+				if currentUID, currentGID, ok := fileOwner(current); ok &&
+					(currentUID != snapshot.uid || currentGID != snapshot.gid) {
+					err = os.Chown(tempPath, snapshot.uid, snapshot.gid)
+				}
+			}
+		}
+		closeErr := temp.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = os.Rename(tempPath, snapshot.path)
+		}
+		if err != nil {
+			os.Remove(tempPath)
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("could not restore %s: %w", snapshot.path, err))
+		}
+	}
+	return restoreErr
+}
+
+func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return int(stat.Uid), int(stat.Gid), true
+}
+
 // BuildLinux builds a Linux node package natively on the build host: no Hyper-V VM, no
 // SSH. The host's own apt is used to download .deb packages for its own (running)
 // architecture, which is what makes arm64 node packages possible at all --
@@ -231,7 +349,7 @@ func zipDir(zw *zip.Writer, srcRoot, destPrefix string) error {
 // pull Kubernetes/flannel/GPU images at join time. Only the .deb packages are bundled
 // for offline use. This is a deliberate, documented gap for the initial arm64 support
 // (see docs/op-manual/creating-offline-package.md), not an oversight.
-func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) error {
+func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildErr error) {
 	if targetDir == "" {
 		return fmt.Errorf("required flag(s) \"target-dir\" not set")
 	}
@@ -292,6 +410,16 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) error {
 			return fmt.Errorf("could not create %s: %w", d, err)
 		}
 	}
+
+	aptSnapshots, err := snapshotFiles(hostAptFiles)
+	if err != nil {
+		return fmt.Errorf("could not snapshot host APT files: %w", err)
+	}
+	defer func() {
+		if err := restoreFiles(aptSnapshots); err != nil {
+			buildErr = errors.Join(buildErr, fmt.Errorf("could not restore host APT files: %w", err))
+		}
+	}()
 
 	fmt.Printf("[NodePkg] === Downloading Kubernetes packages (k8sVersion=%s, arch=%s) ===\n", k8sVersion, arch)
 	if err := runLogged("bash", filepath.Join(scriptsDir, "download-k8s-packages.sh"), k8sPkgDir, k8sVersion, proxy); err != nil {

@@ -20,9 +20,9 @@ if (($isClient -and [int]$osInfo.BuildNumber -lt 22000) -or
     (-not $isClient -and [int]$osInfo.BuildNumber -lt 20348)) {
     throw 'Use Windows 11 with Hyper-V support, or Windows Server 2022 or newer.'
 }
-if ($hostInfo.NumberOfLogicalProcessors -lt 8 -or $hostInfo.TotalPhysicalMemory -lt 16GB -or
-    ($osInfo.FreePhysicalMemory * 1KB) -lt 10GB) {
-    throw 'Provide at least 8 logical CPUs, 16 GiB RAM and 10 GiB free RAM (32 GiB RAM recommended).'
+if ($hostInfo.NumberOfLogicalProcessors -lt 8 -or $hostInfo.TotalPhysicalMemory -lt 8GB -or
+    ($osInfo.FreePhysicalMemory * 1KB) -lt 3GB) {
+    throw 'Provide at least 8 logical CPUs, 8 GiB RAM and 3 GiB free RAM.'
 }
 if ((Get-PSDrive C).Free -lt 100GB) {
     throw 'Provide at least 100 GiB free on C: for source, downloads, VHDX files and container images.'

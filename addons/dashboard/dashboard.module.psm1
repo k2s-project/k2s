@@ -277,7 +277,7 @@ function Get-RegisteredHeadlampPlugins {
     return @(
         [pscustomobject]@{
             Name     = 'flux-plugin'
-            Image    = 'shsk2s.azurecr.io/headlamp-plugin-flux:0.7.0'
+            Image    = 'shsk2s.azurecr.io/headlamp-plugin-flux:0.8.0'
             Detector = { Test-FluxCapabilityAvailable }
         },
         [pscustomobject]@{

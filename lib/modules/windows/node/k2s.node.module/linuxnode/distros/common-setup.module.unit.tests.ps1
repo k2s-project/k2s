@@ -320,3 +320,86 @@ Describe 'Invoke-RemoteScript' -Tag 'unit', 'ci', 'provisioning' {
         }
     }
 }
+
+Describe 'Get-CrioOfflineImageRetentionCommands' -Tag 'unit', 'ci' {
+    It 'disables internal repair and installs a non-wiping pre-start hook' {
+        InModuleScope $moduleName {
+            $commands = @(Get-CrioOfflineImageRetentionCommands)
+            $decode = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) }
+            $payloads = $commands | Where-Object { $_ -match "^echo '([^']+)' \| base64 -d" } | ForEach-Object {
+                $null = $_ -match "^echo '([^']+)'"
+                & $decode $Matches[1]
+            }
+
+            $payloads.Count | Should -Be 3
+            ($payloads -join "`n") | Should -Not -Match "`r"
+            $payloads[0] | Should -Match 'crio check --quick --repair --force'
+            $payloads[0] | Should -Not -Match '--wipe'
+            $payloads[0] | Should -Match 'exit 0'
+            $payloads[1] | Should -Match 'internal_repair = false'
+            $payloads[2] | Should -Match 'ExecStartPre=/usr/local/sbin/k2s-crio-precheck'
+            $commands[-1] | Should -Be 'sudo systemctl daemon-reload'
+        }
+    }
+}
+
+Describe 'Set-CrioOfflineImageRetention' -Tag 'unit', 'ci' {
+    It 'runs every retention command through the given script block' {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            $script:executed = [System.Collections.Generic.List[string]]::new()
+            Set-CrioOfflineImageRetention -ExecuteRemoteCommand { param($Command) $script:executed.Add($Command) }
+
+            $script:executed.Count | Should -Be @(Get-CrioOfflineImageRetentionCommands).Count
+        }
+    }
+}
+
+Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
+    BeforeEach {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Copy-FromRemoteComputerViaSSHKey {}
+        }
+    }
+
+    It 'exports missing archives and removes only stale system archives' {
+        $target = Join-Path $TestDrive 'images'
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        'x' | Set-Content (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.34.0.tar')
+        'x' | Set-Content (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.33.0.tar')
+        'x' | Set-Content (Join-Path $target 'docker.io_myapp__1.0.tar')
+
+        InModuleScope $moduleName -Parameters @{ Target = $target } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey {
+                if ($CmdToExecute -like 'sudo crictl images*') {
+                    return [pscustomobject]@{ Success = $true; Output = @('registry.k8s.io/kube-apiserver:v1.34.0', 'docker.io/flannel/flannel:v0.27.0') }
+                }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+
+            Export-SystemImageArchivesToWindowsHost -TargetPath $Target
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like 'sudo crictl images*' -and $CmdToExecute -notmatch '"'
+            }
+
+            Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $Target -like '*docker.io_flannel_flannel__v0.27.0.tar'
+            }
+        }
+
+        Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.34.0.tar') | Should -BeTrue
+        Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.33.0.tar') | Should -BeFalse
+        Test-Path (Join-Path $target 'docker.io_myapp__1.0.tar') | Should -BeTrue
+    }
+
+    It 'throws when the image list cannot be read' {
+        InModuleScope $moduleName -Parameters @{ Target = (Join-Path $TestDrive 'none') } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = '' } }
+            { Export-SystemImageArchivesToWindowsHost -TargetPath $Target } | Should -Throw '*Could not list system images*'
+        }
+    }
+}

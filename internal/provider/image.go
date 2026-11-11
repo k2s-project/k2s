@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier:   MIT
 
 package provider
@@ -33,6 +33,9 @@ type ImageProvider interface {
 
 	// Clean removes all non-K8s container images from the cluster.
 	Clean(config ImageCleanConfig) error
+
+	// Repair re-imports missing system images from the local archives.
+	Repair(config ImageRepairConfig) error
 
 	// RegistryAdd configures access to a container registry.
 	RegistryAdd(config ImageRegistryAddConfig) error
@@ -141,6 +144,11 @@ type ImagePushConfig struct {
 // ImageCleanConfig holds parameters for cleaning container images.
 type ImageCleanConfig struct {
 	Nodes      string
+	ShowOutput bool
+}
+
+// ImageRepairConfig holds parameters for repairing system container images.
+type ImageRepairConfig struct {
 	ShowOutput bool
 }
 

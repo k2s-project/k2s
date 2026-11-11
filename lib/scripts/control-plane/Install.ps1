@@ -119,6 +119,14 @@ $windowsArtifactsDirectory = Get-WindowsArtifactsDirectory
 Invoke-DeployDnsProxyArtifacts $windowsArtifactsDirectory
 Install-WinDnsProxy -ListenIpAddresses @($windowsHostIpAddress) -UpstreamIpAddressForCluster $controlPlaneIpAddress -UpstreamIpAddressesForNonCluster $($DnsAddresses -split ',')
 
+# Keep offline archives of the system images so 'k2s image repair' can restore them (issue #3284)
+try {
+    Export-SystemImageArchivesToWindowsHost -TargetPath (Get-DirectoryOfKubenodeImagesOnWindowsHost)
+}
+catch {
+    Write-Log "[ImageArchive][Warn] Could not export system image archives: $($_.Exception.Message)"
+}
+
 
 Write-Log '---------------------------------------------------------------'
 Write-Log "K2s control plane node setup finished.   Total duration: $('{0:hh\:mm\:ss}' -f $installStopwatch.Elapsed )"

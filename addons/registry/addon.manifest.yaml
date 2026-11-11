@@ -24,6 +24,9 @@ spec:
         enable:
           cli:
             flags:
+              - name: infra-node-selector
+                default: ""
+                description: Hard node selector for registry infrastructure compatible with its storage node
               - name: ingress
                 shorthand: i
                 default: nginx
@@ -31,6 +34,7 @@ spec:
                 constraints:
                   kind: validation-set
                   validationSet:
+                    - none
                     - nginx
                     - nginx-gw
                     - traefik
@@ -41,6 +45,8 @@ spec:
             examples:
               - cmd: k2s addons enable registry
                 comment: Enable registry in k2s
+              - cmd: k2s addons enable registry --infra-node-selector kubernetes.io/hostname=kubemaster --ingress none --snode kubemaster
+                comment: Run registry on kubemaster with compatible existing PV storage; no data migration
               - cmd: k2s addons enable registry --snode worker1
                 comment: Enable registry with storage on worker1
               - cmd: k2s addons enable registry --ingress traefik
@@ -48,6 +54,8 @@ spec:
           script:
             subPath: Enable.ps1
             parameterMappings:
+              - cliFlagName: infra-node-selector
+                scriptParameterName: InfraNodeSelector
               - cliFlagName: snode
                 scriptParameterName: StorageNode
               - cliFlagName: ingress

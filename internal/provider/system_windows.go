@@ -15,12 +15,14 @@ import (
 
 type windowsSystemProvider struct {
 	installDir string
+	configDir  string
 	stdWriter  output.StreamWriter
 }
 
 func newWindowsSystemProvider(cfg ProviderConfig) *windowsSystemProvider {
 	return &windowsSystemProvider{
 		installDir: cfg.InstallDir,
+		configDir:  cfg.ConfigDir,
 		stdWriter:  cfg.StdWriter,
 	}
 }

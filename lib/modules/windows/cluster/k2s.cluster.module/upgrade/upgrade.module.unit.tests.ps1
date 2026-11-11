@@ -330,6 +330,7 @@ Describe "PerformClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 		Mock -ModuleName $moduleName Wait-ForAPIServerInGivenKubePath
 		Mock -ModuleName $moduleName Get-KubeBinPathGivenKubePath -MockWith { return "C:\KubeBinPath" }
 		Mock -ModuleName $moduleName Enable-AddonFromConfig
+		Mock -ModuleName $moduleName Restore-DeferredClusterIssuers { return @() }
 	}
 
 	It "should perform cluster upgrade with execute hooks successfully" {
@@ -477,6 +478,293 @@ Describe "PerformClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 			{ PerformClusterUpgrade -ShowProgress -DeleteFiles -ShowLogs -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -Proxy 'http://proxy' -BackupDir 'C:\Backup' -AdditionalHooksDir 'C:\Hooks' -memoryVM $memoryVM -coresVM $coresVM -storageVM $storageVM -enabledAddonsList $enabledAddonsList -hooksBackupPath $hooksBackupPath -logFilePathBeforeUninstall $logFilePathBeforeUninstall } | Should -Not -Throw
 
 			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match "Warning.*logging" }
+		}
+	}
+
+	It 'defers ClusterIssuers during resource import and restores them after addon re-enablement' {
+		InModuleScope $moduleName {
+			$events = [System.Collections.ArrayList]@()
+			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
+			$enabledAddonsList = [System.Collections.ArrayList]@([pscustomobject]@{ Name = 'ingress'; Implementations = @('traefik') })
+			$restoreErrors = [ref]@('stale')
+
+			Mock Invoke-ClusterUninstall
+			Mock Import-NotNamespacedResources { $events.Add('import-cluster') | Out-Null }
+			Mock Import-NamespacedResources { $events.Add('import-namespaced') | Out-Null }
+			Mock Enable-AddonFromConfig { $events.Add('enable-addon') | Out-Null }
+			Mock Restore-DeferredClusterIssuers { $events.Add('restore-clusterissuers') | Out-Null; return @() }
+
+			PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList $enabledAddonsList -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -resourceRestoreErrors $restoreErrors
+
+			$events | Should -Be @('import-cluster', 'import-namespaced', 'enable-addon', 'restore-clusterissuers')
+			Should -Invoke Import-NotNamespacedResources -Exactly 1 -Scope It -ParameterFilter { $DeferredResourceTypes -contains 'clusterissuers' }
+			Should -Invoke Restore-DeferredClusterIssuers -Exactly 1 -Scope It -ParameterFilter { $folderResources -eq 'C:\Backup\NotNamespaced' -and $ExePath -eq 'C:\KubeBinPath' }
+			@($restoreErrors.Value).Count | Should -Be 0
+			Should -Invoke Write-Log -Times 0 -Scope It -ParameterFilter { $Messages -match 'RESOURCE RESTORE ERRORS' }
+		}
+	}
+
+	It 'does not restore deferred ClusterIssuers when resource import is skipped' {
+		InModuleScope $moduleName {
+			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
+			Mock Invoke-ClusterUninstall
+			Mock Restore-DeferredClusterIssuers { return @() }
+
+			PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -skipResources
+
+			Should -Invoke Restore-DeferredClusterIssuers -Exactly 0 -Scope It
+		}
+	}
+
+	It 'surfaces ClusterIssuer restore errors in the summary and to the caller without failing the upgrade' {
+		InModuleScope $moduleName {
+			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
+			$restoreErrors = [ref]@()
+			Mock Invoke-ClusterUninstall
+			Mock Restore-DeferredClusterIssuers { return @('Backed-up ClusterIssuers were not restored: the cert-manager API/webhook did not become ready') }
+
+			{ PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -resourceRestoreErrors $restoreErrors } | Should -Not -Throw
+
+			@($restoreErrors.Value).Count | Should -Be 1
+			$restoreErrors.Value[0] | Should -Match 'did not become ready'
+			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'RESOURCE RESTORE ERRORS' -and $Console }
+			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'backup directory is kept: C:\\Backup' }
+			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'kubectl create -f .*C:\\Backup\\NotNamespaced\\clusterissuers\.yaml' }
+		}
+	}
+
+	It 'records an unexpected ClusterIssuer restore exception as restore error instead of failing (and rolling back) the upgrade' {
+		InModuleScope $moduleName {
+			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
+			$restoreErrors = [ref]@()
+			Mock Invoke-ClusterUninstall
+			Mock Restore-DeferredClusterIssuers { throw 'unexpected kubectl failure' }
+
+			{ PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -resourceRestoreErrors $restoreErrors } | Should -Not -Throw
+
+			@($restoreErrors.Value).Count | Should -Be 1
+			$restoreErrors.Value[0] | Should -Match 'unexpected kubectl failure'
+			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'RESOURCE RESTORE ERRORS' -and $Console }
+			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'Upgraded successfully' }
+		}
+	}
+}
+
+Describe 'Import-NotNamespacedResources deferred resource types' -Tag 'unit', 'ci', 'upgrade' {
+	BeforeAll {
+		$folder = Join-Path $TestDrive 'NotNamespaced'
+		New-Item -ItemType Directory -Path $folder -Force | Out-Null
+		Set-Content -Path (Join-Path $folder 'clusterissuers.yaml') -Value 'kind: List'
+		# kubectl is intentionally absent: any attempt to apply a file would be logged and recorded as error
+		$missingExePath = Join-Path $TestDrive 'no-kubectl'
+	}
+
+	It 'reproduces the original behavior: ClusterIssuers are applied during the cluster-scoped import' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder; ExePath = $missingExePath } {
+			$logs = [System.Collections.ArrayList]@()
+			Mock Write-Log { $logs.Add("$Messages") | Out-Null }
+
+			try { Import-NotNamespacedResources -folderResources $Folder -ExePath $ExePath | Out-Null } catch { }
+
+			$logs | Should -Contain '[Restore] Applying cluster resource: clusterissuers'
+		}
+	}
+
+	It 'skips deferred ClusterIssuers without invoking kubectl' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder; ExePath = $missingExePath } {
+			$logs = [System.Collections.ArrayList]@()
+			Mock Write-Log { $logs.Add("$Messages") | Out-Null }
+
+			$result = Import-NotNamespacedResources -folderResources $Folder -ExePath $ExePath -DeferredResourceTypes @('clusterissuers')
+
+			$logs | Should -Not -Contain '[Restore] Applying cluster resource: clusterissuers'
+			$logs | Should -Contain '[Restore] Deferring cluster resource: clusterissuers (applied after addon re-enablement)'
+			$result.Errors.Count | Should -Be 0
+		}
+	}
+}
+
+Describe 'Restore-DeferredClusterIssuers' -Tag 'unit', 'ci', 'upgrade' {
+	BeforeAll {
+		$folder = Join-Path $TestDrive 'NotNamespaced'
+		New-Item -ItemType Directory -Path $folder -Force | Out-Null
+		$issuerFile = Join-Path $folder 'clusterissuers.yaml'
+		Set-Content -Path $issuerFile -Value 'kind: List'
+		$emptyFolder = Join-Path $TestDrive 'Empty'
+		New-Item -ItemType Directory -Path $emptyFolder -Force | Out-Null
+	}
+
+	BeforeEach {
+		InModuleScope $moduleName {
+			$script:restoreEvents = [System.Collections.ArrayList]@()
+			Mock Write-Log { }
+			Mock Wait-ForCertManagerAvailable { $script:restoreEvents.Add('wait') | Out-Null; return $true }
+			Mock Invoke-RestoreKubectl {
+				$script:restoreEvents.Add($Arguments[0]) | Out-Null
+				if ($Arguments[0] -eq 'get') { return [pscustomobject]@{ Output = 'deployment.apps/cert-manager-webhook'; ExitCode = 0 } }
+				return [pscustomobject]@{ Output = 'clusterissuer.cert-manager.io/user-issuer created'; ExitCode = 0 }
+			}
+		}
+	}
+
+	It 'does nothing and does not wait when no ClusterIssuers were backed up' {
+		InModuleScope $moduleName -Parameters @{ Folder = $emptyFolder } {
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 0
+			Should -Invoke Wait-ForCertManagerAvailable -Exactly 0 -Scope It
+			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It
+		}
+	}
+
+	It 'creates ClusterIssuers exactly once after the cert-manager readiness check succeeds' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder; IssuerFile = $issuerFile } {
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 0
+			$script:restoreEvents | Should -Be @('get', 'wait', 'create')
+			Should -Invoke Wait-ForCertManagerAvailable -Exactly 1 -Scope It
+			Should -Invoke Invoke-RestoreKubectl -Exactly 1 -Scope It -ParameterFilter {
+				$ExePath -eq 'C:\bin' -and ($Arguments -join ' ') -eq "create -f $IssuerFile"
+			}
+		}
+	}
+
+	It 'reports an error without waiting or creating when cert-manager is not installed' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl { return [pscustomobject]@{ Output = ''; ExitCode = 0 } } -ParameterFilter { $Arguments[0] -eq 'get' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'cert-manager is not installed'
+			Should -Invoke Wait-ForCertManagerAvailable -Exactly 0 -Scope It
+			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It -ParameterFilter { $Arguments[0] -eq 'create' }
+		}
+	}
+
+	It 'reports a clear error and does not create when the readiness check times out' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Wait-ForCertManagerAvailable { return $false }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'cert-manager API/webhook did not become ready'
+			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It -ParameterFilter { $Arguments[0] -eq 'create' }
+		}
+	}
+
+	It 'reports an error when the readiness check cannot run' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Wait-ForCertManagerAvailable { throw 'cmctl.exe not found' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'did not become ready'
+			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It -ParameterFilter { $Arguments[0] -eq 'create' }
+		}
+	}
+
+	It 'surfaces the kubectl output when creating fails' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = 'Error from server (InternalError): failed calling webhook "webhook.cert-manager.io": service "cert-manager-webhook" not found'; ExitCode = 1 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'could not be restored'
+			$errors[0] | Should -Match 'service "cert-manager-webhook" not found'
+		}
+	}
+
+	It 'treats server errors as failure even when kubectl exits with 0' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = 'Error from server (Forbidden): admission denied'; ExitCode = 0 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'admission denied'
+		}
+	}
+
+	It 'restores multiple backed-up ClusterIssuers with a single create' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = "clusterissuer.cert-manager.io/issuer-a created`nclusterissuer.cert-manager.io/issuer-b created`nclusterissuer.cert-manager.io/issuer-c created"; ExitCode = 0 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 0
+			Should -Invoke Invoke-RestoreKubectl -Exactly 1 -Scope It -ParameterFilter { $Arguments[0] -eq 'create' }
+		}
+	}
+
+	It 'keeps ClusterIssuers created by the re-enabled addons (e.g. the K2s CA issuer) and restores only missing ones' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = "clusterissuer.cert-manager.io/user-issuer created`nError from server (AlreadyExists): error when creating `"clusterissuers.yaml`": clusterissuers.cert-manager.io `"k2s-ca-issuer`" already exists"; ExitCode = 1 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 0
+			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It -ParameterFilter { $Arguments[0] -in @('apply', 'replace', 'delete', 'patch') }
+		}
+	}
+
+	It 'is idempotent when all backed-up ClusterIssuers already exist (e.g. restore invoked again)' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = "Error from server (AlreadyExists): error when creating `"clusterissuers.yaml`": clusterissuers.cert-manager.io `"k2s-ca-issuer`" already exists`nError from server (AlreadyExists): error when creating `"clusterissuers.yaml`": clusterissuers.cert-manager.io `"user-issuer`" already exists"; ExitCode = 1 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 0
+		}
+	}
+
+	It 'reports a failure when one issuer is rejected even though others already exist' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = "Error from server (AlreadyExists): error when creating `"clusterissuers.yaml`": clusterissuers.cert-manager.io `"k2s-ca-issuer`" already exists`nError from server (InternalError): error when creating `"clusterissuers.yaml`": failed calling webhook `"webhook.cert-manager.io`""; ExitCode = 1 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'failed calling webhook'
+		}
+	}
+
+	It 'reports a failure when kubectl cannot read the backup file' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl {
+				return [pscustomobject]@{ Output = 'error: the path "clusterissuers.yaml" cannot be parsed'; ExitCode = 1 }
+			} -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
+			$errors[0] | Should -Match 'cannot be parsed'
+		}
+	}
+
+	It 'reports a failure on a non-zero exit code without output' {
+		InModuleScope $moduleName -Parameters @{ Folder = $folder } {
+			Mock Invoke-RestoreKubectl { return [pscustomobject]@{ Output = ''; ExitCode = 1 } } -ParameterFilter { $Arguments[0] -eq 'create' }
+
+			$errors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin')
+
+			$errors.Count | Should -Be 1
 		}
 	}
 }

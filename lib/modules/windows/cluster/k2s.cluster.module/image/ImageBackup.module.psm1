@@ -515,6 +515,7 @@ function Backup-K2sImages {
         
         $totalImages = $Images.Count
         $currentImage = 0
+        $usedFileNames = @{}
         
         foreach ($image in $Images) {
             $currentImage++
@@ -524,7 +525,18 @@ function Backup-K2sImages {
             try {
                 # Generate safe filename for tar archive
                 $safeFileName = "$($image.repository -replace '[/\\:*?"<>|]', '_')-$($image.tag -replace '[/\\:*?"<>|]', '_')"
+                # The same image can exist on several nodes (e.g. linkerd proxy on Linux and Windows); keep one tar per node
+                if ($usedFileNames.ContainsKey($safeFileName) -and -not [string]::IsNullOrWhiteSpace("$($image.node)")) {
+                    $safeFileName = "$safeFileName-$($image.node -replace '[/\\:*?"<>|]', '_')"
+                }
+                $usedFileNames[$safeFileName] = $true
                 $tarPath = Join-Path $imagesDir "$safeFileName.tar"
+
+                # Scope the export to the image's node; otherwise Export-Image.ps1 renames the output when the image exists on both OSes
+                $exportNodeArgs = @{}
+                if (-not [string]::IsNullOrWhiteSpace("$($image.node)")) {
+                    $exportNodeArgs['Nodes'] = "$($image.node)"
+                }
 
                 & $exportImageScript `
                     -Name "$($image.repository):$($image.tag)" `
@@ -532,7 +544,8 @@ function Backup-K2sImages {
                     -CrictlExePath $resolvedCrictlExe `
                     -CrictlConfigPath $resolvedCrictlConfig `
                     -NerdctlExePath $resolvedNerdctlExe `
-                    -CtrExePath $resolvedCtrExe
+                    -CtrExePath $resolvedCtrExe `
+                    @exportNodeArgs
                 
                 if (-not (Test-Path $tarPath)) {
                     throw "Export-Image.ps1 did not produce $tarPath for image $($image.repository):$($image.tag)"

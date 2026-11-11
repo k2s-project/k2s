@@ -297,7 +297,9 @@ function Import-NotNamespacedResources {
 		[Parameter(Mandatory = $false, HelpMessage = 'If set to true, any error during resource import will cause the operation to fail immediately')]
 		[bool] $ErrorOnFailure = $false,
 		[Parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
-		[bool] $ShowLogs = $false
+		[bool] $ShowLogs = $false,
+		[Parameter(Mandatory = $false, HelpMessage = 'Resource types (file base names) that are skipped here and restored later by the caller')]
+		[string[]] $DeferredResourceTypes = @()
 	)
 
     Write-Log "Import not namespaced resources from existing cluster"
@@ -327,6 +329,12 @@ function Import-NotNamespacedResources {
     # Apply resources in order
     foreach ($resourceType in $orderedResourceTypes) {
         $file = Join-Path $folderResources "$resourceType.yaml"
+        if ($DeferredResourceTypes -contains $resourceType) {
+            if (Test-Path $file) {
+                Write-Log "[Restore] Deferring cluster resource: $resourceType (applied after addon re-enablement)"
+            }
+            continue
+        }
         if (Test-Path $file) {
             Write-Log "[Restore] Applying cluster resource: $resourceType"
             $output = & "$ExePath\kubectl.exe" apply --server-side --force-conflicts -f $file 2>&1
@@ -361,7 +369,7 @@ function Import-NotNamespacedResources {
 
     # Apply remaining unordered resources
     Get-ChildItem -Path $folderResources -Filter *.yaml | ForEach-Object {
-        if ($orderedResourceTypes -notcontains $_.BaseName) {
+        if ($orderedResourceTypes -notcontains $_.BaseName -and $DeferredResourceTypes -notcontains $_.BaseName) {
             $file = $_.FullName
             Write-Log "[Restore] Applying cluster resource: $($_.BaseName)"
             $output = & "$ExePath\kubectl.exe" apply --server-side --force-conflicts -f $file 2>&1
@@ -526,6 +534,78 @@ function Import-NamespacedResources {
     }
 
     return @{ Errors = $errors; Warnings = $warnings; WebhookFailures = $webhookFailures }
+}
+
+function Invoke-RestoreKubectl {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string] $ExePath,
+		[Parameter(Mandatory = $true)]
+		[string[]] $Arguments
+	)
+	$output = & "$ExePath\kubectl.exe" @Arguments 2>&1
+	$exitCode = $LASTEXITCODE
+	# ToString() keeps each stderr line as plain text (Out-String would decorate the first one with PowerShell error details)
+	$text = (@($output | ForEach-Object { $_.ToString() }) -join "`n").Trim()
+	return [pscustomobject]@{ Output = $text; ExitCode = $exitCode }
+}
+
+<#
+.SYNOPSIS
+Restores backed-up ClusterIssuers once cert-manager is available again.
+.DESCRIPTION
+ClusterIssuers are validated by the fail-closed cert-manager admission webhook, so they cannot be applied
+before addon re-enablement has installed cert-manager. Readiness is checked with the existing
+Wait-ForCertManagerAvailable ('cmctl check api', which performs a dry-run Certificate create through the webhook).
+Issuers are created, not applied: ClusterIssuers that already exist (e.g. created by the re-enabled addons of the
+new version) are left unchanged, so only issuers lost during the upgrade are restored. This is idempotent.
+Returns the list of error messages; it is empty when there is nothing to restore or the restore succeeded.
+#>
+function Restore-DeferredClusterIssuers {
+	param (
+		[Parameter(Mandatory = $true, HelpMessage = 'Location of the backed-up not namespaced resources')]
+		[string] $folderResources,
+		[Parameter(Mandatory = $true, HelpMessage = 'Directory containing kubectl.exe of the current cluster')]
+		[string] $ExePath
+	)
+
+	$file = Join-Path $folderResources 'clusterissuers.yaml'
+	if (-not (Test-Path $file)) {
+		return @()
+	}
+
+	Write-Log '[Restore] Restoring deferred cluster resource: clusterissuers' -Console
+
+	$webhook = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('get', 'deployment', 'cert-manager-webhook', '-n', 'cert-manager', '--ignore-not-found', '-o', 'name')
+	if ($webhook.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($webhook.Output)) {
+		return @("Backed-up ClusterIssuers were not restored: cert-manager is not installed after addon re-enablement. $($webhook.Output)".Trim())
+	}
+
+	$certManagerReady = $false
+	try {
+		$certManagerReady = (Wait-ForCertManagerAvailable) -eq $true
+	}
+	catch {
+		Write-Log "[Restore] cert-manager readiness check failed: $_"
+	}
+	if (-not $certManagerReady) {
+		return @('Backed-up ClusterIssuers were not restored: the cert-manager API/webhook did not become ready')
+	}
+
+	$result = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('create', '-f', $file)
+	Write-Log $result.Output
+	$outputLines = @($result.Output -split '\r?\n')
+	$alreadyExisting = @($outputLines | Where-Object { $_ -match '^Error from server \(AlreadyExists\)' })
+	$failures = @($outputLines | Where-Object { ($_ -match '^error:' -or $_ -match '^Error from server') -and $_ -notmatch '^Error from server \(AlreadyExists\)' })
+	if ($failures.Count -gt 0 -or ($result.ExitCode -ne 0 -and $alreadyExisting.Count -eq 0)) {
+		return @("Backed-up ClusterIssuers could not be restored: $($result.Output)")
+	}
+	foreach ($line in $alreadyExisting) {
+		Write-Log "[Restore] Keeping existing ClusterIssuer: $line"
+	}
+
+	Write-Log '[Restore] Backed-up ClusterIssuers restored' -Console
+	return @()
 }
 
 
@@ -1388,7 +1468,8 @@ function PerformClusterUpgrade {
 		[string] $imagesBackupPath,
 		[string] $pvBackupPath,
 		[switch] $skipImages,
-		[switch] $skipResources
+		[switch] $skipResources,
+		[ref] $resourceRestoreErrors
 	)
 	try {
 		# uninstall of old cluster
@@ -1522,7 +1603,8 @@ function PerformClusterUpgrade {
 			if ($ShowProgress -eq $true) {
 				Write-Progress -Activity 'Apply not namespaced resources on cluster..' -Id 1 -Status '8/10' -PercentComplete 80 -CurrentOperation 'Apply not namespaced resources, please wait..'
 			}
-			Import-NotNamespacedResources -folderResources (Join-Path $BackupDir 'NotNamespaced') -ExePath $kubeExeFolder
+			# ClusterIssuers need the cert-manager webhook, which is installed later by addon re-enablement
+			Import-NotNamespacedResources -folderResources (Join-Path $BackupDir 'NotNamespaced') -ExePath $kubeExeFolder -DeferredResourceTypes @('clusterissuers')
 			
 			if ($ShowProgress -eq $true) {
 				Write-Progress -Activity 'Apply namespaced resources on cluster..' -Id 1 -Status '8.5/10' -PercentComplete 85 -CurrentOperation 'Apply namespaced resources, please wait..'
@@ -1562,6 +1644,23 @@ function PerformClusterUpgrade {
 					$addonsReenabledFailed += $addonDisplay
 				}
 			}
+		}
+
+		$restoreErrors = @()
+		if (-not $skipResources) {
+			try {
+				$restoreErrors = @(Restore-DeferredClusterIssuers -folderResources (Join-Path $BackupDir 'NotNamespaced') -ExePath $kubeExeFolder)
+			}
+			catch {
+				# a ClusterIssuer restore failure must not trigger an upgrade rollback
+				$restoreErrors = @("Backed-up ClusterIssuers were not restored: $_")
+			}
+			foreach ($restoreError in $restoreErrors) {
+				Write-Log "[Restore] ERROR: $restoreError" -Console
+			}
+		}
+		if ($null -ne $resourceRestoreErrors) {
+			$resourceRestoreErrors.Value = $restoreErrors
 		}
 		
 		# show completion
@@ -1608,6 +1707,21 @@ function PerformClusterUpgrade {
 			}
 		} else {
 			Write-Log "Rolled back to K2s version: $(Get-ProductVersionGivenKubePath -KubePathLocal $K2sPathToInstallFrom) ($K2sPathToInstallFrom)" -Console
+		}
+
+		if ($restoreErrors.Count -gt 0) {
+			$clusterIssuersBackup = Join-Path (Join-Path $BackupDir 'NotNamespaced') 'clusterissuers.yaml'
+			Write-Log '' -Console
+			Write-Log '********************************************************************************************' -Console
+			Write-Log '** RESOURCE RESTORE ERRORS                                                                **' -Console
+			Write-Log '********************************************************************************************' -Console
+			foreach ($restoreError in $restoreErrors) {
+				Write-Log "**   - $restoreError" -Console
+			}
+			Write-Log "** The backup directory is kept: $BackupDir" -Console
+			Write-Log '** After cert-manager is available, restore the missing backed-up ClusterIssuers with:' -Console
+			Write-Log "**   kubectl create -f `"$clusterIssuersBackup`"" -Console
+			Write-Log '********************************************************************************************' -Console
 		}
 
 		# info on env variables

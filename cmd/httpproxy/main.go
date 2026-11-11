@@ -49,7 +49,7 @@ func main() {
 	proxyHandler, err := newProxyHttpHandler(proxyConfig)
 	if err != nil {
 		slog.Error("Failed to create proxy handler", "error", err)
-		return
+		os.Exit(1)
 	}
 
 	// Keep a reference to the listener

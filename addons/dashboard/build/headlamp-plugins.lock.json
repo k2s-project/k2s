@@ -7,8 +7,8 @@
     {
       "name": "flux",
       "pluginDir": "flux-plugin",
-      "version": "0.7.0",
-      "image": "shsk2s.azurecr.io/headlamp-plugin-flux:0.7.0",
+      "version": "0.8.0",
+      "image": "shsk2s.azurecr.io/headlamp-plugin-flux:0.8.0",
       "detectionSource": "github-releases",
       "acquisition": "prebuilt",
       "upstreamReleaseRef": {
@@ -19,13 +19,13 @@
       "source": {
         "type": "git",
         "repo": "https://github.com/headlamp-k8s/plugins.git",
-        "ref": "flux-0.7.0",
+        "ref": "flux-0.8.0",
         "subdir": "flux"
       },
       "prebuilt": {
-        "url": "https://github.com/headlamp-k8s/plugins/releases/download/flux-0.7.0/headlamp-k8s-flux-0.7.0.tar.gz",
-        "localPath": "plugins/flux-0.7.0.tar.gz",
-        "sha256": "837dc962a4ca485b86b010e5a3463d3ffc71c51778125394f006a210921b7c65"
+        "url": "https://github.com/headlamp-k8s/plugins/releases/download/flux-0.8.0/headlamp-k8s-flux-0.8.0.tar.gz",
+        "localPath": "plugins/flux-0.8.0.tar.gz",
+        "sha256": "48abf409e6f6e5b7898532d036e38c3d8b4329d646f2b3bf9af10f5f5a2b924f"
       }
     },
     {

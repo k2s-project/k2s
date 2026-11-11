@@ -39,7 +39,8 @@ if ($systemError) {
     exit 1
 }
 
-if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'dashboard' })) -ne $true) {
+$hasIncompleteIntent = Test-AddonHasIncompleteInstallationIntent -Name 'dashboard'
+if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'dashboard' })) -ne $true -and -not $hasIncompleteIntent) {
     $errMsg = "Addon 'dashboard' is already disabled, nothing to do."
 
     if ($EncodeStructuredOutput -eq $true) {
@@ -50,6 +51,10 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'dashboard' })) -ne $
 
     Write-Log $errMsg -Error
     exit 1
+}
+
+if ($hasIncompleteIntent) {
+    Write-Log "[Dashboard] Addon 'dashboard' has an incomplete installation intent; cleaning up any partial resources" -Console
 }
 
 Write-Log '[Dashboard] Uninstalling Headlamp dashboard' -Console

@@ -68,6 +68,10 @@ func (p *linuxAddonProvider) loadManifest(addonName string) (*addonManifest, err
 func (p *linuxAddonProvider) Enable(cfg AddonEnableConfig) error {
 	slog.Info("[Addon] Enabling addon", "name", cfg.Name, "implementation", cfg.Implementation)
 
+	if err := rejectInfraNodeSelector(cfg.Params, nil); err != nil {
+		return err
+	}
+
 	if cfg.Name == "registry" {
 		return p.enableRegistry(cfg)
 	}
@@ -983,6 +987,9 @@ func (p *linuxAddonProvider) Import(_ AddonImportConfig) error {
 
 func (p *linuxAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {
 	params := parsePsParams(cfg.Params)
+	if err := rejectInfraNodeSelector(params, cfg.ParameterValues); err != nil {
+		return err
+	}
 	switch cfg.CommandName {
 	case "enable":
 		return p.Enable(AddonEnableConfig{
@@ -1002,6 +1009,15 @@ func (p *linuxAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {
 		return NotSupportedError(fmt.Sprintf("addon %s", cfg.CommandName),
 			fmt.Sprintf("addon '%s' command on Linux hosts is not yet implemented", cfg.CommandName))
 	}
+}
+
+// rejectInfraNodeSelector fails before any side effect because selector placement is Windows-hosted only.
+func rejectInfraNodeSelector(params, parameterValues map[string]string) error {
+	if params["infranodeselector"] == "" && parameterValues["InfraNodeSelector"] == "" {
+		return nil
+	}
+	return NotSupportedError("infra-node-selector",
+		"infrastructure node selector placement is supported on Windows-hosted clusters only; remove --infra-node-selector")
 }
 
 func parsePsParams(params []string) map[string]string {

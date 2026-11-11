@@ -17,6 +17,7 @@ powershell <installation folder>\addons\ingress\traefik\Enable.ps1
 #>
 
 Param (
+    [string] $InfraNodeSelector = '',
     [parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
     [switch] $ShowLogs = $false,
     [parameter(Mandatory = $false, HelpMessage = 'JSON config object to override preceeding parameters')]
@@ -37,6 +38,10 @@ $dashboardModule = "$PSScriptRoot\..\..\dashboard\dashboard.module.psm1"
 Import-Module $infraModule, $clusterModule, $addonsModule, $traefikModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
+trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
+$ownerOptions = Get-AddonPlacementOwnerOptions -Name 'ingress' -Implementation 'traefik' -BoundParameters $PSBoundParameters -Defaults @{OmitCertMgr = $OmitCertMgr.IsPresent}
+$OmitCertMgr = [switch]$ownerOptions.OmitCertMgr
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'ingress' -Implementation 'traefik' -Selector $InfraNodeSelector
 
 $windowsHostIpAddress = Get-ConfiguredKubeSwitchIP
 $Proxy = "http://$($windowsHostIpAddress):8181"
@@ -116,15 +121,24 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'gateway-api' })) -eq
     exit 1
 }
 
+Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector $InfraNodeSelector -Namespace 'external-dns' -Deployment 'external-dns'
+if (-not $OmitCertMgr) { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector $InfraNodeSelector -Namespace 'cert-manager' -Deployment 'cert-manager' }
+if ($InfraNodeSelector) {
+    Assert-AddonPlacementHost -Selector $InfraNodeSelector -NodeName (Get-ConfigControlPlaneNodeHostname) -Reason 'Traefik ingress external IP'
+    $preflight = New-AddonPlacementInput -AddonName 'ingress' -Path "$PSScriptRoot\manifests" -Selector $InfraNodeSelector -Kustomize
+    Remove-Item -LiteralPath $preflight.Path -Force -ErrorAction SilentlyContinue
+    Set-AddonPlacementIntent -Addon ([pscustomobject]@{Name = 'ingress'; Implementation = 'traefik'; InfraNodeSelector = $InfraNodeSelector; OmitCertMgr = $OmitCertMgr.IsPresent})
+}
 Install-GatewayApiCrds
 
 Write-Log 'Installing external-dns' -Console
 $externalDnsConfig = Get-ExternalDnsConfigDir
-(Invoke-Kubectl -Params 'apply' , '-k', $externalDnsConfig).Output | Write-Log
+(Invoke-AddonOwnedApply -AddonName 'externaldns' -Path $externalDnsConfig -Selector $InfraNodeSelector -Kustomize).Output | Write-Log
+if ($InfraNodeSelector) { Set-SharedInfrastructurePlacement -Name 'external-dns' -Selector $InfraNodeSelector }
 
 if (-not $OmitCertMgr) {
     Write-Log 'Installing cert-manager' -Console
-    Enable-CertManager -Proxy $Proxy -EncodeStructuredOutput:$EncodeStructuredOutput -MessageType:$MessageType
+    Enable-CertManager -Proxy $Proxy -EncodeStructuredOutput:$EncodeStructuredOutput -MessageType:$MessageType -InfraNodeSelector $InfraNodeSelector
 }
 else {
     Write-Log '[ingress traefik] Skipping cert-manager installation (--omitCertMgr)' -Console
@@ -172,7 +186,7 @@ $kustomization | Out-File $kustomizationFile
 
 Write-Log 'Installing traefik ingress controller' -Console
 (Invoke-Kubectl -Params 'create' , 'namespace', 'ingress-traefik').Output | Write-Log
-(Invoke-Kubectl -Params 'apply', '-k', $kustomizationDir).Output | Write-Log
+(Invoke-AddonOwnedApply -AddonName 'ingress' -Path $kustomizationDir -Selector $InfraNodeSelector -Kustomize).Output | Write-Log
 
 # delete the temporary directory
 Remove-Item -Path $kustomizationDir -Recurse
@@ -193,7 +207,9 @@ if ($allPodsAreUp -ne $true) {
 
 Write-Log 'All ingress traefik pods are up and ready.' -Console
 
-Add-AddonToSetupJson -Addon ([pscustomobject] @{Name = 'ingress'; Implementation = 'traefik' })
+$addonConfig = [pscustomobject] @{Name = 'ingress'; Implementation = 'traefik' }
+if ($InfraNodeSelector) { $addonConfig | Add-Member -NotePropertyName OmitCertMgr -NotePropertyValue $OmitCertMgr.IsPresent }
+Add-AddonToSetupJson -Addon $addonConfig
 
 if (-not $OmitCertMgr) {
     Assert-IngressTlsCertificate -IngressType 'traefik' -CertificateManifestPath "$PSScriptRoot\manifests\cluster-local-ingress.yaml"

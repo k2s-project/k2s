@@ -649,12 +649,15 @@ function Get-DockerArchiveManifestInfo {
         $archivePath = (Resolve-Path -LiteralPath $ImagePath).ProviderPath
 
         $prevEAP = $ErrorActionPreference
+        $previousOutputEncoding = [Console]::OutputEncoding
         $ErrorActionPreference = 'Continue'
         try {
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
             $memberNames = @(& $tarExe -tf $archivePath 2>$null)
             $listExitCode = $LASTEXITCODE
         }
         finally {
+            [Console]::OutputEncoding = $previousOutputEncoding
             $ErrorActionPreference = $prevEAP
         }
 
@@ -699,11 +702,14 @@ function Get-DockerArchiveManifestInfo {
         $manifestMember = $manifestMembers[0]
 
         $ErrorActionPreference = 'Continue'
+        $previousOutputEncoding = [Console]::OutputEncoding
         try {
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
             $tarOutput = & $tarExe -xOqf $archivePath $manifestMember 2>$null
             $tarExitCode = $LASTEXITCODE
         }
         finally {
+            [Console]::OutputEncoding = $previousOutputEncoding
             $ErrorActionPreference = $prevEAP
         }
 

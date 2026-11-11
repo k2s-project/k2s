@@ -91,6 +91,7 @@ type SystemCompactConfig struct {
 	NoRestart  bool
 	Yes        bool
 	ShowOutput bool
+	LinuxOnly  bool // Linux-only setups on a Linux host have no VM disk to compact
 }
 
 // SystemBackupConfig holds parameters for the backup operation.

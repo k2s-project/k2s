@@ -22,6 +22,19 @@ func TestScriptPath(t *testing.T) {
 	}
 }
 
+func TestScriptPathResolvesCompact(t *testing.T) {
+	t.Parallel()
+
+	path, err := ScriptPath("/opt/k2s", LinuxOnly, "Compact")
+	if err != nil {
+		t.Fatalf("ScriptPath() returned error: %v", err)
+	}
+	want := filepath.Join("/opt/k2s", "lib", "scripts", "linux", "debian", "linuxonly", "Compact.sh")
+	if path != want {
+		t.Errorf("ScriptPath() = %q, want %q", path, want)
+	}
+}
+
 func TestScriptPathRejectsUnknownScopeAndOperation(t *testing.T) {
 	t.Parallel()
 

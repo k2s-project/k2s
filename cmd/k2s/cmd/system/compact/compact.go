@@ -26,13 +26,17 @@ var (
 
 var CompactCmd = &cobra.Command{
 	Use:   "compact",
-	Short: "Compact VHDX disk to reclaim unused space (control-plane node only)",
-	Long: `Compacts the KubeMaster VHDX file (the control-plane node disk) to reclaim disk space freed by deleted images and files.
-This affects only the control-plane node; worker nodes and the local host are not touched.
+	Short: "Compact the VM disk to reclaim unused space",
+	Long: `Compacts the disk of the K2s-managed VM to reclaim disk space freed by deleted images and files.
 
+On a Windows host, the KubeMaster VHDX file (the control-plane node disk) is compacted.
+Worker nodes and the local host are not touched.
 Supported setups: k2s (standard) and Linux-only.
-Not supported: WSL-based and build-only setups (no Hyper-V VHDX present).`,
-	Example: `      # Compact VHDX with automatic cluster restart
+Not supported: WSL-based and build-only setups (no Hyper-V VHDX present).
+
+On a Linux host, the QCOW2 disk of the managed Windows worker VM is compacted.
+Not supported: Linux-only setups (the control plane runs natively, no VM disk present).`,
+	Example: `      # Compact the VM disk with automatic cluster restart
       k2s system compact
 
       # Compact and keep cluster stopped afterwards (stop still happens)
@@ -100,6 +104,7 @@ func compactVhdx(cmd *cobra.Command, args []string) error {
 		NoRestart:  noRestartFlag,
 		Yes:        yesFlag,
 		ShowOutput: outputFlag,
+		LinuxOnly:  runtimeConfig.InstallConfig().LinuxOnly(),
 	}); err != nil {
 		return err
 	}

@@ -117,20 +117,22 @@ func NewCmdExecutor(stdWriter output.StreamWriter) *CmdExecutor { // TODO: use o
 	return &CmdExecutor{stdWriter: stdWriter}
 }
 
-type stdWriter func(msg string, args ...any)
+type StdWriter func(msg string, args ...any)
 
-type cmdBuilder struct {
+type CmdBuilder struct {
 	cmd          string
 	ctx          context.Context
 	args         []string
-	stdOutWriter stdWriter
-	stdErrWriter stdWriter
+	stdOutWriter StdWriter
+	stdErrWriter StdWriter
 }
 
-var nilWriter stdWriter = func(msg string, args ...any) {}
+var nilWriter StdWriter = func(msg string, args ...any) {}
 
-func NewCmd(cmd string) *cmdBuilder {
-	return &cmdBuilder{
+// NewCmd creates a new command builder with the given command.
+// The returned builder can be further configured with arguments, context, and output writers.
+func NewCmd(cmd string) *CmdBuilder {
+	return &CmdBuilder{
 		cmd:          cmd,
 		args:         []string{},
 		stdOutWriter: nilWriter,
@@ -138,28 +140,44 @@ func NewCmd(cmd string) *cmdBuilder {
 	}
 }
 
-// TODO: add param guards
-func (c *cmdBuilder) WithArgs(arg ...string) *cmdBuilder {
-	c.args = append(c.args, arg...)
+// WithArgs appends the given arguments to the command builder.
+func (c *CmdBuilder) WithArgs(args ...string) *CmdBuilder {
+	if len(args) > 0 {
+		c.args = append(c.args, args...)
+	}
 	return c
 }
 
-func (c *cmdBuilder) WithStdOutWriter(writer stdWriter) *cmdBuilder {
+// WithStdOutWriter sets the standard output writer for the command builder.
+// If the provided writer is nil, it defaults to a no-op writer.
+func (c *CmdBuilder) WithStdOutWriter(writer StdWriter) *CmdBuilder {
+	if writer == nil {
+		writer = nilWriter
+	}
 	c.stdOutWriter = writer
 	return c
 }
 
-func (c *cmdBuilder) WithStdErrWriter(writer stdWriter) *cmdBuilder {
+// WithStdErrWriter sets the standard error writer for the command builder.
+// If the provided writer is nil, it defaults to a no-op writer.
+func (c *CmdBuilder) WithStdErrWriter(writer StdWriter) *CmdBuilder {
+	if writer == nil {
+		writer = nilWriter
+	}
 	c.stdErrWriter = writer
 	return c
 }
 
-func (c *cmdBuilder) WithContext(ctx context.Context) *cmdBuilder {
+// WithContext sets the context for the command builder.
+// If the context is nil, the command will run without a context.
+func (c *CmdBuilder) WithContext(ctx context.Context) *CmdBuilder {
 	c.ctx = ctx
 	return c
 }
 
-func (c *cmdBuilder) Exec() error {
+// Exec executes the command built by the command builder.
+// It streams the standard output and error to the configured writers and waits for the command to finish.
+func (c *CmdBuilder) Exec() error {
 	var cmd *exec.Cmd
 	if c.ctx == nil {
 		cmd = exec.Command(c.cmd, c.args...)
@@ -322,6 +340,10 @@ func readStream(stream io.ReadCloser, dataReceived chan string) {
 
 	for scanner.Scan() {
 		dataReceived <- scanner.Text()
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.Error("could not read stream", "routine", "readStream", "error", err)
 	}
 
 	slog.Debug("routine finished", "routine", "readStream")

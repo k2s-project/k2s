@@ -23,6 +23,7 @@ import (
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
 	kjson "github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/providers/bash"
 )
 
 const (
@@ -117,12 +118,7 @@ func (p *linuxImageProvider) Pull(cfg ImagePullConfig) error {
 
 	script := p.scriptPath("Pull-Image.sh")
 	if _, err := os.Stat(script); err == nil {
-		cmd := exec.Command(script, "-n", cfg.ImageName)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return bash.NewScript(script).WithArgs("-n", cfg.ImageName).Exec()
 	}
 
 	cmd := exec.Command("crictl", "pull", cfg.ImageName)
@@ -156,12 +152,7 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 		if cfg.Force {
 			args = append(args, "--force")
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return bash.NewScript(script).WithArgs(args...).Exec()
 	}
 
 	if _, err := exec.LookPath("buildah"); err == nil {
@@ -256,12 +247,7 @@ func (p *linuxImageProvider) Build(cfg ImageBuildConfig) error {
 		for k, v := range cfg.BuildArgs {
 			args = append(args, "--build-arg", k+"="+v)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return bash.NewScript(script).WithArgs(args...).Exec()
 	}
 
 	args := []string{"build"}
@@ -326,17 +312,7 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 		if cfg.DirPath != "" {
 			args = append(args, "-d", cfg.DirPath)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		return bash.NewScript(script).WithArgs(args...).Exec()
 	}
 
 	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "import", path)
@@ -374,17 +350,7 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		if cfg.DockerArchive {
 			args = append(args, "--docker-archive")
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		return bash.NewScript(script).WithArgs(args...).Exec()
 	}
 
 	if cfg.DockerArchive {
@@ -437,12 +403,7 @@ func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
 		if target != "" {
 			args = append(args, "-t", target)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return bash.NewScript(script).WithArgs(args...).Exec()
 	}
 
 	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "tag", ref, target)
@@ -469,12 +430,7 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 		if cfg.ImageName != "" {
 			args = append(args, "-n", cfg.ImageName)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return bash.NewScript(script).WithArgs(args...).Exec()
 	}
 
 	cmd := exec.Command("nerdctl", "push", ref)
@@ -490,12 +446,7 @@ func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {
 
 	script := p.scriptPath("Clean-Images.sh")
 	if _, err := os.Stat(script); err == nil {
-		cmd := exec.Command(script)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return bash.NewScript(script).Exec()
 	}
 
 	if _, err := exec.LookPath("buildah"); err == nil {
@@ -557,12 +508,7 @@ func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 		args = append(args, "--plain-http")
 	}
 
-	cmd := exec.Command(script, args...)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
+	if err := bash.NewScript(script).WithArgs(args...).Exec(); err != nil {
 		return fmt.Errorf("failed to add registry '%s': %w", cfg.RegistryName, err)
 	}
 
@@ -572,12 +518,7 @@ func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 
 func (p *linuxImageProvider) RegistryRemove(cfg ImageRegistryRemoveConfig) error {
 	script := p.scriptPath(filepath.Join("registry", "Remove-Registry.sh"))
-	cmd := exec.Command(script, "--registry", cfg.RegistryName)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
+	if err := bash.NewScript(script).WithArgs("--registry", cfg.RegistryName).Exec(); err != nil {
 		return fmt.Errorf("failed to remove registry '%s': %w", cfg.RegistryName, err)
 	}
 

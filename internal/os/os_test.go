@@ -9,16 +9,18 @@ import (
 	"log/slog"
 	bos "os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/k2s-project/k2s/internal/os"
 	"github.com/k2s-project/k2s/internal/test/reflection"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -306,47 +308,29 @@ var _ = Describe("os pkg", Ordered, func() {
 
 		When("command outputs text over stderr", func() {
 			It("calls stderr writer", func(ctx context.Context) {
-				const (
-					scriptLoC     = 4
-					resultLines   = 1
-					errorLines    = 3
-					linesPerError = scriptLoC + resultLines + errorLines
-					script        = `
-						for ($i = 0; $i -lt 5; $i++) {
-							Write-Error "$i"
-						}
-						exit 0
-						`
-				)
-
 				lineCounter := 0
 				numberCounter := 0
 
 				stdErrWriter := func(msg string, args ...any) {
-					if (lineCounter+scriptLoC)%linesPerError == 0 {
-						Expect(msg).To(MatchRegexp(".*: %d", numberCounter))
+					if isStdErrMessageLine(lineCounter) {
+						Expect(msg).To(stdErrMessageMatcher(numberCounter))
 
 						numberCounter++
 					}
 					lineCounter++
 				}
 
-				sut := os.NewCmd("powershell").WithArgs(script).WithContext(ctx).WithStdErrWriter(stdErrWriter)
+				sut := os.NewCmd(shellCmd()).WithArgs(shellArgs(stdErrScript())...).WithContext(ctx).WithStdErrWriter(stdErrWriter)
 
 				err := sut.Exec()
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(lineCounter).To(Equal(5 * linesPerError))
+				Expect(lineCounter).To(Equal(stdErrTotalLines()))
 			})
 		})
 
 		When("command outputs text over stdout", func() {
 			It("calls stdout writer", func(ctx context.Context) {
-				const script = `
-						for ($i = 0; $i -lt 5; $i++) {
-							Write-Output "$i"
-						}
-						`
 				lineCounter := 0
 
 				stdOutWriter := func(msg string, args ...any) {
@@ -359,7 +343,7 @@ var _ = Describe("os pkg", Ordered, func() {
 					lineCounter++
 				}
 
-				sut := os.NewCmd("powershell").WithArgs(script).WithContext(ctx).WithStdOutWriter(stdOutWriter)
+				sut := os.NewCmd(shellCmd()).WithArgs(shellArgs(stdOutScript())...).WithContext(ctx).WithStdOutWriter(stdOutWriter)
 
 				err := sut.Exec()
 
@@ -370,12 +354,12 @@ var _ = Describe("os pkg", Ordered, func() {
 
 		When("command exits with non-zero exit code", func() {
 			It("returns error with exit status text", func(ctx context.Context) {
-				sut := os.NewCmd("powershell").WithArgs("exit 123").WithContext(ctx)
+				sut := os.NewCmd(shellCmd()).WithArgs(shellArgs("exit 123")...).WithContext(ctx)
 
 				err := sut.Exec()
 
 				Expect(err).To(MatchError(SatisfyAll(
-					ContainSubstring("command 'powershell' failed"),
+					ContainSubstring("command '"+shellCmd()+"' failed"),
 					ContainSubstring("exit status 123"),
 				)))
 			})
@@ -397,19 +381,6 @@ var _ = Describe("os pkg", Ordered, func() {
 
 		When("command outputs text over stderr", func() {
 			It("calls stderr writer", func(ctx context.Context) {
-				const (
-					scriptLoC     = 4
-					resultLines   = 1
-					errorLines    = 3
-					linesPerError = scriptLoC + resultLines + errorLines
-					script        = `
-						for ($i = 0; $i -lt 5; $i++) {
-							Write-Error "$i"
-						}
-						exit 0
-						`
-				)
-
 				lineCounter := 0
 				numberCounter := 0
 
@@ -417,8 +388,9 @@ var _ = Describe("os pkg", Ordered, func() {
 				writerMock.On(reflection.GetFunctionName(writerMock.WriteStdErr), mock.MatchedBy(func(line string) bool {
 					expectationFulfilled := true
 
-					if (lineCounter+scriptLoC)%linesPerError == 0 {
-						expectationFulfilled = Expect(line).To(MatchRegexp(".*: %d", numberCounter))
+					if isStdErrMessageLine(lineCounter) {
+						// testify re-evaluates matchers in AssertExpectations, so no Expect() here
+						expectationFulfilled, _ = stdErrMessageMatcher(numberCounter).Match(line)
 
 						numberCounter++
 					}
@@ -426,12 +398,12 @@ var _ = Describe("os pkg", Ordered, func() {
 					lineCounter++
 
 					return expectationFulfilled
-				})).Times(5 * linesPerError)
+				})).Times(stdErrTotalLines())
 				writerMock.On(reflection.GetFunctionName(writerMock.Flush)).Once()
 
 				sut := os.NewCmdExecutor(writerMock).WithContext(ctx)
 
-				err := sut.ExecuteCmd("powershell", script)
+				err := sut.ExecuteCmd(shellCmd(), shellArgs(stdErrScript())...)
 
 				Expect(err).ToNot(HaveOccurred())
 
@@ -441,11 +413,6 @@ var _ = Describe("os pkg", Ordered, func() {
 
 		When("command outputs text over stdout", func() {
 			It("calls stdout writer", func(ctx context.Context) {
-				const script = `
-						for ($i = 0; $i -lt 5; $i++) {
-							Write-Output "$i"
-						}
-						`
 				lineCounter := 0
 
 				writerMock := &stdWriterMock{}
@@ -464,7 +431,7 @@ var _ = Describe("os pkg", Ordered, func() {
 
 				sut := os.NewCmdExecutor(writerMock).WithContext(ctx)
 
-				err := sut.ExecuteCmd("powershell", script)
+				err := sut.ExecuteCmd(shellCmd(), shellArgs(stdOutScript())...)
 
 				Expect(err).ToNot(HaveOccurred())
 
@@ -481,7 +448,7 @@ var _ = Describe("os pkg", Ordered, func() {
 
 				sut := os.NewCmdExecutor(writerMock).WithContext(ctx)
 
-				err := sut.ExecuteCmd("powershell", script)
+				err := sut.ExecuteCmd(shellCmd(), shellArgs(script)...)
 
 				Expect(err).To(MatchError(SatisfyAll(
 					ContainSubstring("command failed"),
@@ -566,8 +533,8 @@ var _ = Describe("os pkg", Ordered, func() {
 					actual := files.JoinPathsWith(path)
 
 					Expect(actual).To(ConsistOf(
-						"parent-dir\\file-1",
-						"parent-dir\\file-2",
+						filepath.Join("parent-dir", "file-1"),
+						filepath.Join("parent-dir", "file-2"),
 					))
 				})
 			})
@@ -604,3 +571,70 @@ var _ = Describe("os pkg", Ordered, func() {
 		})
 	})
 })
+
+// shellCmd returns the platform's script interpreter: powershell on Windows, bash otherwise.
+func shellCmd() string {
+	if runtime.GOOS == "windows" {
+		return "powershell"
+	}
+	return "bash"
+}
+
+// shellArgs returns the interpreter arguments to run the given script.
+func shellArgs(script string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{script}
+	}
+	return []string{"-c", script}
+}
+
+// stdOutScript prints the numbers 0..4 to stdout, one per line.
+func stdOutScript() string {
+	if runtime.GOOS == "windows" {
+		return `
+						for ($i = 0; $i -lt 5; $i++) {
+							Write-Output "$i"
+						}
+						`
+	}
+	return `for i in 0 1 2 3 4; do echo "$i"; done`
+}
+
+// stdErrScript writes the numbers 0..4 as errors to stderr and exits with 0.
+func stdErrScript() string {
+	if runtime.GOOS == "windows" {
+		return `
+						for ($i = 0; $i -lt 5; $i++) {
+							Write-Error "$i"
+						}
+						exit 0
+						`
+	}
+	return `for i in 0 1 2 3 4; do echo "$i" >&2; done`
+}
+
+// stdErrTotalLines returns the number of stderr lines produced by stdErrScript.
+// Write-Error emits a multi-line error record, bash only a single line.
+func stdErrTotalLines() int {
+	if runtime.GOOS == "windows" {
+		return 5 * 8
+	}
+	return 5
+}
+
+// isStdErrMessageLine reports whether the stderr line with the given 0-based index carries the error number.
+func isStdErrMessageLine(lineIndex int) bool {
+	if runtime.GOOS == "windows" {
+		const scriptLoC, linesPerError = 4, 8
+		return (lineIndex+scriptLoC)%linesPerError == 0
+	}
+	return true
+}
+
+// stdErrMessageMatcher matches the stderr line carrying the given error number.
+func stdErrMessageMatcher(number int) types.GomegaMatcher {
+	if runtime.GOOS == "windows" {
+		return MatchRegexp(".*: %d", number)
+	}
+	return Equal(strconv.Itoa(number))
+}

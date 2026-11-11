@@ -8,9 +8,22 @@ fi
 readonly K2S_LIFECYCLE_SH_LOADED=1
 
 k2s_load_operation() {
-  [[ "${1:-}" == '--operation-file' && -f "${2:-}" ]] || return 2
-  [[ $(stat -c '%a' "$2") == 600 ]] || return 1
-  jq -e '(.installDir | type == "string" and length > 0) and (.configDir | type == "string" and length > 0) and ((.noProxy // []) | type == "array") and ((.skipStart // false) | type == "boolean") and ((.skipPurge // false) | type == "boolean")' "$2" >/dev/null || return 2
+  if [[ "${1:-}" != '--operation-file' || -z "${2:-}" ]]; then
+    printf '%s\n' 'Expected --operation-file <configuration.json>. Use the k2s CLI to generate the operation configuration.' >&2
+    return 2
+  fi
+  if [[ ! -f "$2" ]]; then
+    printf 'Lifecycle operation file does not exist: %s\n' "$2" >&2
+    return 2
+  fi
+  if [[ $(stat -c '%a' "$2") != 600 ]]; then
+    printf 'Lifecycle operation file must have permissions 0600: %s\n' "$2" >&2
+    return 1
+  fi
+  jq -e '(.installDir | type == "string" and length > 0) and (.configDir | type == "string" and length > 0) and ((.noProxy // []) | type == "array") and ((.skipStart // false) | type == "boolean") and ((.skipPurge // false) | type == "boolean")' "$2" >/dev/null || {
+    printf 'Invalid lifecycle operation configuration: %s\n' "$2" >&2
+    return 2
+  }
   K2S_INSTALL_DIR=$(jq -er '.installDir' "$2") || return 2
   K2S_CONFIG_DIR=$(jq -er '.configDir' "$2") || return 2
   K2S_VERSION=$(jq -r '.version // empty' "$2") || return 2
@@ -260,10 +273,8 @@ k2s_dispatch_lifecycle() {
   shift
 
   k2s_load_operation "$@" || return $?
-  k2s_initialize_logging
+  k2s_initialize_logging --stream
   k2s_log INFO "Starting native Debian 13 lifecycle operation: $operation"
-  export K2S_LOG_STREAMED=true
-  exec > >(tee -a "$K2S_LOG_FILE") 2>&1
   trap 'exit_code=$?; k2s_log ERROR "Native Debian 13 lifecycle operation failed at shell line $LINENO (exit code $exit_code)"' ERR
   if k2s_lock_and_run "k2s_${operation}_cluster"; then
     k2s_log INFO "Completed native Debian 13 lifecycle operation: $operation"

@@ -21,6 +21,7 @@ import (
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
 	kjson "github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/providers/bash"
 	"gopkg.in/yaml.v3"
 )
 
@@ -445,8 +446,8 @@ func (p *linuxAddonProvider) disableRegistry(cfg AddonDisableConfig) error {
 	// Remove registries via Remove-Registry.sh
 	rmRegScript := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "image", "registry", "Remove-Registry.sh")
 	if _, err := os.Stat(rmRegScript); err == nil {
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local").Run()
+		_ = bash.NewScript(rmRegScript).WithArgs("--registry", "k2s.registry.local:30500").Exec()
+		_ = bash.NewScript(rmRegScript).WithArgs("--registry", "k2s.registry.local").Exec()
 	}
 
 	// Update setup.json
@@ -528,8 +529,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-nginx")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local", "--plain-http").Run()
+		_ = bash.NewScript(rmRegScript).WithArgs("--registry", "k2s.registry.local:30500").Exec()
+		_ = bash.NewScript(addRegScript).WithArgs("--registry", "k2s.registry.local", "--plain-http").Exec()
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local:30500")
 		_ = p.addRegistryToConfig("k2s.registry.local")
@@ -540,8 +541,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-traefik")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local", "--plain-http").Run()
+		_ = bash.NewScript(rmRegScript).WithArgs("--registry", "k2s.registry.local:30500").Exec()
+		_ = bash.NewScript(addRegScript).WithArgs("--registry", "k2s.registry.local", "--plain-http").Exec()
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local:30500")
 		_ = p.addRegistryToConfig("k2s.registry.local")
@@ -558,8 +559,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-nginx-gw")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local", "--plain-http").Run()
+		_ = bash.NewScript(rmRegScript).WithArgs("--registry", "k2s.registry.local:30500").Exec()
+		_ = bash.NewScript(addRegScript).WithArgs("--registry", "k2s.registry.local", "--plain-http").Exec()
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local:30500")
 		_ = p.addRegistryToConfig("k2s.registry.local")
@@ -570,8 +571,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-f", filepath.Join(p.installDir, "addons", "registry", "manifests", "registry", "service-nodeport.yaml")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local:30500", "--plain-http").Run()
+		_ = bash.NewScript(rmRegScript).WithArgs("--registry", "k2s.registry.local").Exec()
+		_ = bash.NewScript(addRegScript).WithArgs("--registry", "k2s.registry.local:30500", "--plain-http").Exec()
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local")
 		_ = p.addRegistryToConfig("k2s.registry.local:30500")

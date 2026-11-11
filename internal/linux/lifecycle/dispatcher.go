@@ -8,9 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/k2s-project/k2s/internal/providers/bash"
 )
 
 // Operation carries non-secret lifecycle inputs. The shell reads registry.dat
@@ -87,11 +88,8 @@ func Execute(operation string, input Operation) error {
 		return fmt.Errorf("close lifecycle operation file: %w", err)
 	}
 
-	cmd := exec.Command("bash", script, "--operation-file", path)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("native Linux %s failed: %w", operation, err)
+	if err := bash.NewScript(script).WithArgs("--operation-file", path).Exec(); err != nil {
+		return fmt.Errorf("native Linux %s failed: %w (see log file for more information)", operation, err)
 	}
 	return nil
 }

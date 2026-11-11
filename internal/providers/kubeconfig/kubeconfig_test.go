@@ -10,12 +10,12 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/contracts/users"
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/providers/kubeconfig"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"gopkg.in/yaml.v2"
 )
 
@@ -251,13 +251,13 @@ var _ = Describe("kubeconfig pkg", func() {
 		Describe("ResolveKubeconfigPath", func() {
 			It("returns correct kubeconfig path", func() {
 				config := config.NewKubeConfig("", "~/test-kube-dir", "")
-				user := users.NewOSUser("", "", "c:\\users\\test-user")
+				user := users.NewOSUser("", "", filepath.Join("c:\\", "users", "test-user"))
 
 				sut := kubeconfig.NewKubeconfigResolver(config)
 
 				actual := sut.ResolveKubeconfigPath(user)
 
-				Expect(actual).To(Equal("c:\\users\\test-user\\test-kube-dir\\" + definitions.KubeconfigName))
+				Expect(actual).To(Equal(filepath.Join("c:\\", "users", "test-user", "test-kube-dir", definitions.KubeconfigName)))
 			})
 		})
 	})

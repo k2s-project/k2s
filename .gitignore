@@ -120,6 +120,7 @@ addons/hooks
 /bin/cloudinitisobuilder
 /bin/httpproxy
 /bin/yaml2json
+/bin/dnsproxy
 
 tmp/**/*
 

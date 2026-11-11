@@ -10,12 +10,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	contracts "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/definitions"
-	kos "github.com/k2s-project/k2s/internal/os"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func TestConfig(t *testing.T) {
@@ -64,14 +63,28 @@ var _ = Describe("config pkg", func() {
 			var actual *contracts.K2sConfig
 
 			BeforeAll(func() {
-				currentDir, err := kos.ExecutableDir()
-				installDir := filepath.Join(currentDir, "..\\..\\..")
+				dir := GinkgoT().TempDir()
+				subDir := filepath.Join(dir, "cfg")
 
+				Expect(os.MkdirAll(subDir, os.ModePerm)).To(Succeed())
+
+				configPath := filepath.Join(subDir, "config.json")
+				inputConfig := map[string]any{
+					"configDir": map[string]any{
+						"ssh":  "~/.ssh",
+						"kube": "~/.kube",
+						"k2s":  "C:\\ProgramData\\K2s",
+					},
+				}
+
+				blob, err := json.Marshal(inputConfig)
 				Expect(err).ToNot(HaveOccurred())
 
-				GinkgoWriter.Println("Current test dir: <", currentDir, ">, install dir: <", installDir, ">")
+				GinkgoWriter.Println("Writing test config file to <", configPath, ">")
 
-				actual, err = config.ReadK2sConfig(installDir)
+				Expect(os.WriteFile(configPath, blob, os.ModePerm)).To(Succeed())
+
+				actual, err = config.ReadK2sConfig(dir)
 
 				Expect(err).ToNot(HaveOccurred())
 			})
@@ -80,7 +93,7 @@ var _ = Describe("config pkg", func() {
 				GinkgoWriter.Println("kube config dir: <", actual.Host().KubeConfig().CurrentDir(), ">")
 
 				Expect(filepath.IsAbs(actual.Host().KubeConfig().CurrentDir())).To(BeTrue())
-				Expect(actual.Host().KubeConfig().CurrentDir()).ToNot(ContainSubstring("/"))
+				Expect(actual.Host().KubeConfig().CurrentDir()).ToNot(ContainSubstring("~"))
 			})
 
 			It("K2s config path is absolute", func() {
@@ -93,7 +106,7 @@ var _ = Describe("config pkg", func() {
 				GinkgoWriter.Println("ssh dir: <", actual.Host().SshConfig().CurrentDir(), ">")
 
 				Expect(filepath.IsAbs(actual.Host().SshConfig().CurrentDir())).To(BeTrue())
-				Expect(actual.Host().SshConfig().CurrentDir()).ToNot(ContainSubstring("/"))
+				Expect(actual.Host().SshConfig().CurrentDir()).ToNot(ContainSubstring("~"))
 			})
 		})
 	})

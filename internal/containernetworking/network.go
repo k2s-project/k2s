@@ -648,6 +648,6 @@ func isEnhancedSecurityEnabled() bool {
 // args.IfName - Interface Name specifies the interface the network should bind to (ex: Ethernet).
 // args.Path - Location of the config file.
 func (plugin *netPlugin) Check(args *cniSkel.CmdArgs) error {
-	slog.Debug("[cni-net] CHECK is currently NOT implemented! Called with args: %v", args)
+	slog.Debug("[cni-net] CHECK is currently NOT implemented!", "args", args)
 	return nil
 }

@@ -355,6 +355,30 @@ Describe 'Set-CrioOfflineImageRetention' -Tag 'unit', 'ci' {
     }
 }
 
+Describe 'Select-NewestImageRefs' -Tag 'unit', 'ci' {
+    It 'keeps the highest version tag per image' {
+        InModuleScope $moduleName {
+            $refs = @(
+                'docker.io/flannel/flannel:0.28.9', 'docker.io/flannel/flannel:v0.28.10',
+                'docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3',
+                'registry.k8s.io/etcd:3.6.8-0', 'registry.k8s.io/etcd:3.7.0-0',
+                'registry.k8s.io/kube-apiserver:v1.37.2', 'registry.k8s.io/kube-apiserver:v1.36.4',
+                'registry.k8s.io/pause:3.9', 'registry.k8s.io/pause:3.10.2'
+            )
+
+            $expected = @(
+                'docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3',
+                'docker.io/flannel/flannel:v0.28.10',
+                'registry.k8s.io/etcd:3.7.0-0',
+                'registry.k8s.io/kube-apiserver:v1.37.2',
+                'registry.k8s.io/pause:3.10.2'
+            ) | Sort-Object
+
+            @(Select-NewestImageRefs -ImageRefs $refs | Sort-Object) | Should -Be $expected
+        }
+    }
+}
+
 Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
     BeforeEach {
         InModuleScope $moduleName {
@@ -395,6 +419,28 @@ Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
         Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.34.0.tar') | Should -BeTrue
         Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.33.0.tar') | Should -BeFalse
         Test-Path (Join-Path $target 'docker.io_myapp__1.0.tar') | Should -BeTrue
+    }
+
+    It 'archives only the newest version when old images remain on the node after an update' {
+        $target = Join-Path $TestDrive 'images-after-update'
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        'x' | Set-Content (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.36.4.tar')
+
+        InModuleScope $moduleName -Parameters @{ Target = $target } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey {
+                if ($CmdToExecute -like 'sudo crictl images*') {
+                    return [pscustomobject]@{ Success = $true; Output = @('registry.k8s.io/kube-apiserver:v1.36.4', 'registry.k8s.io/kube-apiserver:v1.37.2') }
+                }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+
+            Export-SystemImageArchivesToWindowsHost -TargetPath $Target
+
+            Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 1 -Exactly
+        }
+
+        @(Get-ChildItem -Path $target -Filter '*.tar' | Select-Object -ExpandProperty Name) | Should -Be @('registry.k8s.io_kube-apiserver__v1.37.2.tar')
     }
 
     It 'throws when the image list cannot be read' {

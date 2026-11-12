@@ -83,9 +83,5 @@ if ($EncodeStructuredOutput -eq $true) {
     Send-ToCli -MessageType $MessageType -Message @{Error = $null }
 }
 
-# Mark SMB as enabled and Ceph as disabled in registry
-Update-StorageImplementationRegistry -Implementation 'smb' -Enabled $true
-Update-StorageImplementationRegistry -Implementation 'ceph' -Enabled $false
-
 # adapt other addons when storage addon is called
 Update-Addons -AddonName $addonName

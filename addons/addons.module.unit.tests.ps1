@@ -7,6 +7,73 @@ BeforeAll {
     $moduleName = (Import-Module "$PSScriptRoot\addons.module.psm1" -PassThru -Force).Name
 }
 
+Describe 'Storage implementation conflict validation' -Tag 'unit', 'ci', 'addon' {
+    BeforeAll {
+        Import-Module "$PSScriptRoot\storage\storage-validation.module.psm1" -Force
+    }
+
+    Context 'no storage implementation enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return $null }
+        }
+
+        It 'allows <RequestedImplementation>' -TestCases @(
+            @{ RequestedImplementation = 'smb' }
+            @{ RequestedImplementation = 'ceph' }
+        ) {
+            param($RequestedImplementation)
+
+            Test-ConflictingStorageImplementation -RequestedImplementation $RequestedImplementation | Should -BeNullOrEmpty
+            Test-StorageImplementationEnabled -Implementation $RequestedImplementation | Should -BeFalse
+        }
+    }
+
+    Context 'only an unrelated addon enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return @([pscustomobject] @{Name = 'monitoring' }) }
+        }
+
+        It 'allows <RequestedImplementation>' -TestCases @(
+            @{ RequestedImplementation = 'smb' }
+            @{ RequestedImplementation = 'ceph' }
+        ) {
+            param($RequestedImplementation)
+
+            Test-ConflictingStorageImplementation -RequestedImplementation $RequestedImplementation | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'SMB enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return @([pscustomobject] @{Name = 'storage'; Implementation = 'smb' }) }
+        }
+
+        It 'blocks Ceph with disable guidance' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'ceph' | Should -Be 'Cannot enable storage ceph: smb storage is already enabled. Please disable smb storage first using: k2s addons disable storage smb'
+        }
+
+        It 'does not conflict with SMB itself' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'smb' | Should -BeNullOrEmpty
+            Test-StorageImplementationEnabled -Implementation 'smb' | Should -BeTrue
+        }
+    }
+
+    Context 'Ceph enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return @([pscustomobject] @{Name = 'storage'; Implementation = 'ceph' }) }
+        }
+
+        It 'blocks SMB with disable guidance' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'smb' | Should -Be 'Cannot enable storage smb: ceph storage is already enabled. Please disable ceph storage first using: k2s addons disable storage ceph'
+        }
+
+        It 'does not conflict with Ceph itself' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'ceph' | Should -BeNullOrEmpty
+            Test-StorageImplementationEnabled -Implementation 'ceph' | Should -BeTrue
+        }
+    }
+}
+
 Describe 'Find-AddonManifests' -Tag 'unit', 'ci', 'addon' {
     Context 'Directory not specified' {
         It 'throws' {

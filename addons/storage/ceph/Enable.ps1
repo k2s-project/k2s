@@ -996,9 +996,6 @@ else {
   Write-Log '[Ceph] Skipping Ceph SMB setup (setupWindowsNode flag not set).' -Console
 }
 
-Update-StorageImplementationRegistry -Implementation 'ceph' -Enabled $true
-Update-StorageImplementationRegistry -Implementation 'smb' -Enabled $false
-
 Add-AddonToSetupJson -Addon ([pscustomobject] @{Name = $addonName; Implementation = 'ceph' })
 
 # Persist the cephadm cluster public key (read back from the freshly bootstrapped cluster) into the

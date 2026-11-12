@@ -23,7 +23,7 @@ Each check prints `pass`, `warn`, `fail` or `skip` (when it does not apply to th
 | `host-disk-space` | *Windows*, *Linux* | Fails below 10 GiB and warns below 20 GiB of free space on the drives used by *K2s* (see [Disk Pressure](known-issues.md#disk-pressure)) |
 | `apipa-address` | *Windows* | Warns if an active network adapter has an APIPA address (`169.254.x.x`) (see [Microsoft APIPA / Link-Local Address](known-issues.md#microsoft-apipa-link-local-address)); skipped for *Linux*-only and build-only setups |
 | `hyperv-vmms` | *Windows* | Fails if the *Hyper-V* Virtual Machine Management service is not running; skipped for *WSL* setups |
-| `cluster-certificates` | *Windows*, *Linux* | Fails if the cluster CA, the client certificate in the kubeconfig or the API server certificate has expired and warns if one expires within 30 days (renew them with [`k2s system certificate renew`](../user-guide/k2s-cli.md#system-certificate-renew)); skipped for build-only setups |
+| `cluster-certificates` | *Windows*, *Linux* | Fails if the cluster CA, the client certificate in the kubeconfig or the API server certificate has expired and warns if one expires within 30 days (renew them with [`k2s system certificate renew --force`](../user-guide/k2s-cli.md#system-certificate-renew)); skipped for build-only setups |
 
 The API server certificate can only be checked while the cluster is running.
 

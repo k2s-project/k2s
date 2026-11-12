@@ -7,7 +7,6 @@ package healthcheck
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows"
@@ -25,8 +24,29 @@ func GetDiskInfo(path string) (DiskInfo, error) {
 		return DiskInfo{}, fmt.Errorf("could not query free disk space: %w", err)
 	}
 
+	volumeID, err := getVolumeID(pathPtr)
+	if err != nil {
+		return DiskInfo{}, err
+	}
+
 	return DiskInfo{
-		VolumeID:  strings.ToUpper(filepath.VolumeName(path)),
+		VolumeID:  volumeID,
 		FreeBytes: freeBytesAvailable,
 	}, nil
+}
+
+// getVolumeID returns the unique volume name (e.g. \\?\Volume{GUID}\) of the volume backing the path,
+// which also resolves volumes mounted into a folder of another volume.
+func getVolumeID(path *uint16) (string, error) {
+	mountPoint := make([]uint16, windows.MAX_PATH+1)
+	if err := windows.GetVolumePathName(path, &mountPoint[0], uint32(len(mountPoint))); err != nil {
+		return "", fmt.Errorf("could not determine volume mount point: %w", err)
+	}
+
+	volumeName := make([]uint16, windows.MAX_PATH+1)
+	if err := windows.GetVolumeNameForVolumeMountPoint(&mountPoint[0], &volumeName[0], uint32(len(volumeName))); err != nil {
+		return "", fmt.Errorf("could not determine volume name: %w", err)
+	}
+
+	return strings.ToUpper(windows.UTF16ToString(volumeName)), nil
 }

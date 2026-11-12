@@ -137,7 +137,7 @@ var _ = Describe("certificates check", func() {
 
 		Expect(result.Status).To(Equal(healthcheck.StatusWarn))
 		Expect(result.Message).To(Equal("client certificate expires on 2026-06-11"))
-		Expect(result.Hint).To(ContainSubstring("k2s system certificate renew"))
+		Expect(result.Hint).To(ContainSubstring("k2s system certificate renew --force"))
 	})
 
 	It("fails when a certificate is expired", func() {
@@ -150,7 +150,7 @@ var _ = Describe("certificates check", func() {
 
 		Expect(result.Status).To(Equal(healthcheck.StatusFail))
 		Expect(result.Message).To(Equal("API server certificate expired on 2026-05-31; client certificate expires on 2026-06-11"))
-		Expect(result.Hint).To(ContainSubstring("k2s system certificate renew"))
+		Expect(result.Hint).To(ContainSubstring("k2s system certificate renew --force"))
 	})
 
 	It("treats a certificate expiring exactly now as expired", func() {
@@ -238,6 +238,32 @@ var _ = Describe("certificates check", func() {
 
 		Expect(result.Status).To(Equal(healthcheck.StatusSkip))
 		Expect(result.Message).To(HavePrefix("no certificates found; API server certificate not checked"))
+	})
+
+	It("evaluates every certificate of a bundle", func() {
+		_, ca := newCertificate(now.AddDate(10, 0, 0))
+		_, leaf := newCertificate(now.AddDate(1, 0, 0))
+		_, intermediate := newCertificate(now.AddDate(0, 0, -1))
+		leafPem, err := base64.StdEncoding.DecodeString(leaf)
+		Expect(err).ToNot(HaveOccurred())
+		intermediatePem, err := base64.StdEncoding.DecodeString(intermediate)
+		Expect(err).ToNot(HaveOccurred())
+		bundle := base64.StdEncoding.EncodeToString(append(leafPem, intermediatePem...))
+		path := writeKubeconfig(dir, "k2s-cluster", "https://172.19.1.100:6443", ca, bundle)
+
+		result := runSingle(newCheck(path, "k2s-cluster", peerCertificates()))
+
+		Expect(result.Status).To(Equal(healthcheck.StatusFail))
+		Expect(result.Message).To(ContainSubstring("client certificate (2 of 2 in bundle) expired on 2026-05-31"))
+	})
+
+	It("skips when the kubeconfig is empty", func() {
+		path := filepath.Join(dir, "config")
+		Expect(os.WriteFile(path, []byte("# nothing here\n"), 0o600)).To(Succeed())
+
+		result := runSingle(newCheck(path, "k2s-cluster", peerCertificates()))
+
+		Expect(result.Status).To(Equal(healthcheck.StatusSkip))
 	})
 
 	It("fails when a certificate in the kubeconfig is malformed", func() {

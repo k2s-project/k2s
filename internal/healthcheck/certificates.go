@@ -25,7 +25,7 @@ const (
 
 	apiServerDialTimeout = 5 * time.Second
 	certificateDateFmt   = "2006-01-02"
-	certificateHint      = "Renew the certificates with 'k2s system certificate renew'"
+	certificateHint      = "Renew the certificates with 'k2s system certificate renew --force'"
 )
 
 // PeerCertificatesFunc returns the certificate chain presented by the TLS server at the given address (host:port).
@@ -87,6 +87,10 @@ func checkCertificates(config CertificatesCheckConfig) Outcome {
 		return skip(err.Error())
 	}
 
+	if kubeConfig == nil {
+		return skip(fmt.Sprintf("kubeconfig '%s' is empty", config.KubeconfigPath))
+	}
+
 	cluster, user, err := findClusterCredentials(kubeConfig, config.ClusterName)
 	if err != nil {
 		return skip(err.Error())
@@ -102,11 +106,17 @@ func checkCertificates(config CertificatesCheckConfig) Outcome {
 		if source.data == "" {
 			continue
 		}
-		certificate, err := parseBase64PemCertificate(source.data)
+		parsed, err := parseBase64PemCertificates(source.data)
 		if err != nil {
 			return fail(fmt.Sprintf("could not parse %s in '%s': %v", source.name, config.KubeconfigPath, err), "Check the kubeconfig file or reinstall K2s")
 		}
-		certificates = append(certificates, namedCertificate{name: source.name, certificate: certificate})
+		for i, certificate := range parsed {
+			name := source.name
+			if len(parsed) > 1 {
+				name = fmt.Sprintf("%s (%d of %d in bundle)", source.name, i+1, len(parsed))
+			}
+			certificates = append(certificates, namedCertificate{name: name, certificate: certificate})
+		}
 	}
 
 	apiServerCertificate, err := getApiServerCertificate(cluster.Details.Server, config.PeerCertificatesFunc)
@@ -160,17 +170,33 @@ func getApiServerCertificate(server string, peerCertificatesFunc PeerCertificate
 	return chain[0], nil
 }
 
-func parseBase64PemCertificate(data string) (*x509.Certificate, error) {
+// parseBase64PemCertificates returns all certificates of a base64 encoded PEM bundle.
+func parseBase64PemCertificates(data string) ([]*x509.Certificate, error) {
 	pemBytes, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base64 data: %w", err)
 	}
 
-	block, _ := pem.Decode(pemBytes)
-	if block == nil || block.Type != "CERTIFICATE" {
+	var certificates []*x509.Certificate
+	for {
+		var block *pem.Block
+		block, pemBytes = pem.Decode(pemBytes)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certificates = append(certificates, certificate)
+	}
+	if len(certificates) == 0 {
 		return nil, errors.New("no PEM encoded certificate found")
 	}
-	return x509.ParseCertificate(block.Bytes)
+	return certificates, nil
 }
 
 func evaluateCertificates(certificates []namedCertificate, notes []string, now time.Time) Outcome {

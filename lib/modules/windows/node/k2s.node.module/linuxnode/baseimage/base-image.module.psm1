@@ -712,7 +712,7 @@ Function Remove-SshKeyFromKnownHostsFile {
         [ValidateScript({ Get-IsValidIPv4Address($_) })]
         [string]$IpAddress = $(throw "Argument missing: IpAddress")
     )
-    ssh-keygen.exe -R $IpAddress 2>&1 | ForEach-Object { "$_" } | Write-Log
+    Remove-SshKnownHostEntry -HostName $IpAddress
 }
 
 ## Network for provisioning

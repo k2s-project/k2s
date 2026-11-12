@@ -20,7 +20,7 @@ function New-SshKey {
     if (Test-Path $file) {
         Write-Log 'Remove previous VM key from known_hosts file'
 
-        ssh-keygen.exe -R $IpAddress 2>&1 | % { "$_" }
+        Remove-SshKnownHostEntry -HostName $IpAddress
     }
 
 
@@ -50,7 +50,7 @@ function Remove-SshKey {
         [string]$IpAddress = $(throw "Argument missing: IpAddress")
     )
     Write-Log 'Remove control plane ssh keys from host'
-    ssh-keygen.exe -R $IpAddress 2>&1 | % { "$_" } | Out-Null
+    Remove-SshKnownHostEntry -HostName $IpAddress
     Remove-Item -Path ($sshConfigDir + '\k2s') -Force -Recurse -ErrorAction SilentlyContinue
 
     # remove old folder where the ssh key was located

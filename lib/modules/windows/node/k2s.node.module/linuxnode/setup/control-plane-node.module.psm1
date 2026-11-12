@@ -610,9 +610,7 @@ function Remove-ControlPlaneNodeOnNewVM {
 
     Write-Log 'Remove previous VM key from known_hosts file'
     $ipControlPlane = Get-ConfiguredIPControlPlane
-    if (Get-Command 'ssh-keygen.exe' -ErrorAction SilentlyContinue) {
-        ssh-keygen.exe -R $ipControlPlane 2>&1 | % { "$_" } | Out-Null
-    }
+    Remove-SshKnownHostEntry -HostName $ipControlPlane
 
     if (!$SkipPurge) {
         Remove-SshKey -IpAddress $ipControlPlane

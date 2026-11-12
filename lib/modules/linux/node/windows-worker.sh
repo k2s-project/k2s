@@ -84,13 +84,19 @@ k2s_windows_worker_disk_gb() {
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
-k2s_windows_worker_preflight() {
-  local command memory_mb available_mb total_mb disk_gb available_gb vm_dir
+k2s_windows_worker_disk_path() { printf '%s/%s.qcow2' "$(k2s_windows_worker_vm_dir)" "$K2S_WINDOWS_WORKER_NAME"; }
+k2s_windows_worker_cache_path() { printf '%s/WindowsWorker-Base.qcow2' "$(k2s_windows_worker_vm_dir)"; }
+
+# A prepared base image is only needed while neither the worker disk nor the cached base image exists.
+k2s_windows_worker_image_needed() {
+  [[ ! -f "$(k2s_windows_worker_disk_path)" && ! -f "$(k2s_windows_worker_cache_path)" ]]
+}
+
+# The preflight is split in two phases so that the install can fail before it changes the host.
+# Phase 1 needs no tooling and runs before any package is installed.
+k2s_windows_worker_preflight_host() {
+  local memory_mb available_mb total_mb disk_gb available_gb disk_check_dir
   [[ -r /dev/kvm && -c /dev/kvm ]] || { k2s_log ERROR 'KVM is unavailable. Enable nested virtualization and expose /dev/kvm to the Debian host.'; return 3; }
-  for command in virsh qemu-img sfdisk ssh scp ssh-keyscan ssh-keygen sshpass tar; do k2s_require_command "$command" || return 4; done
-  getent passwd libvirt-qemu >/dev/null || { k2s_log ERROR 'The libvirt-qemu service account is missing. Reinstall libvirt-daemon-system.'; return 3; }
-  getent passwd dnsmasq >/dev/null || { k2s_log ERROR 'The dnsmasq service account is missing. Install dnsmasq-base.'; return 3; }
-  k2s_windows_worker_start_libvirt || return 3
   [[ "$K2S_WORKER_CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { k2s_log ERROR "Invalid --worker-cpus value: $K2S_WORKER_CPU_COUNT"; return 2; }
   memory_mb=$(k2s_windows_worker_memory_mb) || return $?
   disk_gb=$(k2s_windows_worker_disk_gb) || return $?
@@ -98,10 +104,27 @@ k2s_windows_worker_preflight() {
   total_mb=$(awk '/MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
   (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log ERROR 'Windows worker memory must not exceed 75% of host memory.'; return 3; }
   (( available_mb >= memory_mb + 2048 )) || { k2s_log ERROR 'Windows worker would leave less than 2GB of host memory available.'; return 3; }
-  vm_dir=$(k2s_windows_worker_vm_dir)
-  install -d -m 0711 "$vm_dir" || return 1
-  available_gb=$(df -BG --output=avail "$vm_dir" | tail -1 | tr -dc '0-9')
+  disk_check_dir=$(k2s_windows_worker_vm_dir)
+  while [[ ! -d "$disk_check_dir" ]]; do disk_check_dir=$(dirname "$disk_check_dir"); done
+  available_gb=$(df -BG --output=avail "$disk_check_dir" | tail -1 | tr -dc '0-9')
   (( available_gb - disk_gb >= 20 )) || { k2s_log ERROR 'Windows worker would leave less than 20GB of host disk space available.'; return 3; }
+  if k2s_windows_worker_image_needed; then
+    [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log ERROR 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
+  fi
+}
+
+# Phase 2 needs the tooling installed by k2s_windows_worker_install_host_dependencies, but still runs
+# before the cluster is created.
+k2s_windows_worker_preflight_tools() {
+  local command source_format
+  for command in virsh qemu-img sfdisk ssh scp ssh-keyscan ssh-keygen sshpass tar; do k2s_require_command "$command" || return 4; done
+  getent passwd libvirt-qemu >/dev/null || { k2s_log ERROR 'The libvirt-qemu service account is missing. Reinstall libvirt-daemon-system.'; return 3; }
+  getent passwd dnsmasq >/dev/null || { k2s_log ERROR 'The dnsmasq service account is missing. Install dnsmasq-base.'; return 3; }
+  k2s_windows_worker_start_libvirt || return 3
+  if k2s_windows_worker_image_needed; then
+    source_format=$(qemu-img info --output=json "$K2S_WINDOWS_QCOW2_PATH" | jq -r '.format') || return 1
+    [[ "$source_format" == 'qcow2' ]] || { k2s_log ERROR "Windows worker image must use QCOW2 format, found: $source_format"; return 2; }
+  fi
 }
 
 k2s_windows_worker_network_create() {
@@ -140,11 +163,12 @@ EOF
 k2s_windows_worker_prepare_image() {
   local vm_dir disk disk_gb
   vm_dir=$(k2s_windows_worker_vm_dir)
-  disk="$vm_dir/$K2S_WINDOWS_WORKER_NAME.qcow2"
+  disk=$(k2s_windows_worker_disk_path)
   disk_gb=$(k2s_windows_worker_disk_gb) || return $?
   install -d -m 0711 "$vm_dir" || return 1
   [[ ! -e "$disk" ]] || { printf '%s\n' "$disk"; return 0; }
-  local cache="$vm_dir/WindowsWorker-Base.qcow2"
+  local cache
+  cache=$(k2s_windows_worker_cache_path)
   [[ -f "$cache" ]] || k2s_windows_worker_import_qcow2 "$cache" >&2 || return $?
   k2s_windows_worker_create_overlay "$cache" "$disk" "$disk_gb" >&2 || return $?
   printf '%s\n' "$disk"
@@ -167,10 +191,7 @@ k2s_windows_worker_create_overlay() {
 }
 
 k2s_windows_worker_import_qcow2() {
-  local cache="$1" source_format temporary_cache
-  [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log ERROR 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
-  source_format=$(qemu-img info --output=json "$K2S_WINDOWS_QCOW2_PATH" | jq -r '.format') || return 1
-  [[ "$source_format" == 'qcow2' ]] || { k2s_log ERROR "Windows worker image must use QCOW2 format, found: $source_format"; return 2; }
+  local cache="$1" temporary_cache
   temporary_cache="$cache.tmp"
   rm -f "$temporary_cache"
   k2s_log INFO "Importing prepared Windows worker QCOW2 image: $K2S_WINDOWS_QCOW2_PATH"
@@ -580,8 +601,6 @@ k2s_windows_worker_write_state() {
 }
 
 k2s_windows_worker_provision() {
-  k2s_log INFO 'Preflighting managed KVM Windows worker.'
-  k2s_windows_worker_preflight || return $?
   k2s_log INFO "Creating libvirt network '$K2S_WINDOWS_WORKER_NETWORK' on bridge '$K2S_WINDOWS_WORKER_BRIDGE'."
   k2s_windows_worker_network_create || return 1
   local disk

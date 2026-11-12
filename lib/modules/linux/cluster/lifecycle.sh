@@ -137,7 +137,10 @@ k2s_install_cluster() {
   k2s_require_host || return $?
   k2s_merge_no_proxy || return $?
   if [[ "$K2S_LINUX_ONLY" != true ]]; then
+    k2s_log INFO 'Preflighting managed KVM Windows worker.'
+    k2s_windows_worker_preflight_host || return $?
     k2s_windows_worker_install_host_dependencies || return $?
+    k2s_windows_worker_preflight_tools || return $?
   fi
   k2s_log INFO 'Configuring K2s proxy compatibility network.'
   k2s_proxy_network_install || return $?

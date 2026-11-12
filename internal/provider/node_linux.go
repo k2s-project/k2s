@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -21,6 +22,7 @@ func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
 }
 
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
+	return errors.New("not implemented")
 	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "name", cfg.NodeName)
 
 	// Generate join token on control plane
@@ -41,6 +43,7 @@ func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 }
 
 func (p *linuxNodeProvider) Remove(cfg NodeRemoveConfig) error {
+	return errors.New("not implemented")
 	slog.Info("[Node] Removing node", "name", cfg.NodeName)
 
 	// Drain the node

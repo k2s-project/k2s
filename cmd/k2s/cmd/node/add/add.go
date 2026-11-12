@@ -10,9 +10,9 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/pterm/pterm"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/status"
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -20,6 +20,7 @@ import (
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/provider"
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -32,12 +33,15 @@ const (
 	MachineUsername           = "username"
 	MachineUsernameFlagUsage  = "Username of the node for remote connection"
 	MachineRole               = "role"
-	MachineRoleFlagUsage      = "Role of the node"
+	MachineRoleFlagUsage      = "Role of the node (currently only 'worker' is supported)"
+	supportedRole             = "worker"
 	NodePackagePath           = "node-package"
 	NodePackagePathFlagUsage  = "Path to a node package zip (offline installation). When provided, packages and images from the zip are used instead of downloading from the internet. If the package was created with --include-gpu and an NVIDIA GPU is detected on the target node, GPU support is automatically configured (NVIDIA Container Toolkit installed, CRI-O configured, node labeled)."
 	systemStatusMaxAttempts   = 5
 	systemStatusRetryDelay    = 10 * time.Second
 )
+
+var supportedRoles = []string{supportedRole}
 
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -56,13 +60,22 @@ func NewCmd() *cobra.Command {
   # GPU support is automatically configured when an NVIDIA GPU is detected on the node.
   # For offline installations with GPU, use a package created with --include-gpu:
   k2s node add --ip-addr 192.168.1.50 --username admin --node-package C:\packages\debian13-node-gpu.zip`,
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			role, err := cmd.Flags().GetString(MachineRole)
+			if err != nil {
+				return err
+			}
+			return validateRole(role)
+		},
 		RunE: addNode,
 	}
 	cmd.Flags().StringP(MachineIPAddress, "i", "", MachineIPAddressFlagUsage)
 	cmd.Flags().StringP(MachineUsername, "u", "", MachineUsernameFlagUsage)
 	cmd.Flags().StringP(MachineName, "m", "", MachineNameFlagUsage)
-	cmd.Flags().StringP(MachineRole, "r", "worker", MachineRoleFlagUsage)
+	cmd.Flags().StringP(MachineRole, "r", supportedRole, MachineRoleFlagUsage)
 	cmd.Flags().StringP(NodePackagePath, "p", "", NodePackagePathFlagUsage)
+
+	cmd.RegisterFlagCompletionFunc(MachineRole, cobra.FixedCompletions(supportedRoles, cobra.ShellCompDirectiveNoFileComp))
 
 	cmd.MarkFlagRequired(MachineIPAddress)
 	cmd.MarkFlagRequired(MachineUsername)
@@ -151,6 +164,18 @@ func addNode(ccmd *cobra.Command, args []string) error {
 	cmdSession.Finish()
 
 	return nil
+}
+
+func validateRole(role string) error {
+	if strings.EqualFold(strings.TrimSpace(role), supportedRole) {
+		return nil
+	}
+	return &common.CmdFailure{
+		Severity: common.SeverityWarning,
+		Code:     "node-role-not-supported",
+		Message: fmt.Sprintf("Adding a node with role '%s' is not supported yet. Supported roles: %s",
+			role, strings.Join(supportedRoles, ", ")),
+	}
 }
 
 func loadSystemStatusWithRetry(

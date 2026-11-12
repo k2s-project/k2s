@@ -116,6 +116,21 @@ Describe 'Invoke-SSHOnce' -Tag 'unit', 'ci', 'vm' {
             }
         }
     }
+
+    Context 'Execution timeout' {
+        It 'returns the real exit code <ExpectedExitCode> and output of the started process' -ForEach @(
+            @{ ExpectedExitCode = 0 },
+            @{ ExpectedExitCode = 3 }
+        ) {
+            InModuleScope $moduleName -Parameters @{ ExpectedExitCode = $ExpectedExitCode } {
+                $result = Invoke-SSHOnce -SshExePath $env:ComSpec -Params @('/c', "echo timeout-path& exit $ExpectedExitCode") -ExecutionTimeoutSeconds 30
+
+                $result.ExitCode | Should -BeOfType [int]
+                $result.ExitCode | Should -Be $ExpectedExitCode
+                $result.OutputLines | Should -Contain 'timeout-path'
+            }
+        }
+    }
 }
 
 Describe 'Invoke-SSHWithKey socket warning retry' -Tag 'unit', 'ci', 'vm' {

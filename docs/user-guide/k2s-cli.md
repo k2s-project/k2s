@@ -703,6 +703,30 @@ k2s node remove [flags]
 |------|-------|-------------|
 | `--name` | `-m` | **Required.** Hostname of the node |
 
+### node rename
+
+Repair the Kubernetes identity and reissue kubelet certificates after changing a managed Linux worker's OS hostname. Run this command from the Windows K2s host; local Windows workers, control-plane nodes, and invocation from Linux hosts are not supported.
+
+```console
+k2s node rename --old-name OLD-NODE --new-name NEW-NODE
+```
+
+| Flag | Description |
+|------|-------------|
+| `--old-name` | **Required.** Existing Kubernetes Node name |
+| `--new-name` | **Required.** Current OS hostname of the worker |
+| `--timeout` | Repair timeout, between `1m` and `24h` (default `15m`) |
+
+Change the OS hostname first, then run the command while the worker remains reachable using its stored SSH connection. The command does not change the OS hostname.
+
+The command cordons the old Node. It temporarily restores the old kubelet name using its existing client certificate, allowing a worker that became NotReady after a hostname change to register again and drain gracefully. Drain respects PodDisruptionBudgets and refuses unmanaged pods; it permits deletion of pod-local `emptyDir` data, but does not delete persistent volume contents. If drain is blocked, certificate replacement does not proceed.
+
+After drain completes, the command stops kubelet and the remaining pod sandboxes, pre-creates a cordoned replacement with the same PodCIDR(s), and uses kubeadm's kubelet-start phase to bootstrap new credentials. Previous kubelet client and serving credentials are backed up in a root-only directory under `/var/lib/kubelet/k2s-identity-backup.*`. The new client certificate must authenticate as `system:node:NEW-NODE` in `system:nodes` and verify against the cluster CA. Runtime and CNI configuration are retained; there is no kubeadm reset or package/image download.
+
+Only after the replacement is Ready and its certificate, IP address, OS, and PodCIDR(s) are validated does the command update the stored worker name and routes, retire the old Node, and restore the original scheduling state. It then removes the temporary copy of the kubelet flags file (`/var/lib/kubelet/k2s-rename-kubeadm-flags.env`) that it saved before the drain; if that removal fails, the rename still succeeds and the command reports the file so you can delete it manually. Custom labels, custom taints, and user annotations are preserved; Kubernetes-managed identity and network metadata are regenerated. The IP, SSH username, and Hyper-V VM name are unchanged. Workloads or PVs with placement constraints selecting the old hostname need separate review.
+
+On failure, inspect the reported phase and target services, correct the blocker, then retry the same command. Nodes may remain cordoned. If the original client certificate is already missing or invalid, restore the old credentials before retrying; the command does not force-delete workloads as a substitute for a safe drain. A partial replacement is reused only when its source identity matches and it carries no active non-DaemonSet workloads. Bootstrap tokens are short-lived and revoked after the bootstrap attempt.
+
 ### node copy
 
 Copy files or folders between the host and a node.

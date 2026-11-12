@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -16,6 +17,21 @@ import (
 type windowsNodeProvider struct {
 	installDir string
 	stdWriter  output.StreamWriter
+}
+
+func (p *windowsNodeProvider) Rename(cfg NodeRenameConfig) error {
+	cfg, err := cfg.Validated()
+	if err != nil {
+		return err
+	}
+	script := utils.FormatScriptFilePath(filepath.Join(p.installDir, "lib", "scripts", "windows", "worker", "linux", "Rename.ps1"))
+	script += " -OldName " + utils.EscapeWithSingleQuotes(cfg.OldName)
+	script += " -NewName " + utils.EscapeWithSingleQuotes(cfg.NewName)
+	script += fmt.Sprintf(" -TimeoutSeconds %d", int(cfg.Timeout.Seconds()))
+	if cfg.ShowOutput {
+		script += " -ShowLogs"
+	}
+	return powershell.ExecutePs(script, p.stdWriter)
 }
 
 func newWindowsNodeProvider(cfg ProviderConfig) *windowsNodeProvider {

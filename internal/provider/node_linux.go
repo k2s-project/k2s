@@ -20,6 +20,13 @@ func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
 	return &linuxNodeProvider{installDir: cfg.InstallDir}
 }
 
+func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
+	if _, err := cfg.Validated(); err != nil {
+		return err
+	}
+	return NotSupportedError("node rename", "managed Linux worker identity repair is currently available only from a Windows K2s host")
+}
+
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "name", cfg.NodeName)
 

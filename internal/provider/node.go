@@ -3,6 +3,14 @@
 
 package provider
 
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
+)
+
 // NodeProvider abstracts node management operations.
 // On Windows: delegates to PowerShell scripts.
 // On Linux: uses SSH + kubeadm join natively.
@@ -12,6 +20,9 @@ type NodeProvider interface {
 
 	// Remove removes a worker node from the cluster.
 	Remove(config NodeRemoveConfig) error
+
+	// Rename repairs a managed worker identity after its OS hostname changes.
+	Rename(config NodeRenameConfig) error
 }
 
 // NodeAddConfig holds parameters for adding a node.
@@ -29,4 +40,33 @@ type NodeAddConfig struct {
 type NodeRemoveConfig struct {
 	NodeName   string
 	ShowOutput bool
+}
+
+type NodeRenameConfig struct {
+	OldName    string
+	NewName    string
+	Timeout    time.Duration
+	ShowOutput bool
+}
+
+func (c NodeRenameConfig) Validated() (NodeRenameConfig, error) {
+	c.OldName = strings.ToLower(c.OldName)
+	c.NewName = strings.ToLower(c.NewName)
+	for _, name := range []string{c.OldName, c.NewName} {
+		if problems := validation.IsDNS1123Subdomain(name); len(problems) != 0 {
+			return c, fmt.Errorf("invalid node name %q: %s", name, strings.Join(problems, "; "))
+		}
+		for _, label := range strings.Split(name, ".") {
+			if problems := validation.IsDNS1123Label(label); len(problems) != 0 {
+				return c, fmt.Errorf("invalid node name %q: %s", name, strings.Join(problems, "; "))
+			}
+		}
+	}
+	if c.OldName == c.NewName {
+		return c, fmt.Errorf("old and new node names must differ")
+	}
+	if c.Timeout < time.Minute || c.Timeout > 24*time.Hour {
+		return c, fmt.Errorf("rename timeout must be between 1m and 24h")
+	}
+	return c, nil
 }

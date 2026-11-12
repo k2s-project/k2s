@@ -45,6 +45,8 @@ function Invoke-SSHOnce {
             $stderrFile = [System.IO.Path]::GetTempFileName()
             try {
                 $process = Start-Process -FilePath $SshExePath -ArgumentList $Params -NoNewWindow -PassThru -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+                # Windows PowerShell returns no ExitCode unless the handle is cached while the process runs (https://github.com/PowerShell/PowerShell/issues/20716)
+                $null = $process.Handle
                 if (-not $process.WaitForExit($ExecutionTimeoutSeconds * 1000)) {
                     try {
                         $process.Kill()

@@ -330,7 +330,12 @@ K2s keeps the CRI-O image store of the control-plane node across unclean shutdow
 
 During installation and update, K2s also saves the system images of the control-plane node as archives in `bin\linuxnode\images` of the installation folder. If system images are still missing, `k2s image repair` compares these archives with the images on the control-plane node, imports only the missing ones, restarts the kubelet, and waits until the control plane is ready. The kubelet is restarted even if no image is missing.
 
-The command requires *K2s* to be installed; the cluster does not need to be running. If the control plane does not become ready during `k2s start`, the error output suggests running `k2s image repair`.
+The command requires *K2s* to be installed, the control-plane VM to be running (for example, after a failed `k2s start`), and the *K2s* cluster to be the current `kubectl` context. The control plane itself does not need to be healthy. If the control plane does not become ready during `k2s start`, the error output suggests running `k2s image repair`.
+
+!!! warning "Remaining risk"
+    - If the image store is actually corrupted after an unclean shutdown, CRI-O's storage check removes the damaged images instead of wiping the whole store. `k2s image repair` restores only the system images (control plane, CNI and `clusterip-webhook`). Re-import other images, such as addon and workload images, with `k2s image import`.
+    - The archives are refreshed by `k2s system update` only if the cluster is running during the update.
+    - Linux worker nodes are not repaired. After a `k2s system update`, Linux worker VMs created from a `Kubenode-Base.vhdx` of an earlier *K2s* version do not keep their image store across unclean shutdowns.
 
 !!! note
     `k2s image repair` only works on the control-plane node and is not supported on Linux hosts.

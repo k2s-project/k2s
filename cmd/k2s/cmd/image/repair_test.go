@@ -6,9 +6,11 @@ package image
 import (
 	"errors"
 	"os"
+	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/internal/provider"
+	"github.com/k2s-project/k2s/internal/providers/kubeconfig"
 	"github.com/stretchr/testify/mock"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -72,6 +74,31 @@ var _ = Describe("repair", Ordered, func() {
 			err := repairImages(repairCmd, []string{})
 
 			Expect(err).To(MatchError(expectedErr))
+		})
+
+		It("refuses to repair when another kubectl context is current", func() {
+			tempDir = setupTestCmdContext(repairCmd, mockImg, false, "control-plane")
+			otherContext := `apiVersion: v1
+kind: Config
+current-context: other-context
+contexts:
+- context:
+    cluster: k2s
+    user: test-user
+  name: k2s-context
+- context:
+    cluster: other
+    user: other-user
+  name: other-context
+`
+			Expect(os.WriteFile(filepath.Join(tempDir, kubeconfig.DefaultFileName), []byte(otherContext), 0644)).To(Succeed())
+
+			err := repairImages(repairCmd, []string{})
+
+			var cmdFailure *common.CmdFailure
+			Expect(errors.As(err, &cmdFailure)).To(BeTrue())
+			Expect(cmdFailure.Code).To(Equal("not-k2s-context"))
+			mockImg.AssertNotCalled(GinkgoT(), "Repair", mock.Anything)
 		})
 	})
 })

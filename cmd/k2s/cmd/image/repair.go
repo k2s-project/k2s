@@ -37,13 +37,19 @@ func repairImages(cmd *cobra.Command, args []string) error {
 	}
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
-	if _, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir()); err != nil {
+	runtimeConfig, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir())
+	if err != nil {
 		if errors.Is(err, cconfig.ErrSystemInCorruptedState) {
 			return common.CreateSystemInCorruptedStateCmdFailure()
 		}
 		if errors.Is(err, cconfig.ErrSystemNotInstalled) {
 			return common.CreateSystemNotInstalledCmdFailure()
 		}
+		return err
+	}
+
+	// the readiness checks after the repair use kubectl's current context
+	if err := context.EnsureK2sK8sContext(runtimeConfig.ClusterConfig().Name()); err != nil {
 		return err
 	}
 

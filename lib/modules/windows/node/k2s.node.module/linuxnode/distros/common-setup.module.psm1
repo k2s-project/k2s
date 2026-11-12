@@ -747,9 +747,17 @@ function Export-SystemImageArchivesToWindowsHost {
             continue
         }
         $remotePath = "/tmp/$fileName"
+        $partialPath = "$finalPath.partial"
         Write-Log "[ImageArchive] Exporting '$imageRef'"
-        (Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo buildah push $imageRef oci-archive:${remotePath}:$imageRef 2>&1" -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress).Output | Write-Log
-        Copy-FromRemoteComputerViaSSHKey -Source $remotePath -Target $finalPath -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+        $pushResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo buildah push $imageRef oci-archive:${remotePath}:$imageRef 2>&1" -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+        $pushResult.Output | Write-Log
+        if (!$pushResult.Success) {
+            throw "[ImageArchive] Could not export '$imageRef' on the control plane node"
+        }
+        # publish only complete archives; an existing final archive is never re-exported
+        Remove-Item -Path $partialPath -Force -ErrorAction SilentlyContinue
+        Copy-FromRemoteComputerViaSSHKey -Source $remotePath -Target $partialPath -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+        Move-Item -Path $partialPath -Destination $finalPath -Force
         (Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo rm -f $remotePath" -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress -IgnoreErrors).Output | Write-Log
     }
 

@@ -113,6 +113,13 @@ $controlPlaneIpAddress = Get-ConfiguredIPControlPlane
 $windowsHostIpAddress = Get-ConfiguredKubeSwitchIP
 $transparentProxy = "http://$($windowsHostIpAddress):8181"
 $controlPlaneUserName = Get-DefaultUserNameControlPlane
+# A reused base image may predate the retention settings (issue #3284); the proxy refresh below restarts CRI-O
+Set-CrioOfflineImageRetention -ExecuteRemoteCommand {
+    param([string] $Command)
+    $result = Invoke-CmdOnVmViaSSHKey -CmdToExecute $Command -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+    $result.Output | Write-Log
+    if (!$result.Success) { throw "[CrioRetention] Remote command failed: $Command" }
+}
 Set-ProxySettingsOnKubenode -ProxySettings $transparentProxy -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
 
 $windowsArtifactsDirectory = Get-WindowsArtifactsDirectory

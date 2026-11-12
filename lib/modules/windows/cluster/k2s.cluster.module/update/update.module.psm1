@@ -1682,12 +1682,18 @@ Current directory: $deltaRoot
 				if (Test-Path -LiteralPath $commonSetupModule) { Import-Module $commonSetupModule -Force -ErrorAction Stop }
 			}
 			if ((Get-Command -Name Set-CrioOfflineImageRetention -ErrorAction SilentlyContinue) -and (Get-Command -Name Invoke-CmdOnControlPlaneViaSSHKey -ErrorAction SilentlyContinue)) {
-				$crioRemoteCommand = { param([string] $Command) (Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute $Command -Timeout 30 -Retries 2).Output | Write-Log }
+				$crioRemoteCommand = {
+					param([string] $Command)
+					$result = Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute $Command -Timeout 30 -Retries 2
+					$result.Output | Write-Log
+					if (-not $result.Success) { throw "Remote command failed: $Command" }
+				}
 				Set-CrioOfflineImageRetention -ExecuteRemoteCommand $crioRemoteCommand
 				Write-Log '[Update] CRI-O offline image retention configured (active on next CRI-O start)' -Console:$consoleSwitch
 				if (Get-Command -Name Export-SystemImageArchivesToWindowsHost -ErrorAction SilentlyContinue) {
 					try {
-						Export-SystemImageArchivesToWindowsHost -TargetPath (Get-DirectoryOfKubenodeImagesOnWindowsHost)
+						# the module-level image directory may still point to the pre-relocation installation
+						Export-SystemImageArchivesToWindowsHost -TargetPath (Join-Path $targetInstallPath 'bin\linuxnode\images')
 						Write-Log '[Update] System image archives refreshed' -Console:$consoleSwitch
 					} catch {
 						Write-Log ("[Update][Warn] Failed to export system image archives: {0}" -f $_.Exception.Message) -Console:$consoleSwitch

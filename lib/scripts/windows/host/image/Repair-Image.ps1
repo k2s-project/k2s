@@ -66,8 +66,8 @@ if ($archives.Count -eq 0) {
     return
 }
 
-# no double quotes: Windows PowerShell drops them when passing the command to ssh.exe
-$listResult = Invoke-CmdOnControlPlaneViaSSHKey 'sudo crictl images | grep -v ''<none>'' | awk -v OFS=: ''NR>1 { print $1, $2 }''' -Retries 3 -Timeout 10 -NoLog
+# no double quotes: Windows PowerShell drops them when passing the command to ssh.exe; '&&' keeps a crictl failure visible
+$listResult = Invoke-CmdOnControlPlaneViaSSHKey 'sudo crictl images > /tmp/k2s-repair-images.txt && grep -v ''<none>'' /tmp/k2s-repair-images.txt | awk -v OFS=: ''NR>1 { print $1, $2 }''' -Retries 3 -Timeout 10 -NoLog
 if (-not $listResult.Success) {
     Send-RepairResult -Err (New-Error -Code 'image-repair-node-unreachable' -Message 'Could not list images on the control plane node - is the node VM running?')
     return

@@ -359,7 +359,7 @@ Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
     BeforeEach {
         InModuleScope $moduleName {
             Mock Write-Log {}
-            Mock Copy-FromRemoteComputerViaSSHKey {}
+            Mock Copy-FromRemoteComputerViaSSHKey { 'x' | Set-Content $Target }
         }
     }
 
@@ -386,10 +386,12 @@ Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
             }
 
             Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 1 -Exactly -ParameterFilter {
-                $Target -like '*docker.io_flannel_flannel__v0.27.0.tar'
+                $Target -like '*docker.io_flannel_flannel__v0.27.0.tar.partial'
             }
         }
 
+        Test-Path (Join-Path $target 'docker.io_flannel_flannel__v0.27.0.tar') | Should -BeTrue
+        Test-Path (Join-Path $target 'docker.io_flannel_flannel__v0.27.0.tar.partial') | Should -BeFalse
         Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.34.0.tar') | Should -BeTrue
         Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.33.0.tar') | Should -BeFalse
         Test-Path (Join-Path $target 'docker.io_myapp__1.0.tar') | Should -BeTrue
@@ -401,5 +403,23 @@ Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
             Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = '' } }
             { Export-SystemImageArchivesToWindowsHost -TargetPath $Target } | Should -Throw '*Could not list system images*'
         }
+    }
+
+    It 'publishes no archive when the image export fails' {
+        $target = Join-Path $TestDrive 'images-pushfail'
+        InModuleScope $moduleName -Parameters @{ Target = $target } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey {
+                if ($CmdToExecute -like 'sudo crictl images*') {
+                    return [pscustomobject]@{ Success = $true; Output = @('registry.k8s.io/pause:3.10') }
+                }
+                return [pscustomobject]@{ Success = $false; Output = 'push failed' }
+            }
+
+            { Export-SystemImageArchivesToWindowsHost -TargetPath $Target } | Should -Throw '*Could not export*'
+            Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 0 -Exactly
+        }
+
+        @(Get-ChildItem -Path $target -File -ErrorAction SilentlyContinue).Count | Should -Be 0
     }
 }

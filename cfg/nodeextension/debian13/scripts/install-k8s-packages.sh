@@ -179,6 +179,24 @@ else
     echo "[InstallK8s] unqualified-search-registries already configured in /etc/containers/registries.conf, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# CRI-O offline image retention (issue #3284)
+# ---------------------------------------------------------------------------
+# Same files as Get-CrioOfflineImageRetentionCommands (common-setup.module.psm1); keep both in sync.
+echo "[InstallK8s] Configuring CRI-O offline image retention"
+sudo mkdir -p /etc/crio/crio.conf.d /etc/systemd/system/crio.service.d
+sudo tee /usr/local/sbin/k2s-crio-precheck > /dev/null <<'EOF'
+#!/bin/sh
+# K2s: repair CRI-O storage after an unclean shutdown without wiping images
+if [ ! -e /var/lib/crio/clean.shutdown ] && [ -e /var/lib/crio/clean.shutdown.supported ]; then
+    crio check --quick --repair --force || echo "k2s-crio-precheck: crio check exited with $?, continuing without wipe"
+fi
+exit 0
+EOF
+sudo chmod 755 /usr/local/sbin/k2s-crio-precheck
+printf '[crio]\ninternal_repair = false\n' | sudo tee /etc/crio/crio.conf.d/99-k2s-image-retention.conf > /dev/null
+printf '[Service]\nExecStartPre=/usr/local/sbin/k2s-crio-precheck\n' | sudo tee /etc/systemd/system/crio.service.d/99-k2s-image-retention.conf > /dev/null
+
 KUBEADM_VERSION="$(kubeadm version -o short)"
 KUBEADM_PAUSE_IMAGE="$(kubeadm config images list --kubernetes-version "$KUBEADM_VERSION" | grep '/pause:' | tail -n 1 || true)"
 if [ -n "$KUBEADM_PAUSE_IMAGE" ]; then

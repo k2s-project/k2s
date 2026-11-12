@@ -23,7 +23,7 @@ function Invoke-DownloadWindowsExporterArtifacts($downloadsBaseDirectory, $Proxy
     Write-Log "Create folder '$windowsExporterDownloadsDirectory'"
     mkdir $windowsExporterDownloadsDirectory | Out-Null
     Write-Log 'Download windows exporter'
-    Invoke-DownloadFile "$file" https://github.com/prometheus-community/windows_exporter/releases/download/v0.31.3/windows_exporter-0.31.3-amd64.exe $true $Proxy
+    Invoke-DownloadFile "$file" https://github.com/prometheus-community/windows_exporter/releases/download/v0.32.1/windows_exporter-0.32.1-amd64.exe $true $Proxy
 }
 
 function Invoke-DeployWindowsExporterArtifacts($windowsNodeArtifactsDirectory) {

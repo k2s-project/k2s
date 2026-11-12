@@ -28,7 +28,7 @@ function DownloadYamlArtifacts($baseDirectory) {
 
     $downloadedFile2 = "$baseDirectory\yq.exe"
     Write-Log "Download yq executable"
-    DownloadFile "$downloadedFile2" https://github.com/mikefarah/yq/releases/download/v4.33.3/yq_windows_amd64.exe $true $Proxy
+    DownloadFile "$downloadedFile2" https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_windows_amd64.exe $true $Proxy
     Move-Item -Path "$downloadedFile2" -Destination $baseDirectory
     Write-Log "Move $downloadedFile2 to $baseDirectory done"
 }

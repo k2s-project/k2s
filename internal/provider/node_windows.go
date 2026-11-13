@@ -24,14 +24,29 @@ func (p *windowsNodeProvider) Rename(cfg NodeRenameConfig) error {
 	if err != nil {
 		return err
 	}
-	script := utils.FormatScriptFilePath(filepath.Join(p.installDir, "lib", "scripts", "windows", "worker", "linux", "Rename.ps1"))
-	script += " -OldName " + utils.EscapeWithSingleQuotes(cfg.OldName)
-	script += " -NewName " + utils.EscapeWithSingleQuotes(cfg.NewName)
-	script += fmt.Sprintf(" -TimeoutSeconds %d", int(cfg.Timeout.Seconds()))
-	if cfg.ShowOutput {
-		script += " -ShowLogs"
+	script, params := buildRenameScript(p.installDir, cfg)
+	// The script reports failures as structured data; its exit code alone does not reach the CLI.
+	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](script, "CmdResult", p.stdWriter, params...)
+	if err != nil {
+		return err
 	}
-	return powershell.ExecutePs(script, p.stdWriter)
+	return result.checkFailure()
+}
+
+func buildRenameScript(installDir string, cfg NodeRenameConfig) (string, []string) {
+	script := utils.FormatScriptFilePath(filepath.Join(installDir, "lib", "scripts", "windows", "worker", "Rename.ps1"))
+	params := []string{
+		"-OldName " + utils.EscapeWithSingleQuotes(cfg.OldName),
+		"-NewName " + utils.EscapeWithSingleQuotes(cfg.NewName),
+		fmt.Sprintf("-TimeoutSeconds %d", int(cfg.Timeout.Seconds())),
+	}
+	if cfg.Force {
+		params = append(params, "-Force")
+	}
+	if cfg.ShowOutput {
+		params = append(params, "-ShowLogs")
+	}
+	return script, params
 }
 
 func newWindowsNodeProvider(cfg ProviderConfig) *windowsNodeProvider {

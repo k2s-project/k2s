@@ -671,7 +671,7 @@ When a setup is still installed, uninstall it first or run `k2s system reset` be
 
 Manage additional cluster nodes.
 
-Currently, `node` commands document and support additional Linux worker nodes on physical hosts or existing VMs. Support for Windows worker nodes will follow.
+Currently, `node` commands document and support additional Linux worker nodes on physical hosts or existing VMs. Support for Windows worker nodes will follow. `node rename` additionally covers the local Windows worker host.
 
 ### node add
 
@@ -705,7 +705,7 @@ k2s node remove [flags]
 
 ### node rename
 
-Repair the Kubernetes identity and reissue kubelet certificates after changing a managed Linux worker's OS hostname. Run this command from the Windows K2s host; local Windows workers, control-plane nodes, and invocation from Linux hosts are not supported.
+Repair the Kubernetes identity of a worker node after its operating-system hostname was changed. Kubernetes cannot rename a Node, so the command replaces the Node object and reissues the kubelet certificate for the new name. The cluster, the node's pod network range (PodCIDR) and its custom metadata are kept. Run the command from the Windows K2s host; it does not change the OS hostname itself.
 
 ```console
 k2s node rename --old-name OLD-NODE --new-name NEW-NODE
@@ -714,18 +714,80 @@ k2s node rename --old-name OLD-NODE --new-name NEW-NODE
 | Flag | Description |
 |------|-------------|
 | `--old-name` | **Required.** Existing Kubernetes Node name |
-| `--new-name` | **Required.** Current OS hostname of the worker |
+| `--new-name` | **Required.** Current OS hostname of the worker; the new Node name is its lowercase form |
 | `--timeout` | Repair timeout, between `1m` and `24h` (default `15m`) |
+| `--force` | Continue when a partially registered replacement Node carries workloads (see [Partially registered replacement](#partially-registered-replacement)) |
 
-Change the OS hostname first, then run the command while the worker remains reachable using its stored SSH connection. The command does not change the OS hostname.
+Supported workers:
 
-The command cordons the old Node. It temporarily restores the old kubelet name using its existing client certificate, allowing a worker that became NotReady after a hostname change to register again and drain gracefully. Drain respects PodDisruptionBudgets and refuses unmanaged pods; it permits deletion of pod-local `emptyDir` data, but does not delete persistent volume contents. If drain is blocked, certificate replacement does not proceed.
+- Linux workers added with `k2s node add`, on physical hosts and existing Hyper-V VMs. Change the hostname on the worker first; the worker must stay reachable through its stored SSH connection. K2s keeps running, so no `k2s start` is needed.
+- The local Windows worker host. Change the Windows computer name and reboot first. K2s must be running again when the command is run: check with `k2s status` after the reboot, and run `k2s start` only if it is not running.
 
-After drain completes, the command stops kubelet and the remaining pod sandboxes, pre-creates a cordoned replacement with the same PodCIDR(s), and uses kubeadm's kubelet-start phase to bootstrap new credentials. Previous kubelet client and serving credentials are backed up in a root-only directory under `/var/lib/kubelet/k2s-identity-backup.*`. The new client certificate must authenticate as `system:node:NEW-NODE` in `system:nodes` and verify against the cluster CA. Runtime and CNI configuration are retained; there is no kubeadm reset or package/image download.
+The command makes no change and reports an error when the actual hostname of the worker differs from `--new-name`, and for these targets:
 
-Only after the replacement is Ready and its certificate, IP address, OS, and PodCIDR(s) are validated does the command update the stored worker name and routes, retire the old Node, and restore the original scheduling state. It then removes the temporary copy of the kubelet flags file (`/var/lib/kubelet/k2s-rename-kubeadm-flags.env`) that it saved before the drain; if that removal fails, the rename still succeeds and the command reports the file so you can delete it manually. Custom labels, custom taints, and user annotations are preserved; Kubernetes-managed identity and network metadata are regenerated. The IP, SSH username, and Hyper-V VM name are unchanged. Workloads or PVs with placement constraints selecting the old hostname need separate review.
+- a control-plane node
+- a node that K2s does not manage (neither added with `k2s node add` nor the local Windows worker host)
+- an additional Windows worker, or a managed node of an unsupported type
+- the local Windows host of a Linux-only installation
+- any node when the command is run from a Linux K2s host
 
-On failure, inspect the reported phase and target services, correct the blocker, then retry the same command. Nodes may remain cordoned. If the original client certificate is already missing or invalid, restore the old credentials before retrying; the command does not force-delete workloads as a substitute for a safe drain. A partial replacement is reused only when its source identity matches and it carries no active non-DaemonSet workloads. Bootstrap tokens are short-lived and revoked after the bootstrap attempt.
+#### Linux worker
+
+The command cordons the old Node. It temporarily restores the old kubelet name using its existing client certificate, allowing a worker that became NotReady after a hostname change to register again and drain gracefully. Drain refuses unmanaged pods; it permits deletion of pod-local `emptyDir` data, but does not delete persistent volume contents. PodDisruptionBudgets are handled as described under [Disruption budgets](#disruption-budgets). If drain is blocked, certificate replacement does not proceed.
+
+After drain completes, the command stops kubelet and the remaining pod sandboxes, pre-creates a cordoned replacement with the same PodCIDR(s), and uses kubeadm's kubelet-start phase to bootstrap new credentials. Previous kubelet client and serving credentials are backed up in a root-only directory under `/var/lib/kubelet/k2s-identity-backup.*`. Runtime and CNI configuration are retained; there is no kubeadm reset or package/image download.
+
+Once the replacement is validated, the command updates the stored worker name and the routes to the worker. The IP, SSH username, and Hyper-V VM name are unchanged. At the end it removes the temporary copy of the kubelet flags file (`/var/lib/kubelet/k2s-rename-kubeadm-flags.env`) that it saved before the drain; if that removal fails, the rename still succeeds and the command reports the file so you can delete it manually.
+
+#### Local Windows worker host
+
+After the reboot, the kubelet runs under the new hostname, so the old Node is NotReady. The command proceeds in the same way as for a Linux worker:
+
+1. It cordons the old Node.
+2. It temporarily sets the old name in the kubelet start script (`<install directory>\smallsetup\common\StartKubelet.ps1`) and restarts `kubelet` and `kubeproxy`, so that the old Node becomes Ready again. The original script is kept as `<system drive>:\var\lib\kubelet\k2s-rename-StartKubelet.ps1` until it is restored in step 4.
+3. It drains the old Node gracefully, with the same rules as for a Linux worker. If drain is blocked, nothing else is changed.
+4. It stops `kubeproxy`, `kubelet`, the remaining pod sandboxes, and `flanneld`, and restores the kubelet start script.
+5. It sets the new lowercase hostname in the `kubeproxy` service (`--hostname-override`), the `flanneld` service (`NODE_NAME`), and the kubelet flags file, and moves the previous kubelet client and serving credentials to `<system drive>:\var\lib\kubelet\k2s-identity-backup.*`.
+6. It pre-creates a cordoned replacement with the same PodCIDR(s), then restarts `containerd` and starts `flanneld`, `kubelet`, and `kubeproxy`. `httpproxy` and `dnsproxy` do not use the hostname and are also used by the control plane and the other nodes, so they are not restarted, only started if they are not running. The kubelet requests a new certificate for the new name.
+
+There is no HNS reset and no kubeadm reset, and the cluster descriptor of additional nodes is not changed. The settings of `containerd`, `httpproxy`, and `dnsproxy` are not modified.
+
+#### Disruption budgets
+
+The drain respects PodDisruptionBudgets as long as another node can run the drained pods: a Ready, schedulable node with the same operating system and without a `NoSchedule` or `NoExecute` taint that the renamed node does not carry itself. A budget that blocks the drain then fails the rename at the timeout; relax the budget and retry.
+
+If there is no such node, for example while the Windows host is the only Windows node, a budget could never be satisfied, because its replacement pods cannot start anywhere. In that case the command reports that budgets are not checked and deletes the pods instead of evicting them. The pods are still shut down gracefully by the kubelet, and they stay `Pending` until the renamed node is Ready and schedulable again.
+
+#### Effect on the control plane and other nodes
+
+The command changes only the worker that is renamed and its Node objects. It does not restart or reconfigure anything on the control plane or on other nodes:
+
+- Pods drained from the worker are recreated on other nodes by their controllers, as with any drain.
+- For a Linux worker, a short-lived bootstrap token is created on the control plane and revoked afterwards.
+- The old and the new Node share one pod network. Before the old Node is deleted, it is taken out of flannel's management, so that flannel on the other nodes keeps its route to that pod network.
+- As a safeguard, the command reads the control plane's route to that pod network before and after the old Node is deleted, and reports a warning if the route was lost.
+
+#### Result
+
+Only after the replacement is Ready and its certificate, IP address, OS, and PodCIDR(s) are validated does the command retire the old Node and restore the original scheduling state. On the Windows host, all six services must also be running. The new client certificate must identify `system:node:NEW-NODE` in `system:nodes`.
+
+The command then reports the old and new names, the node type, the PodCIDR, and the preserved labels and taints. Custom labels, custom taints, and user annotations are preserved; Kubernetes-managed identity and network metadata are regenerated. Workloads or PVs with placement constraints selecting the old hostname need separate review.
+
+#### Partially registered replacement
+
+A Node named `NEW-NODE` may already exist when the command starts:
+
+- If an earlier attempt of this command created it, it is reused.
+- If the same machine registered it on its own (same internal IP address), it is cordoned, deleted after the worker's services are stopped, and recreated with the PodCIDR and metadata of the old Node. If it carries workloads other than DaemonSet pods, the command stops with an error. Migrate those workloads, or pass `--force` to continue without migrating them. Their containers are then stopped with the worker's services, and each pod is either removed by Kubernetes or started again on the renamed node.
+- If it belongs to a different machine or operating system, the rename is rejected.
+
+#### Recovery
+
+On failure, the command ends with an error and a non-zero exit code. The error names the phase that failed and says whether the old Node still exists. A failure while validating the target means that no changes were made. For any later phase, inspect the target services, correct the blocker, then retry the same command. Nodes may remain cordoned, and the old Node is never deleted before the replacement has passed validation.
+
+- Linux worker: if the original client certificate is already missing or invalid, restore the old credentials before retrying. Bootstrap tokens are short-lived and revoked after the bootstrap attempt.
+- Windows host: if the command fails before the drain completes, the node services keep running under the old name, but the kubelet uses the new hostname again the next time it starts. If it fails after the drain, `kubeproxy`, `kubelet`, and `flanneld` stay stopped until a retry succeeds. If the new certificate does not arrive, check the kubelet log and the pending certificate requests with `kubectl get csr`.
+- Both: the command does not force-delete workloads as a substitute for a safe drain.
 
 ### node copy
 

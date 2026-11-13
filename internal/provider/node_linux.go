@@ -24,7 +24,7 @@ func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
 	if _, err := cfg.Validated(); err != nil {
 		return err
 	}
-	return NotSupportedError("node rename", "managed Linux worker identity repair is currently available only from a Windows K2s host")
+	return NotSupportedError("node rename", "worker identity repair is currently available only from a Windows K2s host")
 }
 
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {

@@ -43,3 +43,10 @@ func TestRenameDefaultTimeout(t *testing.T) {
 		t.Fatalf("timeout = %v, error = %v", timeout, err)
 	}
 }
+
+func TestRenameForceIsOptIn(t *testing.T) {
+	force, err := NewCmd().Flags().GetBool("force")
+	if err != nil || force {
+		t.Fatalf("force = %v, error = %v", force, err)
+	}
+}

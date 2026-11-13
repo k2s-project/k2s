@@ -21,7 +21,7 @@ type NodeProvider interface {
 	// Remove removes a worker node from the cluster.
 	Remove(config NodeRemoveConfig) error
 
-	// Rename repairs a managed worker identity after its OS hostname changes.
+	// Rename repairs the identity of a managed worker after its OS hostname changed.
 	Rename(config NodeRenameConfig) error
 }
 
@@ -43,9 +43,11 @@ type NodeRemoveConfig struct {
 }
 
 type NodeRenameConfig struct {
-	OldName    string
-	NewName    string
-	Timeout    time.Duration
+	OldName string
+	NewName string
+	Timeout time.Duration
+	// Force continues when a partially registered replacement Node carries workloads.
+	Force      bool
 	ShowOutput bool
 }
 

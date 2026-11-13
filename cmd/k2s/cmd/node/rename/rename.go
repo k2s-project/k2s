@@ -18,8 +18,9 @@ import (
 func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rename",
-		Short: "Repair a Linux worker identity after changing its hostname",
-		Long: "Reissues kubelet certificates and replaces the Kubernetes Node identity of a managed Linux worker. " +
+		Short: "Repair a worker node identity after changing its hostname",
+		Long: "Reissues the kubelet certificate and replaces the Kubernetes Node identity of a managed worker: " +
+			"a Linux worker added with 'k2s node add' or the local Windows worker host. " +
 			"Run from the Windows K2s host after changing the worker's OS hostname. Does not change the OS hostname.",
 		Example: "  k2s node rename --old-name OLD-NODE --new-name NEW-NODE",
 		Args:    cobra.NoArgs,
@@ -28,6 +29,7 @@ func NewCmd() *cobra.Command {
 	cmd.Flags().String("old-name", "", "Existing Kubernetes Node name")
 	cmd.Flags().String("new-name", "", "Current OS hostname of the worker")
 	cmd.Flags().Duration("timeout", 15*time.Minute, "Maximum repair duration (1m to 24h)")
+	cmd.Flags().Bool("force", false, "Continue when a partially registered replacement Node carries workloads, without migrating them first")
 	cmd.MarkFlagRequired("old-name")
 	cmd.MarkFlagRequired("new-name")
 	return cmd
@@ -46,7 +48,11 @@ func renameNode(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := (provider.NodeRenameConfig{OldName: oldName, NewName: newName, Timeout: timeout}).Validated()
+	force, err := cmd.Flags().GetBool("force")
+	if err != nil {
+		return err
+	}
+	cfg, err := (provider.NodeRenameConfig{OldName: oldName, NewName: newName, Timeout: timeout, Force: force}).Validated()
 	if err != nil {
 		return err
 	}
@@ -63,7 +69,7 @@ func renameNode(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if runtime.InstallConfig().SetupName() != definitions.SetupNameK2s {
-		return errors.New("node rename requires a full K2s setup with a managed Linux worker")
+		return errors.New("node rename is not supported for this setup type")
 	}
 	if err := context.EnsureK2sK8sContext(runtime.ClusterConfig().Name()); err != nil {
 		return err

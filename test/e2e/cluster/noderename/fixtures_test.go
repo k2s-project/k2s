@@ -282,6 +282,56 @@ func TestSyntheticNodeDaemonPod(t *testing.T) {
 	}
 }
 
+func TestRestartedNodes(t *testing.T) {
+	before := &corev1.NodeList{Items: []corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: newNodeName, UID: "renamed-uid",
+				Labels: map[string]string{metadataKey: newNodeName}, Annotations: map[string]string{metadataKey: "preserved"},
+			},
+			Spec: corev1.NodeSpec{
+				PodCIDR: "172.20.2.0/24", PodCIDRs: []string{"172.20.2.0/24"},
+				Taints: []corev1.Taint{{Key: metadataKey, Value: newNodeName, Effect: corev1.TaintEffectNoSchedule}},
+			},
+			Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "kubemaster", UID: "control-plane-uid"},
+			Spec:       corev1.NodeSpec{PodCIDR: "172.20.0.0/24", PodCIDRs: []string{"172.20.0.0/24"}},
+			Status:     corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}},
+		},
+	}}
+	for _, tt := range []struct {
+		name   string
+		change func(*corev1.NodeList)
+		valid  bool
+	}{
+		{"identities preserved", func(*corev1.NodeList) {}, true},
+		{"old identity reappears", func(nodes *corev1.NodeList) {
+			nodes.Items = append(nodes.Items, corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: oldNodeName}})
+		}, false},
+		{"missing Node", func(nodes *corev1.NodeList) { nodes.Items = nodes.Items[:1] }, false},
+		{"renamed Node replaced", func(nodes *corev1.NodeList) { nodes.Items[0].UID = "unexpected-uid" }, false},
+		{"unrelated Node replaced", func(nodes *corev1.NodeList) { nodes.Items[1].UID = "unexpected-uid" }, false},
+		{"renamed Node missing", func(nodes *corev1.NodeList) { nodes.Items[0].Name = "unexpected-node" }, false},
+		{"PodCIDR changed", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.PodCIDR = "172.20.9.0/24" }, false},
+		{"PodCIDRs changed", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.PodCIDRs = nil }, false},
+		{"scheduling state changed", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.Unschedulable = true }, false},
+		{"label lost", func(nodes *corev1.NodeList) { delete(nodes.Items[0].Labels, metadataKey) }, false},
+		{"annotation lost", func(nodes *corev1.NodeList) { delete(nodes.Items[0].Annotations, metadataKey) }, false},
+		{"taint lost", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.Taints = nil }, false},
+		{"not Ready", func(nodes *corev1.NodeList) { nodes.Items[0].Status.Conditions[0].Status = corev1.ConditionFalse }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			after := before.DeepCopy()
+			tt.change(after)
+			if err := validateRestartedNodes(before, after, oldNodeName); (err == nil) != tt.valid {
+				t.Fatalf("validateRestartedNodes() = %v, want valid=%t", err, tt.valid)
+			}
+		})
+	}
+}
+
 func TestRenameObserverLifecycle(t *testing.T) {
 	events := []nodeObservation{
 		{uid: "old", unschedulable: true},

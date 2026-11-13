@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -20,6 +21,7 @@ import (
 
 	addonstatus "github.com/k2s-project/k2s/cmd/k2s/cmd/addons/status"
 	"github.com/k2s-project/k2s/internal/core/clusterconfig"
+	"github.com/k2s-project/k2s/test/framework/dsl"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -436,6 +438,7 @@ type renameObserver struct {
 	mu     sync.Mutex
 	events []nodeObservation
 	err    error
+	stop   func()
 }
 
 func observeRename(ctx SpecContext) *renameObserver {
@@ -477,12 +480,93 @@ func observeRename(ctx SpecContext) *renameObserver {
 			observer.mu.Unlock()
 		}
 	}()
-	DeferCleanup(func() {
-		cancel()
-		stream.Stop()
-		<-done
-	})
+	var once sync.Once
+	observer.stop = func() {
+		once.Do(func() {
+			cancel()
+			stream.Stop()
+			<-done
+		})
+	}
+	DeferCleanup(observer.stop)
 	return observer
+}
+
+func verifyRenamedClusterRestart(ctx SpecContext, oldName string) {
+	before, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	k2s := dsl.NewK2s(suite)
+	recoveryRequired := true
+	DeferCleanup(func(ctx SpecContext) {
+		if recoveryRequired && !suite.StatusChecker().IsK2sRunning(ctx) {
+			By("attempting to restore K2s after a failed stop/start check")
+			k2s.Start(ctx).ExpectSuccess()
+			Expect(suite.StatusChecker().IsK2sRunning(ctx)).To(BeTrue(), "restore the cluster before workload cleanup")
+		}
+	}, NodeTimeout(25*time.Minute))
+
+	By("stopping K2s after successfully renaming the worker")
+	k2s.Stop(ctx).ExpectSuccess()
+	Expect(suite.StatusChecker().IsK2sRunning(ctx)).To(BeFalse(), "k2s stop must actually stop the system")
+	By("starting K2s with the renamed worker and existing SMB PVC")
+	k2s.Start(ctx).ExpectSuccess()
+	Expect(suite.StatusChecker().IsK2sRunning(ctx)).To(BeTrue(), "k2s start must restore the system")
+	recoveryRequired = false
+	By("verifying all Node identities, network allocations and custom metadata survive stop/start")
+	Eventually(func() error {
+		after, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		return validateRestartedNodes(before, after, oldName)
+	}, workloadTimeout, 2*time.Second).Should(Succeed())
+	suite.Cluster().ExpectClusterIsRunning(ctx)
+}
+
+func validateRestartedNodes(before, after *corev1.NodeList, oldName string) error {
+	nodes := make(map[string]*corev1.Node, len(after.Items))
+	for index := range after.Items {
+		node := &after.Items[index]
+		if node.Name == oldName {
+			return fmt.Errorf("old Node %s reappeared after stop/start", oldName)
+		}
+		nodes[node.Name] = node
+	}
+	if len(after.Items) != len(before.Items) {
+		return fmt.Errorf("Node count changed across stop/start: %d -> %d", len(before.Items), len(after.Items))
+	}
+	for _, expected := range before.Items {
+		actual := nodes[expected.Name]
+		if actual == nil || actual.UID != expected.UID {
+			return fmt.Errorf("Node %s was lost or recreated during stop/start", expected.Name)
+		}
+		if !isReady(actual) {
+			return fmt.Errorf("Node %s is not Ready after stop/start", expected.Name)
+		}
+		if actual.Spec.PodCIDR != expected.Spec.PodCIDR || !slices.Equal(actual.Spec.PodCIDRs, expected.Spec.PodCIDRs) ||
+			actual.Spec.Unschedulable != expected.Spec.Unschedulable {
+			return fmt.Errorf("Node %s changed its PodCIDRs or scheduling state after stop/start", expected.Name)
+		}
+		for key, value := range expected.Labels {
+			if !managedKey(key) && actual.Labels[key] != value {
+				return fmt.Errorf("Node %s lost label %s=%s after stop/start", expected.Name, key, value)
+			}
+		}
+		for key, value := range expected.Annotations {
+			if !managedKey(key) && !strings.HasPrefix(key, "flannel.alpha.coreos.com/") &&
+				!strings.HasPrefix(key, "k2s.io/rename-") && actual.Annotations[key] != value {
+				return fmt.Errorf("Node %s lost annotation %s after stop/start", expected.Name, key)
+			}
+		}
+		for _, taint := range expected.Spec.Taints {
+			if !managedKey(taint.Key) && !slices.ContainsFunc(actual.Spec.Taints, func(current corev1.Taint) bool {
+				return reflect.DeepEqual(current, taint)
+			}) {
+				return fmt.Errorf("Node %s lost custom taint %s after stop/start", expected.Name, taint.Key)
+			}
+		}
+	}
+	return nil
 }
 
 func (observer *renameObserver) record(node *corev1.Node, deleted bool) {

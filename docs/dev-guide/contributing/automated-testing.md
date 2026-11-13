@@ -50,6 +50,8 @@ and schedulable. An initially cordoned worker fails the precondition before SMB
 setup: reads only from kubemaster do not establish storage access from the renamed
 worker. The migration changes the remote OS hostname, **reboots the
 Linux worker once**, then drains it.
+After the rename and initial storage checks, the suite also runs **`k2s stop`
+and `k2s start` for the whole cluster**, not just the renamed worker.
 Reboot verification requires a changed kernel boot ID, recovered SSH and the
 expected hostname; an SSH disconnect alone is not considered proof of reboot.
 Draining can delete pod-local `emptyDir` data. Do not run against production workloads.
@@ -108,6 +110,16 @@ and original PVC reference, then prints `READ OK` with the Node, Pod, PVC, file
 and actual content. A final `VERIFIED` message counts successful reads from newly
 created Pods on the renamed Node and confirms unchanged PVC/PV identities.
 
+Before cleanup, the stop/start check verifies that K2s actually stops and returns
+to a running state. It then waits for all Nodes to be Ready with their existing
+UIDs, PodCIDRs, scheduling states and custom metadata intact. The old Node must
+not reappear, and `cluster.json` must still contain the renamed identity.
+The existing three-reader workload and original PVC are kept through this cycle;
+the suite repeats its in-container SMB reads, including a reader on the renamed
+worker, without rewriting the marker. If stop/start fails while K2s is down, a
+deferred cleanup attempts to start it before API-dependent resource cleanup;
+recovery failures remain test failures.
+
 The suite watches actual Node API events for cordoning, the completed-drain
 marker, replacement readiness and old-Node deletion, in that order. It also checks
 the command's cordon/drain log ordering. Reboot-created partial registrations are
@@ -131,7 +143,7 @@ Passing on one worker type does not establish integration coverage for the other
 The fixture helpers can be tested without a cluster or hostname changes:
 
 ```console
-go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestSMBReaderPlacement|TestSyntheticNodeDaemonPod|TestRenameObserverLifecycle'
+go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestSMBReaderPlacement|TestSyntheticNodeDaemonPod|TestRestartedNodes|TestRenameObserverLifecycle'
 ```
 
 ### Windows Workload Readiness Diagnostics

@@ -373,6 +373,7 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass str
 	Expect(readyLog).To(BeNumerically(">", drainLog))
 	By("verifying Node API events show cordon, completed drain, replacement readiness and old identity retirement in order")
 	Eventually(func() error { return observer.validate(original.UID, replacement.UID) }, 30*time.Second, 200*time.Millisecond).Should(Succeed())
+	observer.stop()
 	expectedDescriptor, err := renamedDescriptor(descriptor, worker.Name, newName)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(bytes.TrimPrefix(readDescriptor(), []byte{0xef, 0xbb, 0xbf})).To(MatchJSON(expectedDescriptor))
@@ -392,6 +393,12 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass str
 		Expect(isReady(after)).To(BeTrue(), "unrelated Node %s must remain Ready", before.Name)
 	}
 	removeWorkload(ctx)
+	verifyRenamedClusterRestart(ctx, worker.Name)
+	Expect(bytes.TrimPrefix(readDescriptor(), []byte{0xef, 0xbb, 0xbf})).To(MatchJSON(expectedDescriptor),
+		"stop/start must retain the renamed worker in cluster.json")
+	Expect(remote(ctx, worker, "hostname")).To(Equal(newName))
+	By("rechecking the original SMB PVC from the renamed worker after k2s stop/start")
+	migration.verifyAfterRename(ctx, worker.Name, newName)
 	migration.cleanup(ctx)
 	cleanupWorker(ctx)
 	By(fmt.Sprintf("leaving worker %s renamed to %s in the OS, Kubernetes and cluster.json", worker.IpAddress, newName))

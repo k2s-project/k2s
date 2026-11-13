@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,51 +18,62 @@ import (
 )
 
 func TestWorkerDiscovery(t *testing.T) {
-	host := clusterconfig.Node{Name: oldNodeName, OS: "linux", Role: "worker", NodeType: clusterconfig.NodeTypeHost, IpAddress: "192.0.2.2", Username: "admin"}
-	vm := host
-	vm.NodeType = clusterconfig.NodeTypeVMExisting
-	other := host
-	other.Name = "another-worker"
-	renamed := host
-	renamed.Name = newNodeName
-	controlPlane := host
-	controlPlane.Role = "control-plane"
-	windows := host
-	windows.OS = "windows"
-	unsupported := host
-	unsupported.NodeType = "VM-NEW"
-	for _, tt := range []struct {
-		name   string
-		config *clusterconfig.Cluster
-		want   clusterconfig.Node
-		fail   bool
-	}{
-		{"bare-metal", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host}}, host, false},
-		{"Hyper-V", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{vm}}, vm, false},
-		{"ignore other workers", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{other, host}}, host, false},
-		{"missing fixed name", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{other}}, clusterconfig.Node{}, true},
-		{"already renamed", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{renamed}}, clusterconfig.Node{}, true},
-		{"ambiguous identity", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host, vm}}, clusterconfig.Node{}, true},
-		{"control plane", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{controlPlane}}, clusterconfig.Node{}, true},
-		{"Windows", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{windows}}, clusterconfig.Node{}, true},
-		{"unsupported type", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{unsupported}}, clusterconfig.Node{}, true},
-		{"empty config", &clusterconfig.Cluster{}, clusterconfig.Node{}, true},
-		{"missing config", nil, clusterconfig.Node{}, true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := renameWorker(tt.config)
-			if (err != nil) != tt.fail || !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("renameWorker() = %+v, %v; want %+v, failure=%t", got, err, tt.want, tt.fail)
-			}
-		})
+	for _, fixtureName := range oldNodeNames {
+		host := clusterconfig.Node{Name: fixtureName, OS: "linux", Role: "worker", NodeType: clusterconfig.NodeTypeHost, IpAddress: "192.0.2.2", Username: "admin"}
+		vm := host
+		vm.NodeType = clusterconfig.NodeTypeVMExisting
+		other := host
+		other.Name = "another-worker"
+		renamed := host
+		renamed.Name = newNodeName
+		controlPlane := host
+		controlPlane.Role = "control-plane"
+		windows := host
+		windows.OS = "windows"
+		unsupported := host
+		unsupported.NodeType = "VM-NEW"
+		for _, tt := range []struct {
+			name   string
+			config *clusterconfig.Cluster
+			want   clusterconfig.Node
+			fail   bool
+		}{
+			{"bare-metal", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host}}, host, false},
+			{"Hyper-V", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{vm}}, vm, false},
+			{"ignore other workers", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{other, host}}, host, false},
+			{"missing fixed name", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{other}}, clusterconfig.Node{}, true},
+			{"already renamed", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{renamed}}, clusterconfig.Node{}, true},
+			{"ambiguous identity", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host, vm}}, clusterconfig.Node{}, true},
+			{"control plane", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{controlPlane}}, clusterconfig.Node{}, true},
+			{"Windows", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{windows}}, clusterconfig.Node{}, true},
+			{"unsupported type", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{unsupported}}, clusterconfig.Node{}, true},
+			{"empty config", &clusterconfig.Cluster{}, clusterconfig.Node{}, true},
+			{"missing config", nil, clusterconfig.Node{}, true},
+		} {
+			t.Run(fixtureName+"/"+tt.name, func(t *testing.T) {
+				got, err := renameWorker(tt.config)
+				if (err != nil) != tt.fail || !reflect.DeepEqual(got, tt.want) {
+					t.Fatalf("renameWorker() = %+v, %v; want %+v, failure=%t", got, err, tt.want, tt.fail)
+				}
+			})
+		}
 	}
+	t.Run("both fixture names", func(t *testing.T) {
+		second := clusterconfig.Node{Name: oldNodeNames[1], OS: "linux", Role: "worker", NodeType: clusterconfig.NodeTypeHost}
+		first := second
+		first.Name = oldNodeNames[0]
+		got, err := renameWorker(&clusterconfig.Cluster{Nodes: []clusterconfig.Node{second, first}})
+		if err != nil || got.Name != oldNodeNames[0] {
+			t.Fatalf("renameWorker() = %+v, %v; want the worker named %q", got, err, oldNodeNames[0])
+		}
+	})
 }
 
 func TestReplacementName(t *testing.T) {
-	if oldNodeName != "k2s-nodepkg-debian13" || newNodeName != "node-db13-renamed" {
-		t.Fatalf("unexpected fixed rename pair %q -> %q", oldNodeName, newNodeName)
+	if !slices.Equal(oldNodeNames, []string{"node-deb13", "k2s-nodepkg-debian13"}) || newNodeName != "node-db13-renamed" {
+		t.Fatalf("unexpected fixed rename names %q -> %q", oldNodeNames, newNodeName)
 	}
-	for _, name := range []string{oldNodeName, newNodeName} {
+	for _, name := range append(slices.Clone(oldNodeNames), newNodeName) {
 		if problems := validation.IsDNS1123Label(name); len(problems) != 0 {
 			t.Errorf("invalid fixed hostname %q: %v", name, problems)
 		}
@@ -223,7 +235,7 @@ func TestSMBReaderPlacement(t *testing.T) {
 	}{
 		{"renamed worker and control plane", []corev1.Pod{worker, master1, master2}, true},
 		{"all on kubemaster is insufficient", []corev1.Pod{master1, master2, readyPod("master-reader-3", "kubemaster")}, false},
-		{"old Node is not the renamed Node", []corev1.Pod{readyPod("old-reader", oldNodeName), master1, master2}, false},
+		{"old Node is not the renamed Node", []corev1.Pod{readyPod("old-reader", oldNodeNames[0]), master1, master2}, false},
 		{"unrelated worker", []corev1.Pod{readyPod("unrelated-reader", "other-worker"), master1, master2}, false},
 		{"missing replica", []corev1.Pod{worker, master1}, false},
 		{"missing control plane reader", []corev1.Pod{worker, readyPod("worker-reader-2", newNodeName), readyPod("worker-reader-3", newNodeName)}, false},
@@ -251,12 +263,12 @@ func TestSyntheticNodeDaemonPod(t *testing.T) {
 			}}},
 		}}},
 	}
-	if !daemonPodTargetsNode(&pending, name) || daemonPodTargetsNode(&pending, oldNodeName) {
+	if !daemonPodTargetsNode(&pending, name) || daemonPodTargetsNode(&pending, oldNodeNames[0]) {
 		t.Fatal("only the exact synthetic Node's DaemonSet Pod may be cleaned up")
 	}
 	bound := pending.DeepCopy()
 	bound.Spec.NodeName = name
-	if !daemonPodTargetsNode(bound, name) || daemonPodTargetsNode(bound, oldNodeName) {
+	if !daemonPodTargetsNode(bound, name) || daemonPodTargetsNode(bound, oldNodeNames[0]) {
 		t.Fatal("bound DaemonSet Pods must match the exact Node name")
 	}
 	workload := pending.DeepCopy()
@@ -270,7 +282,7 @@ func TestSyntheticNodeDaemonPod(t *testing.T) {
 		t.Fatal("never delete a DaemonSet Pod with no exact Node target")
 	}
 	broad := pending.DeepCopy()
-	broad.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values = []string{name, oldNodeName}
+	broad.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values = []string{name, oldNodeNames[0]}
 	if daemonPodTargetsNode(broad, name) {
 		t.Fatal("never delete a DaemonSet Pod that could target another Node")
 	}
@@ -309,7 +321,7 @@ func TestRestartedNodes(t *testing.T) {
 	}{
 		{"identities preserved", func(*corev1.NodeList) {}, true},
 		{"old identity reappears", func(nodes *corev1.NodeList) {
-			nodes.Items = append(nodes.Items, corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: oldNodeName}})
+			nodes.Items = append(nodes.Items, corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: oldNodeNames[0]}})
 		}, false},
 		{"missing Node", func(nodes *corev1.NodeList) { nodes.Items = nodes.Items[:1] }, false},
 		{"renamed Node replaced", func(nodes *corev1.NodeList) { nodes.Items[0].UID = "unexpected-uid" }, false},
@@ -328,7 +340,7 @@ func TestRestartedNodes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			after := before.DeepCopy()
 			tt.change(after)
-			if err := validateRestartedNodes(before, after, oldNodeName); (err == nil) != tt.valid {
+			if err := validateRestartedNodes(before, after, oldNodeNames[0]); (err == nil) != tt.valid {
 				t.Fatalf("validateRestartedNodes() = %v, want valid=%t", err, tt.valid)
 			}
 		})

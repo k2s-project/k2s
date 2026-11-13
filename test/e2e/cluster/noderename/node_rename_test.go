@@ -29,9 +29,11 @@ import (
 
 const (
 	metadataKey = "rename.e2e.k2s.io/test"
-	oldNodeName = "k2s-nodepkg-debian13"
 	newNodeName = "node-db13-renamed"
 )
+
+// Fixture workflows provision the worker under either name; the first one present is renamed
+var oldNodeNames = []string{"node-deb13", "k2s-nodepkg-debian13"}
 
 var suite *framework.K2sTestSuite
 var client kubernetes.Interface
@@ -461,23 +463,29 @@ func readDescriptor() []byte {
 }
 
 func renameWorker(config *clusterconfig.Cluster) (clusterconfig.Node, error) {
-	var matches []clusterconfig.Node
-	if config != nil {
-		for _, node := range config.Nodes {
-			if node.Name == oldNodeName {
-				matches = append(matches, node)
+	for _, name := range oldNodeNames {
+		var matches []clusterconfig.Node
+		if config != nil {
+			for _, node := range config.Nodes {
+				if node.Name == name {
+					matches = append(matches, node)
+				}
 			}
 		}
+		if len(matches) == 0 {
+			continue
+		}
+		if len(matches) != 1 {
+			return clusterconfig.Node{}, fmt.Errorf("expected exactly one worker named %q in cluster.json, found %d", name, len(matches))
+		}
+		worker := matches[0]
+		if worker.OS != clusterconfig.OsTypeLinux || worker.Role != clusterconfig.RoleWorker ||
+			(worker.NodeType != clusterconfig.NodeTypeHost && worker.NodeType != clusterconfig.NodeTypeVMExisting) {
+			return clusterconfig.Node{}, fmt.Errorf("worker %q must be a managed Linux HOST or VM-EXISTING worker", name)
+		}
+		return worker, nil
 	}
-	if len(matches) != 1 {
-		return clusterconfig.Node{}, fmt.Errorf("expected exactly one worker named %q in cluster.json, found %d; provision it with k2s node add before running this suite", oldNodeName, len(matches))
-	}
-	worker := matches[0]
-	if worker.OS != clusterconfig.OsTypeLinux || worker.Role != clusterconfig.RoleWorker ||
-		(worker.NodeType != clusterconfig.NodeTypeHost && worker.NodeType != clusterconfig.NodeTypeVMExisting) {
-		return clusterconfig.Node{}, fmt.Errorf("worker %q must be a managed Linux HOST or VM-EXISTING worker", oldNodeName)
-	}
-	return worker, nil
+	return clusterconfig.Node{}, fmt.Errorf("expected a worker named one of %q in cluster.json; provision it with k2s node add before running this suite", oldNodeNames)
 }
 
 func uniqueName() string {

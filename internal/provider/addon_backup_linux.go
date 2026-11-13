@@ -34,8 +34,7 @@ const (
 	registryConfigBackupFile  = "registry-config.json"
 	registryConfigMapName     = "registry-config"
 
-	registryPodsTerminationTimeout = 180 * time.Second
-	registryPodsPollInterval       = 2 * time.Second
+	registryPodsPollInterval = 2 * time.Second
 )
 
 var (
@@ -43,7 +42,11 @@ var (
 	// PersistentVolume (see enableRegistry).
 	linuxRegistryDataDir = "/registry"
 
-	kubectlConflictPattern = regexp.MustCompile(`(?i)the object has been modified|conflict`)
+	registryPodsTerminationTimeout = 180 * time.Second
+
+	// kubectlConflictPattern matches an HTTP 409 from the API server, e.g.
+	// "Error from server (Conflict): ... the object has been modified".
+	kubectlConflictPattern = regexp.MustCompile(`\(Conflict\)|the object has been modified`)
 )
 
 // linuxAddonCommandOutput runs a command and returns its stdout. Stderr is kept
@@ -336,7 +339,11 @@ func restoreRegistry(backupDir string, files []string) error {
 		return fmt.Errorf("scaling down StatefulSet '%s' failed: %w", registryStatefulSet, err)
 	}
 	if !waitForNoRegistryPods() {
-		slog.Warn("[AddonRestore] Registry pods did not terminate in time; continuing restore")
+		// Do not touch the data directory while a pod may still write to it.
+		if _, err := linuxAddonCommandOutput("kubectl", "scale", "statefulset", registryStatefulSet, "-n", registryNamespace, "--replicas=1"); err != nil {
+			slog.Warn("[AddonRestore] Scaling registry StatefulSet back up failed", "error", err)
+		}
+		return fmt.Errorf("registry pods did not terminate within %s; registry data was left unchanged", registryPodsTerminationTimeout)
 	}
 
 	slog.Info("[AddonRestore] Restoring registry repository", "dir", repositoryDir)

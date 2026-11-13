@@ -474,6 +474,56 @@ func TestApplyBackupFiles_ReplacesObjectsOnConflict(t *testing.T) {
 	}
 }
 
+func TestRestoreRegistry_AbortsWhenPodsDoNotTerminate(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+	backupDir := t.TempDir()
+	writeTestFile(t, filepath.Join(backupDir, registryRepositoryArchive), "unused")
+
+	previous := registryPodsTerminationTimeout
+	registryPodsTerminationTimeout = 0
+	t.Cleanup(func() { registryPodsTerminationTimeout = previous })
+
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if args[0] == "get" {
+			return []byte("pod/registry-0\n"), nil
+		}
+		return nil, nil
+	})
+
+	err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+	if err == nil || !strings.Contains(err.Error(), "did not terminate") {
+		t.Fatalf("expected termination timeout error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+		t.Fatalf("expected repository data to be untouched: %v", statErr)
+	}
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"get pods -n registry -l app=registry -o name",
+		"scale statefulset registry -n registry --replicas=1",
+	}
+	if got := fake.kubectlCalls(); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestApplyBackupFiles_DoesNotReplaceOnUnrelatedConflictText(t *testing.T) {
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, errors.New(`admission webhook denied the request: host conflicts with another ingress`)
+	})
+
+	err := applyBackupFiles(t.TempDir(), []string{"x.yaml"})
+
+	if err == nil {
+		t.Fatal("expected apply failure")
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected no replace attempt, got: %v", fake.calls)
+	}
+}
+
 func TestApplyBackupFiles_FailsOnOtherErrors(t *testing.T) {
 	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
 		return nil, errors.New(`error: error validating "x.yaml": unknown field "foo"`)

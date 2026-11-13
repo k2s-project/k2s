@@ -52,7 +52,11 @@ var _ = BeforeSuite(func(ctx context.Context) {
 		framework.ClusterTestStepPollInterval(500*time.Millisecond))
 	DeferCleanup(suite.TearDown)
 	configDir = suite.SetupInfo().Config.Host().K2sSetupConfigDir()
-	var err error
+	config, err := clusterconfig.Read(configDir)
+	Expect(err).NotTo(HaveOccurred())
+	if config == nil || !slices.ContainsFunc(config.Nodes, func(node clusterconfig.Node) bool { return node.Role == clusterconfig.RoleWorker }) {
+		Skip("Skipping node rename tests: no worker nodes found in cluster.json")
+	}
 	client, err = kubernetes.NewForConfig(suite.Cluster().Client().Resources().GetConfig())
 	Expect(err).NotTo(HaveOccurred())
 })

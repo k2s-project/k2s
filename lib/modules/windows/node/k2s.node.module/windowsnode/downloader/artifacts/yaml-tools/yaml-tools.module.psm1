@@ -26,7 +26,7 @@ function Invoke-DownloadYamlArtifacts($downloadsBaseDirectory, $Proxy, $windowsN
 
     $downloadedFile2 = "$yamlDownloadsDirectory\yq.exe"
     Write-Log "Download yq executable"
-    Invoke-DownloadFile "$downloadedFile2" https://github.com/mikefarah/yq/releases/download/v4.53.6/yq_windows_amd64.exe $true $Proxy
+    Invoke-DownloadFile "$downloadedFile2" https://github.com/mikefarah/yq/releases/download/v4.54.3/yq_windows_amd64.exe $true $Proxy
     Move-Item -Path "$downloadedFile2" -Destination $yamlDownloadsDirectory
     Write-Log "Move $downloadedFile2 to $yamlDownloadsDirectory done"
 

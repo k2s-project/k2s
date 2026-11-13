@@ -8,16 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-func TestLoggingModule(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "logging.sh Unit Tests", Label("unit", "ci", "lifecycle"))
-}
 
 type scriptResult struct {
 	stdOut  string

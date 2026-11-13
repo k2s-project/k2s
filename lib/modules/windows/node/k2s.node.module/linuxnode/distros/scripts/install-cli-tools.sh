@@ -34,7 +34,7 @@ fi
 # lib/modules/windows/node/k2s.node.module/windowsnode/downloader/artifacts/yaml-tools/yaml-tools.module.psm1
 if ! command -v yq &> /dev/null; then
     echo "Installing yq..."
-    YQ_VERSION="v4.53.4"
+    YQ_VERSION="v4.54.3"
     ARCH=$(uname -m)
     # yq release artifacts use Go's architecture names: yq_linux_amd64 / yq_linux_arm64.
     # 'uname -m' reports x86_64 / aarch64, so both have to be normalized or the download 404s.
@@ -55,7 +55,7 @@ fi
 # lib/modules/windows/node/k2s.node.module/windowsnode/downloader/artifacts/helm/helm.module.psm1
 if ! command -v helm &> /dev/null; then
     echo "Installing helm..."
-    HELM_VERSION="v4.3.1"
+    HELM_VERSION="v4.3.2"
     ARCH=$(uname -m)
     if [[ "$ARCH" == "x86_64" ]]; then
         ARCH="amd64"

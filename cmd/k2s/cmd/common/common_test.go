@@ -106,47 +106,6 @@ var _ = Describe("common", func() {
 		})
 	})
 
-	Describe("PtermWriter", Label("unit"), func() {
-		Describe("WriteStdErr", func() {
-			It("notifies all registered listeners with the line", func() {
-				var first, second []string
-				sut := NewPtermWriter()
-				sut.OnStdErr(func(line string) { first = append(first, line) })
-				sut.OnStdErr(func(line string) { second = append(second, line) })
-
-				sut.WriteStdErr("error 1")
-				sut.WriteStdErr("error 2")
-
-				Expect(first).To(Equal([]string{"error 1", "error 2"}))
-				Expect(second).To(Equal([]string{"error 1", "error 2"}))
-			})
-		})
-
-		Describe("WriteStdOut", func() {
-			It("does not notify stderr listeners", func() {
-				notified := false
-				sut := NewPtermWriter()
-				sut.OnStdErr(func(string) { notified = true })
-
-				sut.WriteStdOut("some output")
-
-				Expect(notified).To(BeFalse())
-			})
-		})
-	})
-
-	Describe("CmdContext", Label("unit"), func() {
-		Describe("StdWriter", func() {
-			It("returns the writer the context was created with", func() {
-				writer := NewPtermWriter()
-
-				sut := NewCmdContext(nil, nil, nil, writer)
-
-				Expect(sut.StdWriter()).To(BeIdenticalTo(writer))
-			})
-		})
-	})
-
 	Describe("CmdContext", Label("integration"), func() {
 		Describe("EnsureK2sK8sContext", func() {
 			var kubeConfigDir string
@@ -180,7 +139,7 @@ var _ = Describe("common", func() {
 				hostConfig := config.NewHostConfig(config.NewKubeConfig(kubeConfigDir, "", ""), nil, "", "", "")
 				k2sConfig := config.NewK2sConfig(hostConfig, nil)
 
-				return NewCmdContext(k2sConfig, nil, nil, nil)
+				return NewCmdContext(k2sConfig, nil, nil)
 			}
 
 			When("kubeconfig file cannot be read", func() {

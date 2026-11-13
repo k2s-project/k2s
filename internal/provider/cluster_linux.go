@@ -7,6 +7,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -32,6 +33,10 @@ func newLinuxClusterProvider(cfg ProviderConfig) *linuxClusterProvider {
 }
 
 func (p *linuxClusterProvider) Install(cfg ClusterInstallConfig) error {
+	if cfg.StdWriter == nil {
+		return errors.New("install requires a StdWriter")
+	}
+
 	return lifecycle.Execute("Install", lifecycle.Operation{
 		InstallDir:           cfg.InstallDir,
 		ConfigDir:            cfg.ConfigDir,
@@ -46,7 +51,7 @@ func (p *linuxClusterProvider) Install(cfg ClusterInstallConfig) error {
 		WorkerMemory:         cfg.WorkerMemory,
 		WorkerDiskSize:       cfg.WorkerDiskSize,
 		WindowsQCOW2Path:     cfg.WindowsQCOW2Path,
-	}, p.stdWriter, cfg.ShowLogs)
+	}, cfg.StdWriter, cfg.ShowLogs)
 }
 
 func (p *linuxClusterProvider) Uninstall(cfg ClusterUninstallConfig) error {

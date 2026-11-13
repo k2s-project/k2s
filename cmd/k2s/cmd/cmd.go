@@ -27,7 +27,7 @@ import (
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/k2s-project/k2s/cmd/k2s/utils/logging"
 	"github.com/k2s-project/k2s/internal/cli"
-	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
+	cConfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/host"
 	bl "github.com/k2s-project/k2s/internal/logging"
@@ -83,14 +83,13 @@ func CreateRootCmd(logger *logging.Slogger) (*cobra.Command, error) {
 
 			slog.Debug("config loaded", "config", k2sConfig)
 
-			stdWriter := cc.NewPtermWriter()
 			registry := provider.NewRegistry(provider.ProviderConfig{
 				InstallDir: utils.InstallDir(),
 				ConfigDir:  k2sConfig.Host().K2sSetupConfigDir(),
-				StdWriter:  stdWriter,
+				StdWriter:  cc.NewPtermWriter(),
 			})
 
-			cmd.SetContext(context.WithValue(cmd.Context(), cc.ContextKeyCmdContext, cc.NewCmdContext(k2sConfig, logger, registry, stdWriter)))
+			cmd.SetContext(context.WithValue(cmd.Context(), cc.ContextKeyCmdContext, cc.NewCmdContext(k2sConfig, logger, registry)))
 
 			return nil
 		},
@@ -101,10 +100,10 @@ func CreateRootCmd(logger *logging.Slogger) (*cobra.Command, error) {
 		return nil, err
 	}
 
-	cmd.AddCommand(start.Startk8sCmd)
-	cmd.AddCommand(stop.Stopk8sCmd)
+	cmd.AddCommand(start.StartK8sCmd)
+	cmd.AddCommand(stop.StopK8sCmd)
 	cmd.AddCommand(in.InstallCmd)
-	cmd.AddCommand(un.Uninstallk8sCmd)
+	cmd.AddCommand(un.UninstallK8sCmd)
 	cmd.AddCommand(im.ImageCmd)
 	cmd.AddCommand(stat.StatusCmd)
 	cmd.AddCommand(addonsCmd)
@@ -174,7 +173,7 @@ func resolveInstallDirForDelta(exeDir string) (string, error) {
 	return installFolder, nil
 }
 
-// resolveInstalledK2s indirects config.ResolveInstalledK2s so that the PATH-based
+// resolveInstalledK2s wraps config.ResolveInstalledK2s so that the PATH-based
 // discovery can be substituted in unit tests.
 var resolveInstalledK2s = config.ResolveInstalledK2s
 
@@ -186,7 +185,7 @@ var resolveInstalledK2s = config.ResolveInstalledK2s
 // therefore its install dir must be used (consistent with the upgrade cmd).
 func resolveInstallDirFromPath(exeDir string, originalErr error) (string, error) {
 	installed, resolveErr := resolveInstalledK2s()
-	if resolveErr != nil && !errors.Is(resolveErr, cconfig.ErrSystemInCorruptedState) {
+	if resolveErr != nil && !errors.Is(resolveErr, cConfig.ErrSystemInCorruptedState) {
 		slog.Warn("Could not discover installed K2s via PATH", "error", resolveErr)
 		return exeDir, originalErr
 	}

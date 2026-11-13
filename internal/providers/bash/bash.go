@@ -52,9 +52,11 @@ func (builder *scriptBuilder) Exec() error {
 		cmdArgs = append(cmdArgs, "env", ShowLogsEnvVar+"=true")
 	}
 	cmdArgs = append(cmdArgs, "bash", builder.script)
-	cmdArgs = append(cmdArgs, builder.args...)
 
+	// Crucial order: before any arguments containing potentially sensitive information.
 	slog.Debug("Bash command created", "command", cmdArgs)
+
+	cmdArgs = append(cmdArgs, builder.args...)
 
 	cmd := os.NewCmd(cmdArgs[0]).WithArgs(cmdArgs[1:]...)
 	if builder.writer != nil {

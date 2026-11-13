@@ -17,15 +17,16 @@ import (
 	"github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/definitions"
 	bl "github.com/k2s-project/k2s/internal/logging"
-	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/k2s-project/k2s/internal/providers/kubeconfig"
 
 	"github.com/pterm/pterm"
 )
 
-type FailureSeverity uint8
-type ContextKey string
+type (
+	FailureSeverity uint8
+	ContextKey      string
+)
 
 type Spinner interface {
 	Stop() error
@@ -48,14 +49,12 @@ type CmdResult struct {
 
 type PtermWriter struct {
 	errorLineBuffer *bl.LogBuffer
-	stdErrListeners []func(line string)
 }
 
 type CmdContext struct {
 	config    *config.K2sConfig
 	logger    *logging.Slogger
 	providers *provider.Registry
-	stdWriter output.ObservableStreamWriter
 }
 
 type CmdSession struct {
@@ -108,12 +107,11 @@ func NewPtermWriter() *PtermWriter {
 	}
 }
 
-func NewCmdContext(config *config.K2sConfig, logger *logging.Slogger, providers *provider.Registry, stdWriter output.ObservableStreamWriter) *CmdContext {
+func NewCmdContext(config *config.K2sConfig, logger *logging.Slogger, providers *provider.Registry) *CmdContext {
 	return &CmdContext{
 		config:    config,
 		logger:    logger,
 		providers: providers,
-		stdWriter: stdWriter,
 	}
 }
 
@@ -238,16 +236,8 @@ func (w *PtermWriter) WriteStdOut(line string) {
 
 func (w *PtermWriter) WriteStdErr(line string) {
 	w.errorLineBuffer.Log(line)
-	for _, listener := range w.stdErrListeners {
-		listener(line)
-	}
 
 	pterm.Printfln("⏳ %s", pterm.Yellow(line))
-}
-
-// OnStdErr registers a listener that is called for each stderr line.
-func (w *PtermWriter) OnStdErr(listener func(line string)) {
-	w.stdErrListeners = append(w.stdErrListeners, listener)
 }
 
 func (w *PtermWriter) Flush() { w.errorLineBuffer.Flush() }
@@ -257,8 +247,6 @@ func (c *CmdContext) Config() *config.K2sConfig { return c.config }
 func (c *CmdContext) Logger() *logging.Slogger { return c.logger }
 
 func (c *CmdContext) Providers() *provider.Registry { return c.providers }
-
-func (c *CmdContext) StdWriter() output.ObservableStreamWriter { return c.stdWriter }
 
 func (c *CmdContext) EnsureK2sK8sContext(clusterName string) error {
 	slog.Debug("Ensuring correct K8s context", "cluster-name", clusterName)

@@ -33,6 +33,9 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 	if cfg.LinuxOnly && cfg.WSL {
 		return errors.New("linux-only in combination with WSL is currently not supported")
 	}
+	if cfg.StdWriter == nil {
+		return errors.New("install requires a StdWriter")
+	}
 
 	snapshot, err := effectiveconfig.Stage(cfg.ConfigDir, cfg.EffectiveInstallConfig)
 	if err != nil {
@@ -93,7 +96,7 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 	}
 	cmd += " -EffectiveInstallConfigPath " + utils.EscapeWithSingleQuotes(snapshot.Path())
 
-	if err := powershell.ExecutePs(cmd, p.stdWriter); err != nil {
+	if err := powershell.ExecutePs(cmd, cfg.StdWriter); err != nil {
 		if abortErr := snapshot.Abort(); abortErr != nil {
 			return fmt.Errorf("installation failed: %w; snapshot cleanup failed: %v", err, abortErr)
 		}

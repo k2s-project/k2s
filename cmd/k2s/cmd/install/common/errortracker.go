@@ -3,24 +3,35 @@
 
 package common
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/k2s-project/k2s/internal/output"
+)
 
 const preReqMarker = "[PREREQ-FAILED]"
 
+// errorTracker is a StreamWriter decorator that records stderr lines while forwarding all output to the wrapped writer.
 type errorTracker struct {
-	lines []string
+	writer output.StreamWriter
+	lines  []string
 }
 
-func NewErrorTracker() *errorTracker {
+func NewErrorTracker(writer output.StreamWriter) *errorTracker {
 	return &errorTracker{
-		lines: []string{},
+		writer: writer,
+		lines:  []string{},
 	}
 }
 
-// Track records a stderr line; it can be used as a stderr listener.
-func (t *errorTracker) Track(line string) {
-	t.lines = append(t.lines, line)
+func (t *errorTracker) WriteStdOut(message string) { t.writer.WriteStdOut(message) }
+
+func (t *errorTracker) WriteStdErr(message string) {
+	t.lines = append(t.lines, message)
+	t.writer.WriteStdErr(message)
 }
+
+func (t *errorTracker) Flush() { t.writer.Flush() }
 
 // ErrOccurred returns true if at least one stderr line was tracked.
 func (t *errorTracker) ErrOccurred() bool {

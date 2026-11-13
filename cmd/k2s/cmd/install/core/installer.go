@@ -105,10 +105,9 @@ func (i *Installer) Install(
 
 	i.Printer.Printfln("🤖 Installing K2s '%s' %s in '%s' on %s", kind, i.GetVersionFunc(), i.GetInstallDirFunc(), i.GetPlatformFunc())
 
-	errorTracker := common.NewErrorTracker()
-	context.StdWriter().OnStdErr(errorTracker.Track)
+	errorTracker := common.NewErrorTracker(cc.NewPtermWriter())
 
-	err = i.ExecutePsScript(cmd, context.StdWriter())
+	err = i.ExecutePsScript(cmd, errorTracker)
 	if err != nil {
 		if snapshot != nil {
 			if abortErr := snapshot.Abort(); abortErr != nil {

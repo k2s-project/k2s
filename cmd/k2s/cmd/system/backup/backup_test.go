@@ -131,7 +131,7 @@ var _ = Describe("backup", func() {
 
 		BeforeEach(func() {
 			mockSys = &mockSystemProvider{}
-			cmdContext := common.NewCmdContext(nil, nil, &provider.Registry{System: mockSys}, nil)
+			cmdContext := common.NewCmdContext(nil, nil, &provider.Registry{System: mockSys})
 			ctx := context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext)
 			SystemBackupCmd.SetContext(ctx)
 		})

@@ -31,7 +31,7 @@ import (
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
 
-var Startk8sCmd = &cobra.Command{
+var StartK8sCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Starts K2s cluster on the host machine",
 	Long: `Starts K2s.
@@ -63,12 +63,12 @@ Related node stop operation:
 }
 
 func init() {
-	Startk8sCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
-	Startk8sCmd.Flags().BoolP(common.AutouseCachedVSwitchFlagName, "", false, common.AutouseCachedVSwitchFlagUsage)
-	Startk8sCmd.Flags().BoolP(common.IgnoreIfRunningFlagName, common.IgnoreIfRunningFlagShort, false, common.IgnoreIfRunningFlagUsage)
-	Startk8sCmd.Flags().String(common.NodeFlagName, "", common.NodeFlagUsage)
-	Startk8sCmd.Flags().SortFlags = false
-	Startk8sCmd.Flags().PrintDefaults()
+	StartK8sCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
+	StartK8sCmd.Flags().BoolP(common.AutouseCachedVSwitchFlagName, "", false, common.AutouseCachedVSwitchFlagUsage)
+	StartK8sCmd.Flags().BoolP(common.IgnoreIfRunningFlagName, common.IgnoreIfRunningFlagShort, false, common.IgnoreIfRunningFlagUsage)
+	StartK8sCmd.Flags().String(common.NodeFlagName, "", common.NodeFlagUsage)
+	StartK8sCmd.Flags().SortFlags = false
+	StartK8sCmd.Flags().PrintDefaults()
 }
 
 func startk8s(ccmd *cobra.Command, args []string) error {
@@ -250,7 +250,6 @@ func startAdditionalNodes(context *common.CmdContext, flags *pflag.FlagSet, conf
 }
 
 func isClusterRunning(ctx *common.CmdContext) (bool, error) {
-
 	clusterStatus, err := status.LoadStatus(ctx)
 	if err != nil {
 		slog.Error("Failed to load cluster status", "error", err)

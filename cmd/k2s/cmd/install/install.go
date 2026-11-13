@@ -243,8 +243,7 @@ func install(cmd *cobra.Command, args []string) error {
 
 	slog.Info("Installing", "kind", kind, "version", ver, "platform", utils.Platform())
 
-	errorTracker := common.NewErrorTracker()
-	context.StdWriter().OnStdErr(errorTracker.Track)
+	errorTracker := common.NewErrorTracker(cc.NewPtermWriter())
 
 	err = context.Providers().Cluster.Install(provider.ClusterInstallConfig{
 		SetupName:                         string(kind),
@@ -276,6 +275,7 @@ func install(cmd *cobra.Command, args []string) error {
 		ClusterName:                       "k2s-cluster",
 		ControlPlaneHostname:              hostname,
 		EffectiveInstallConfig:            effectiveInstallConfig,
+		StdWriter:                         errorTracker,
 	})
 	if err != nil {
 		errorLine, found := errorTracker.PreRequisiteError()

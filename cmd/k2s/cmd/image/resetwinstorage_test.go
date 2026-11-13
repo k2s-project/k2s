@@ -217,6 +217,6 @@ func resetFlags() {
 	resetWinStorageCmd.Flags().Set(forceZapFlag, "false")
 
 	k2sConfig := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-	cmdContext := common.NewCmdContext(k2sConfig, nil, nil, nil)
+	cmdContext := common.NewCmdContext(k2sConfig, nil, nil)
 	resetWinStorageCmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 }

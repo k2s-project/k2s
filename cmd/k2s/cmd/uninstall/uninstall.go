@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strconv"
 
-	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
+	cConfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/k2s-project/k2s/internal/version"
@@ -21,22 +21,22 @@ import (
 
 var (
 	skipPurge       = "skip-purge"
-	Uninstallk8sCmd = &cobra.Command{
+	UninstallK8sCmd = &cobra.Command{
 		Use:   "uninstall",
 		Short: "Uninstalls K2s cluster from the host machine",
-		RunE:  uninstallk8s,
+		RunE:  uninstallK8s,
 	}
 )
 
 func init() {
-	Uninstallk8sCmd.Flags().Bool(skipPurge, false, "Skips purging all the files. This option is not set by default.")
-	Uninstallk8sCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
-	Uninstallk8sCmd.Flags().BoolP(common.DeleteFilesFlagName, common.DeleteFilesFlagShorthand, false, common.DeleteFilesFlagUsage)
-	Uninstallk8sCmd.Flags().SortFlags = false
-	Uninstallk8sCmd.Flags().PrintDefaults()
+	UninstallK8sCmd.Flags().Bool(skipPurge, false, "Skips purging all the files. This option is not set by default.")
+	UninstallK8sCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
+	UninstallK8sCmd.Flags().BoolP(common.DeleteFilesFlagName, common.DeleteFilesFlagShorthand, false, common.DeleteFilesFlagUsage)
+	UninstallK8sCmd.Flags().SortFlags = false
+	UninstallK8sCmd.Flags().PrintDefaults()
 }
 
-func uninstallk8s(cmd *cobra.Command, args []string) error {
+func uninstallK8s(cmd *cobra.Command, args []string) error {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
 	ver := version.GetVersion()
 
@@ -45,7 +45,7 @@ func uninstallk8s(cmd *cobra.Command, args []string) error {
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
 	runtimeConfig, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir())
 	if err != nil {
-		if errors.Is(err, cconfig.ErrSystemNotInstalled) {
+		if errors.Is(err, cConfig.ErrSystemNotInstalled) {
 			// A Linux install persists runtime state only after kubeadm and the CNI
 			// complete. Permit cleanup of an interrupted native installation even
 			// when it failed before that final persistence step. Windows retains
@@ -53,7 +53,7 @@ func uninstallk8s(cmd *cobra.Command, args []string) error {
 			if runtime.GOOS != "linux" {
 				return common.CreateSystemNotInstalledCmdFailure()
 			}
-		} else if !errors.Is(err, cconfig.ErrSystemInCorruptedState) {
+		} else if !errors.Is(err, cConfig.ErrSystemInCorruptedState) {
 			return err
 		}
 	}

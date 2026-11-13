@@ -8,9 +8,3 @@ type StreamWriter interface {
 	WriteStdErr(message string)
 	Flush()
 }
-
-// ObservableStreamWriter is a StreamWriter that notifies listeners about stderr lines.
-type ObservableStreamWriter interface {
-	StreamWriter
-	OnStdErr(listener func(line string))
-}

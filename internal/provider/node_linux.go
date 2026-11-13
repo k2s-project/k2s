@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
-	"strings"
 )
 
 type linuxNodeProvider struct {
@@ -23,27 +22,9 @@ func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
 
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	return errors.New("not implemented")
-	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "name", cfg.NodeName)
-
-	// Generate join token on control plane
-	output, err := exec.Command("kubeadm", "token", "create", "--print-join-command").Output()
-	if err != nil {
-		return fmt.Errorf("failed to create join token: %w", err)
-	}
-	joinCmd := strings.TrimSpace(string(output))
-
-	// Execute join on the target node via SSH
-	_, err = sshCmd(joinCmd)
-	if err != nil {
-		return fmt.Errorf("kubeadm join failed on remote node: %w", err)
-	}
-
-	slog.Info("[Node] Node added successfully")
-	return nil
 }
 
 func (p *linuxNodeProvider) Remove(cfg NodeRemoveConfig) error {
-	return errors.New("not implemented")
 	slog.Info("[Node] Removing node", "name", cfg.NodeName)
 
 	// Drain the node

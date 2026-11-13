@@ -85,7 +85,7 @@ func setupTestCmdContext(cmd *cobra.Command, mockImg *mockImageProvider, linuxOn
 		reg = &provider.Registry{Image: mockImg}
 	}
 
-	cmdContext := common.NewCmdContext(k2sConfig, nil, reg, nil)
+	cmdContext := common.NewCmdContext(k2sConfig, nil, reg)
 	ctx := context.WithValue(context.Background(), common.ContextKeyCmdContext, cmdContext)
 	cmd.SetContext(ctx)
 

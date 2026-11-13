@@ -3,6 +3,8 @@
 
 package provider
 
+import "github.com/k2s-project/k2s/internal/output"
+
 // ClusterProvider abstracts cluster lifecycle operations.
 // On Windows: delegates to PowerShell scripts.
 // On Linux: uses kubeadm, systemctl, libvirt natively.
@@ -54,6 +56,9 @@ type ClusterInstallConfig struct {
 	ClusterName                       string
 	ControlPlaneHostname              string
 	EffectiveInstallConfig            []byte
+	// StdWriter receives the install output instead of the provider's default writer; it is required
+	// so that the caller can observe the output (e.g. to detect prerequisite failures).
+	StdWriter output.StreamWriter
 }
 
 // ClusterUninstallConfig holds parameters for cluster uninstallation.

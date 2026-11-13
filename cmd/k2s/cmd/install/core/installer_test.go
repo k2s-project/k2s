@@ -105,7 +105,7 @@ var _ = Describe("core", func() {
 
 				cmd := &cobra.Command{}
 				cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-				cmdContext := common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())
+				cmdContext := common.NewCmdContext(cfg, nil, nil)
 				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 				runtimeConfig := config.NewK2sRuntimeConfig(nil, config.NewK2sInstallConfig("existent", false, "", false, false), nil)
 
@@ -138,7 +138,7 @@ var _ = Describe("core", func() {
 					kind := ic.Kind("test-kind")
 					cmd := &cobra.Command{}
 					cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-					cmdContext := common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())
+					cmdContext := common.NewCmdContext(cfg, nil, nil)
 					cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 
 					expectedError := errors.New("oops")
@@ -167,7 +167,7 @@ var _ = Describe("core", func() {
 					kind := ic.Kind("test-kind")
 					cmd := &cobra.Command{}
 					cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-					cmdContext := common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())
+					cmdContext := common.NewCmdContext(cfg, nil, nil)
 					cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 
 					expectedError := common.CreateSystemInCorruptedStateCmdFailure()
@@ -192,7 +192,7 @@ var _ = Describe("core", func() {
 				kind := ic.Kind("test-kind")
 				cmd := &cobra.Command{}
 				cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-				cmdContext := common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())
+				cmdContext := common.NewCmdContext(cfg, nil, nil)
 				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 
 				installConfig := &ic.InstallConfig{}
@@ -223,7 +223,7 @@ var _ = Describe("core", func() {
 				kind := ic.Kind("buildonly")
 				cmd := &cobra.Command{}
 				cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())))
+				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(cfg, nil, nil)))
 				installConfig := &ic.InstallConfig{Kind: "buildonly", ApiVersion: "v1"}
 				var nilConfig *config.K2sRuntimeConfig
 				snapshot := &snapshotMock{path: `C:\config dir\candidate.json`}
@@ -235,7 +235,7 @@ var _ = Describe("core", func() {
 				printerMock := &myMock{}
 				printerMock.On(reflection.GetFunctionName(printerMock.Printfln), mock.Anything, mock.Anything)
 				executorMock := &myMock{}
-				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), `test-cmd -EffectiveInstallConfigPath 'C:\config dir\candidate.json'`, mock.AnythingOfType("*common.PtermWriter")).Return(nil)
+				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), `test-cmd -EffectiveInstallConfigPath 'C:\config dir\candidate.json'`, mock.Anything).Return(nil)
 
 				sut := &core.Installer{
 					Printer: printerMock, InstallConfigAccess: installConfigMock, ExecutePsScript: executorMock.ExecutePs,
@@ -257,7 +257,7 @@ var _ = Describe("core", func() {
 				kind := ic.Kind("buildonly")
 				cmd := &cobra.Command{}
 				cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())))
+				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(cfg, nil, nil)))
 				installConfig := &ic.InstallConfig{Kind: "buildonly", ApiVersion: "v1"}
 				var nilConfig *config.K2sRuntimeConfig
 				snapshot := &snapshotMock{path: `C:\config\candidate.json`}
@@ -289,7 +289,7 @@ var _ = Describe("core", func() {
 				kind := ic.Kind("test-kind")
 				cmd := &cobra.Command{}
 				cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-				cmdContext := common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())
+				cmdContext := common.NewCmdContext(cfg, nil, nil)
 				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 
 				installConfig := &ic.InstallConfig{}
@@ -313,9 +313,7 @@ var _ = Describe("core", func() {
 				installConfigMock.On(reflection.GetFunctionName(installConfigMock.Load), kind, cmd.Flags()).Return(installConfig, nil)
 
 				executorMock := &myMock{}
-				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), testCmd, mock.AnythingOfType("*common.PtermWriter")).Return(expectedError)
-				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), testCmd, mock.AnythingOfType("*common.PtermWriter.ErrorLines")).Return("[PREREQ-FAILED] pre-requisite failed")
-				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), testCmd, mock.AnythingOfType("*common.GetInstallPreRequisiteError")).Return("[PREREQ-FAILED] pre-requisite failed", true)
+				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), testCmd, mock.Anything).Return(expectedError)
 
 				sut := &core.Installer{
 					Printer:             printerMock,
@@ -338,7 +336,7 @@ var _ = Describe("core", func() {
 				kind := ic.Kind("test-kind")
 				cmd := &cobra.Command{}
 				cfg := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-				cmdContext := common.NewCmdContext(cfg, nil, nil, common.NewPtermWriter())
+				cmdContext := common.NewCmdContext(cfg, nil, nil)
 				cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 
 				installConfig := &ic.InstallConfig{}
@@ -364,9 +362,8 @@ var _ = Describe("core", func() {
 
 				prereqErrorLine := "[PREREQ-FAILED] random check fails"
 				executorMock := &myMock{}
-				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), testCmd, mock.AnythingOfType("*common.PtermWriter")).Return(expectedError).Run(func(args mock.Arguments) {
-					ow := args.Get(1).(*common.PtermWriter)
-					ow.WriteStdErr(prereqErrorLine)
+				executorMock.On(reflection.GetFunctionName(executorMock.ExecutePs), testCmd, mock.Anything).Return(expectedError).Run(func(args mock.Arguments) {
+					args.Get(1).(output.StreamWriter).WriteStdErr(prereqErrorLine)
 				})
 
 				sut := &core.Installer{

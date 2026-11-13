@@ -27,19 +27,19 @@ import (
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
 
-var Stopk8sCmd = &cobra.Command{
+var StopK8sCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stops K2s cluster on the host machine",
 	RunE:  stopk8s,
 }
 
 func init() {
-	Stopk8sCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
-	Stopk8sCmd.Flags().BoolP(common.CacheVSwitchFlagName, "", false, common.CacheVSwitchFlagUsage)
-	Stopk8sCmd.Flags().String(common.NodeFlagName, "", common.NodeFlagUsage)
-	Stopk8sCmd.Flags().BoolP("no-wait", "", false, "Skip waiting for node readiness transition (skip the ~50 second wait for NotReady state)")
-	Stopk8sCmd.Flags().SortFlags = false
-	Stopk8sCmd.Flags().PrintDefaults()
+	StopK8sCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
+	StopK8sCmd.Flags().BoolP(common.CacheVSwitchFlagName, "", false, common.CacheVSwitchFlagUsage)
+	StopK8sCmd.Flags().String(common.NodeFlagName, "", common.NodeFlagUsage)
+	StopK8sCmd.Flags().BoolP("no-wait", "", false, "Skip waiting for node readiness transition (skip the ~50 second wait for NotReady state)")
+	StopK8sCmd.Flags().SortFlags = false
+	StopK8sCmd.Flags().PrintDefaults()
 }
 
 func stopk8s(cmd *cobra.Command, args []string) error {

@@ -230,6 +230,9 @@ function Start-WindowsWorkerNode {
 
     Wait-NetworkL2BridgeReady -PodSubnetworkNumber $PodSubnetworkNumber
 
+    # Confirm-LoopbackAdapterIP may have re-created the loopback address, which drops SkipAsSource
+    Set-LoopbackAdapterSkipAsSource
+
     Add-HostBridgeIpReservation -PodSubnetworkNumber $PodSubnetworkNumber
 
     CheckFlannelConfig

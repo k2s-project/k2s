@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
 $configModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\config\config.module.psm1"
@@ -433,6 +433,47 @@ function Set-LoopbackAdapterProperties {
     }
 }
 
+<#
+.SYNOPSIS
+    Hides the loopback adapter IP from the host's own name resolution.
+.DESCRIPTION
+    Windows returns every local address for its own computer name, so applications taking
+    the first result may get this K2s-internal IP. The flag is lost whenever the address is
+    re-created, hence it is re-applied on every start; failures are not fatal.
+#>
+function Set-LoopbackAdapterSkipAsSource {
+    param (
+        [Parameter()]
+        [string] $IPAddress = $(Get-LoopbackAdapterIP)
+    )
+    $overrideAdapter = Get-L2BridgeAdapterOverride
+    if ($overrideAdapter) {
+        # the l2 bridge is on a real NIC carrying the node's own address, which must stay usable as source
+        Write-Log "[LoopbackAdapter] L2 bridge is configured on adapter '$overrideAdapter', SkipAsSource is not changed"
+        return
+    }
+
+    $addresses = @(Get-NetIPAddress -IPAddress $IPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+    if ($addresses.Count -eq 0) {
+        Write-Log "[LoopbackAdapter] IP address $IPAddress not found, SkipAsSource not set"
+        return
+    }
+
+    foreach ($address in $addresses) {
+        if ($address.SkipAsSource) {
+            Write-Log "[LoopbackAdapter] SkipAsSource already set for $IPAddress on '$($address.InterfaceAlias)'"
+            continue
+        }
+        try {
+            $address | Set-NetIPAddress -SkipAsSource $true -ErrorAction Stop
+            Write-Log "[LoopbackAdapter] SkipAsSource set for $IPAddress on '$($address.InterfaceAlias)'"
+        }
+        catch {
+            Write-Log "[LoopbackAdapter] WARNING: Failed to set SkipAsSource for $IPAddress on '$($address.InterfaceAlias)': $($_.Exception.Message)"
+        }
+    }
+}
+
 function Set-LoopbackAdapterExtendedProperties {
     param (
         [Parameter()]
@@ -476,6 +517,7 @@ function Set-LoopbackAdapterExtendedProperties {
     Set-DnsClient -InterfaceIndex $loopbackAdapterIfIndex -RegisterThisConnectionsAddress $false | Out-Null
     netsh int ipv4 set int "$loopbackAdapterAlias" forwarding=enabled | Out-Null
     Set-NetIPInterface -InterfaceIndex $loopbackAdapterIfIndex -InterfaceMetric 102  | Out-Null
+    Set-LoopbackAdapterSkipAsSource -IPAddress $ipAddressForLoopbackAdapter
 }
 
 function Set-NewNameForLoopbackAdapter {
@@ -525,4 +567,4 @@ Export-ModuleMember Set-LoopbackAdapterProperties, Get-LoopbackAdapterIP,
 Get-LoopbackAdapterGateway, Get-LoopbackAdapterCIDR, New-DefaultLoopbackAdapter, Get-L2BridgeName,
 Enable-LoopbackAdapter, Disable-LoopbackAdapter, Uninstall-LoopbackAdapter, Get-DevgonExePath, Set-LoopbackAdapterExtendedProperties,
 Set-NewNameForLoopbackAdapter, Set-PrivateNetworkProfileForLoopbackAdapter, Confirm-LoopbackAdapterIP,
-Get-L2BridgeAdapterOverride
+Get-L2BridgeAdapterOverride, Set-LoopbackAdapterSkipAsSource

@@ -170,6 +170,29 @@ More information on this topic:
 - [Wikipedia on APIPA](https://en.wikipedia.org/wiki/Link-local_address){target="_blank"}
 - [Microsoft on APIPA](https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-2000-server/cc958957(v=technet.10)?redirectedfrom=MSDN){target="_blank"}
 
+## K2s Adapter IPs Returned for the Host's Own Name
+### Problem
+When *Windows* resolves its own computer name, it returns every IPv4 address of every active adapter, including the *K2s* virtual adapters. Applications that use the first result of such a lookup as "their" address may pick a *K2s*-internal address that other machines cannot reach:
+
+```powershell
+[System.Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object AddressFamily -eq InterNetwork
+```
+
+| Address | Adapter | Behaviour |
+|---------|---------|-----------|
+| `172.22.1.2` | `vEthernet (Loopbackk2s)` | Hidden by *K2s* (`SkipAsSource`), set on every `k2s start` |
+| `172.19.1.1` | `vEthernet (KubeSwitch)` | Still returned; hiding it leaves the host without a source address towards the control plane and breaks cluster DNS on the host |
+| `172.20.1.2` | `vEthernet (cbr0_ep)` | Still returned; hiding it leaves the host without a source address towards *Windows* pods and breaks cluster DNS on the host |
+
+Disabling DNS registration on the adapters does not change the result, because *Windows* does not query DNS for its own name.
+
+### Solution
+Do not rely on the first result of an own-name lookup. Configure the application to bind to the address of the physical NIC explicitly, or determine the source address for a specific target:
+
+```powershell
+Find-NetRoute -RemoteIPAddress <target-ip> | Select-Object -First 1 -ExpandProperty IPAddress
+```
+
 ## Unable to Mount File Share Between Nodes
 ### Problem
 Mounting errors like the following occurred:

@@ -7,7 +7,7 @@ BeforeAll {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile(
         "$PSScriptRoot\loopbackadapter.module.psm1", [ref]$tokens, [ref]$errors)
     if ($errors.Count -gt 0) { throw ($errors | Out-String) }
-    foreach ($name in @('Invoke-LoopbackDeviceCommand', 'Wait-LoopbackAdapterCount', 'New-LoopbackAdapter', 'Remove-LoopbackAdapter')) {
+    foreach ($name in @('Invoke-LoopbackDeviceCommand', 'Wait-LoopbackAdapterCount', 'New-LoopbackAdapter', 'Remove-LoopbackAdapter', 'Set-LoopbackAdapterSkipAsSource', 'Set-LoopbackAdapterExtendedProperties')) {
         $function = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -16,9 +16,20 @@ BeforeAll {
     }
     function Write-Log { param($Message, [switch]$Console) }
     function Get-NetAdapter { [CmdletBinding()] param($Name) }
-    function Set-NetIPInterface { [CmdletBinding()] param($InterfaceAlias, $InterfaceMetric) }
+    function Set-NetIPInterface { [CmdletBinding()] param($InterfaceAlias, $InterfaceIndex, $InterfaceMetric, $Dhcp) }
     function Set-NewNameForLoopbackAdapter { param($Adapter) }
     function Get-L2BridgeName {}
+    function Get-L2BridgeAdapterOverride {}
+    function Get-LoopbackAdapterIP {}
+    function Get-NetIPAddress { [CmdletBinding()] param($IPAddress, $AddressFamily) }
+    function Set-NetIPAddress { [CmdletBinding()] param([Parameter(ValueFromPipeline)] $InputObject, $SkipAsSource) process {} }
+    function Get-NetIPConfiguration { [CmdletBinding()] param($InterfaceAlias) }
+    function Get-NetIPInterface { [CmdletBinding()] param() }
+    function Get-NetRoute { [CmdletBinding()] param($InterfaceIndex, $DestinationPrefix) }
+    function Get-LoopbackAdapterGateway {}
+    function Set-IPAddressAndDnsClientServerAddress { param($IPAddress, $DefaultGateway, $Index, $DnsAddresses) }
+    function Set-DnsClient { [CmdletBinding()] param($InterfaceIndex, $RegisterThisConnectionsAddress) }
+    function netsh {}
 }
 
 Describe 'Bounded loopback enumeration' -Tag 'unit', 'ci', 'network' {
@@ -198,5 +209,69 @@ Describe 'Loopback creation and cleanup ordering' -Tag 'unit', 'ci', 'network' {
         Mock Get-NetAdapter { [pscustomobject]@{ Name = 'Ethernet'; InterfaceDescription = 'Physical adapter' } }
         { Remove-LoopbackAdapter -Name 'Ethernet' -DevConExe 'devgon.exe' } | Should -Throw '*not a Microsoft KM-TEST*'
         Should -Invoke Invoke-LoopbackDeviceCommand -Times 0 -Exactly
+    }
+}
+
+Describe 'Set-LoopbackAdapterSkipAsSource' -Tag 'unit', 'ci', 'network' {
+    BeforeEach {
+        $script:address = [pscustomobject]@{ IPAddress = '172.22.1.2'; InterfaceAlias = 'vEthernet (Loopbackk2s)'; SkipAsSource = $false }
+        Mock Write-Log {}
+        Mock Get-L2BridgeAdapterOverride { '' }
+        Mock Get-LoopbackAdapterIP { '172.22.1.2' }
+        Mock Get-NetIPAddress { $script:address }
+        Mock Set-NetIPAddress {}
+    }
+
+    It 'sets SkipAsSource on the configured loopback adapter IP by default' {
+        Set-LoopbackAdapterSkipAsSource
+        Should -Invoke Get-NetIPAddress -Times 1 -Exactly -ParameterFilter { $IPAddress -eq '172.22.1.2' -and $AddressFamily -eq 'IPv4' }
+        Should -Invoke Set-NetIPAddress -Times 1 -Exactly -ParameterFilter { $SkipAsSource -eq $true -and $InputObject.IPAddress -eq '172.22.1.2' }
+    }
+
+    It 'does not change an address that already has SkipAsSource' {
+        $script:address.SkipAsSource = $true
+        Set-LoopbackAdapterSkipAsSource -IPAddress '172.22.1.2'
+        Should -Invoke Set-NetIPAddress -Times 0 -Exactly
+    }
+
+    It 'leaves the address untouched when the l2 bridge is on a real NIC' {
+        Mock Get-L2BridgeAdapterOverride { 'Ethernet' }
+        Set-LoopbackAdapterSkipAsSource -IPAddress '192.168.0.10'
+        Should -Invoke Get-NetIPAddress -Times 0 -Exactly
+        Should -Invoke Set-NetIPAddress -Times 0 -Exactly
+    }
+
+    It 'does nothing when the address is not present' {
+        Mock Get-NetIPAddress {}
+        { Set-LoopbackAdapterSkipAsSource -IPAddress '172.22.1.2' } | Should -Not -Throw
+        Should -Invoke Set-NetIPAddress -Times 0 -Exactly
+    }
+
+    It 'logs a warning instead of failing the start when the flag cannot be set' {
+        Mock Set-NetIPAddress { throw 'access denied' }
+        { Set-LoopbackAdapterSkipAsSource -IPAddress '172.22.1.2' } | Should -Not -Throw
+        Should -Invoke Write-Log -ParameterFilter { $Message -like '*WARNING*SkipAsSource*access denied*' }
+    }
+}
+
+Describe 'Set-LoopbackAdapterExtendedProperties' -Tag 'unit', 'ci', 'network' {
+    BeforeEach {
+        $script:events = [Collections.Generic.List[string]]::new()
+        Mock Write-Log {}
+        Mock Get-NetIPConfiguration {}
+        Mock Get-LoopbackAdapterGateway { '172.22.1.1' }
+        Mock Get-NetIPInterface { [pscustomobject]@{ InterfaceAlias = 'vEthernet (Loopbackk2s)'; AddressFamily = 'IPv4'; ifIndex = 44 } }
+        Mock Get-LoopbackAdapterIP { '172.22.1.2' }
+        Mock Get-L2BridgeAdapterOverride { '' }
+        Mock Set-NetIPInterface {}
+        Mock Set-DnsClient {}
+        Mock netsh {}
+        Mock Set-IPAddressAndDnsClientServerAddress { $script:events.Add('set-ip') }
+        Mock Set-LoopbackAdapterSkipAsSource { $script:events.Add("skip-$IPAddress") }
+    }
+
+    It 'hides the loopback IP after the address has been (re)configured' {
+        Set-LoopbackAdapterExtendedProperties -AdapterName 'Loopbackk2s' -DnsServers '8.8.8.8'
+        ($script:events -join ',') | Should -Be 'set-ip,skip-172.22.1.2'
     }
 }

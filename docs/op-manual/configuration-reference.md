@@ -181,6 +181,8 @@ The file `cfg\config.json` defines cluster-wide network addressing, registry mir
 
 The loopback adapter provides a stable network path between the Windows host and cluster services regardless of the physical network configuration.
 
+K2s sets `SkipAsSource` on the `loopback` address at every start, so that it is not returned when the host resolves its own computer name. See [Known Issues](../troubleshooting/known-issues.md#k2s-adapter-ips-returned-for-the-hosts-own-name).
+
 ### Storage
 
 | Key | Default | Description |

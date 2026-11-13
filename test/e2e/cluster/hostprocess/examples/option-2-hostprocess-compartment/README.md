@@ -26,7 +26,7 @@ flowchart TB
 > uses). If you prefer `cplauncher` to do the discovery and launch, see the concept guide below.
 
 See the concept guide:
-[Running Native Windows Applications with HostProcess + Network Compartments](https://k2s-project.github.io/K2s/next/op-manual/running-apps-as-hostprocess/).
+[Running Native Windows Applications with HostProcess + Network Compartments](https://k2s-project.github.io/k2s/next/op-manual/running-apps-as-hostprocess/).
 
 ## Files
 

@@ -15,15 +15,15 @@ secured, observed, and — if you want — managed by *Kubernetes* itself.
 
 This guide describes the recommended **best practices** for making a native process "cluster‑friendly", and
 the **two integration options** with their trade‑offs. Throughout, we use the small test executable
-[`albumswin`](https://github.com/k2s-project/k2s/blob/main/k2s/test/e2e/cluster/hostprocess/albumswin/main.go)
+[`albumswin`](https://github.com/k2s-project/k2s/blob/main/test/e2e/cluster/hostprocess/albumswin/main.go)
 as the running example. Ready‑to‑use manifests for both options live under
-[`k2s/test/e2e/cluster/hostprocess/examples`](https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples).
+[`test/e2e/cluster/hostprocess/examples`](https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples).
 
 ```mermaid
 flowchart TD
     A[Native process on the Windows host] --> Q{Who controls the<br/>process lifecycle?}
-    Q -->|"You / the OS<br/>(service, scheduled task, installer)"| O1["<b>Option 1</b><br/>Managed outside Kubernetes<br/>Expose via an external Service"]
-    Q -->|"Kubelet / containerd"| O2["<b>Option 2 (preferred)</b><br/>Managed by Kubernetes<br/>HostProcess container + anchor compartment"]
+    Q -->|"You / the OS<br/>(service, scheduled task, installer)"| O1["Option 1<br/>Managed outside Kubernetes<br/>Expose via an external Service"]
+    Q -->|"Kubelet / containerd"| O2["Option 2 (preferred)<br/>Managed by Kubernetes<br/>HostProcess container + anchor compartment"]
     O1 --> R1[Reachable from all pods<br/>via KubeSwitch 172.19.1.1]
     O2 --> R2[Reachable + probes, resource limits,<br/>rollout, zero‑trust security]
     classDef opt fill:#e8f0fe,stroke:#4285f4,color:#000;
@@ -114,7 +114,7 @@ ports:
 ```
 
 Full, runnable manifests (with Linux and Windows test clients) are in
-[`examples/option-1-external-service`](https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-1-external-service).
+[`examples/option-1-external-service`](https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-1-external-service).
 
 ### Firewall
 
@@ -229,7 +229,7 @@ native host processes. See [Security Features](../security/security-features.md)
 [Policy Enforcement](../security/policy-enforcement.md).
 
 An illustrative policy manifest is provided in
-[`examples/option-2-hostprocess-compartment`](https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment).
+[`examples/option-2-hostprocess-compartment`](https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment).
 
 ### Pros & cons
 
@@ -272,8 +272,8 @@ needs — without recompiling. `albumswin` demonstrates all three knobs via envi
 
 See these best practices applied end‑to‑end in the runnable examples:
 
-* [`examples/option-1-external-service`](https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-1-external-service) — process managed outside Kubernetes.
-* [`examples/option-2-hostprocess-compartment`](https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment) — process managed by Kubernetes (HostProcess + compartment).
+* [`examples/option-1-external-service`](https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-1-external-service) — process managed outside Kubernetes.
+* [`examples/option-2-hostprocess-compartment`](https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment) — process managed by Kubernetes (HostProcess + compartment).
 
 !!! note "These are best practices, not a hard requirement"
     Making the three aspects (interfaces, ports, compartment) configurable is **recommended**, not mandatory —
@@ -592,4 +592,4 @@ certificate and NTLM/Windows authentication.
 * [Networking Architecture for K2s](./networking-architecture.md)
 * [Security Features](../security/security-features.md) · [Policy Enforcement](../security/policy-enforcement.md)
 * [security addon README](https://github.com/k2s-project/k2s/blob/main/addons/security/README.md)
-* Example manifests: [`hostprocess/examples`](https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples)
+* Example manifests: [`hostprocess/examples`](https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples)

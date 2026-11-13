@@ -46,7 +46,9 @@ jobs:
         timeout-minutes: 10
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          # Each run starts on a fresh VM, so a Go cache is never restored. The post-job save
+          # also fails on this runner (no gzip on PATH), so the cache is turned off.
+          cache: false
 
       - name: Build all K2s executables
         timeout-minutes: 30

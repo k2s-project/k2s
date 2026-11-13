@@ -45,8 +45,10 @@ a reboot of the machine running the suite.
 Run from an elevated PowerShell on a **disposable Windows K2s installation** with
 a freshly built CLI and Ready Linux workers. The stored SSH users must support
 noninteractive `sudo`, `hostnamectl`, `systemd-run`, `systemctl`, and the tools
-required by `k2s node rename`. The control-plane Node must be Ready and schedulable
-for workload failover. The migration changes the remote OS hostname, **reboots the
+required by `k2s node rename`. Both the worker and control-plane Node must be Ready
+and schedulable. An initially cordoned worker fails the precondition before SMB
+setup: reads only from kubemaster do not establish storage access from the renamed
+worker. The migration changes the remote OS hostname, **reboots the
 Linux worker once**, then drains it.
 Reboot verification requires a changed kernel boot ID, recovered SSH and the
 expected hostname; an SSH disconnect alone is not considered proof of reboot.
@@ -61,6 +63,8 @@ also labeled `disruptive`: selecting it performs real hostname changes and reboo
 when run without a label filter. Do not run it concurrently with other lifecycle
 suites or processes modifying `cluster.json`.
 The suite enables `k2s addons enable storage smb -t linux` when SMB is disabled.
+SMB status is retried for up to two minutes while CSI readiness stabilizes; a
+persistent failure still fails the test and requires inspecting Pod events.
 An existing Linux-hosted SMB addon is reused; an existing Windows-hosted addon or
 conflicting storage implementation is not silently replaced. The suite needs an
 SMB StorageClass that dynamically provisions separate PV subdirectories.
@@ -70,7 +74,7 @@ pre-cache this image and addon assets for offline execution. The suite is labele
 Only the separate synthetic partial-registration Pod uses `imagePullPolicy: Never`.
 
 Coverage includes original PodCIDR/PodCIDRs, custom labels,
-annotations and taints, preservation of the worker's original scheduling state,
+annotations and taints, preservation of the initially schedulable state,
 lowercase normalization, a valid
 new kubelet certificate, and retained identities of unrelated Nodes. Partial
 registration checks reject a bound user Pod without mutation, then verify
@@ -81,6 +85,11 @@ flags, equal names, hostname mismatch, missing old Node, control-plane Node,
 unmanaged Node and unsupported managed Node type. The unsupported-type case
 temporarily appends a synthetic descriptor entry and restores the original file;
 it never changes a real worker's type.
+Deleting that synthetic Node also waits for its targeted DaemonSet Pods to
+disappear, explicitly deleting only DaemonSet-owned Pods bound or exclusively
+affined to that fixture name. This prevents a pending CSI Pod for a nonexistent
+Node from breaking the next migration's SMB status check. Existing orphaned Pods
+from older runs are not deleted automatically.
 
 Before the reboot, a writer on the old worker creates a unique marker on an
 isolated RWX SMB PVC. A three-replica Deployment mounts it read-only and verifies
@@ -88,9 +97,16 @@ the marker through readiness probes, initially spreading across the worker and
 control plane. After migration, the suite requires replacement Pod UIDs, three
 Running/Ready replicas on the renamed Node/control plane, and exact reads of the
 original marker from every reader. PVC/PV UIDs, the PV name and CSI volume handle
-must remain unchanged. A schedulable replacement must run a reader; for the
-originally cordoned worker, spreading is relaxed after migration so all
-replicas can run on the control plane without uncordoning the replacement.
+must remain unchanged. At least one newly created reader must run on the renamed
+worker and successfully read the original file from inside its container.
+The test cannot pass with all readers on kubemaster.
+
+Logs display writer and reader Pod names, UIDs, Node names and phases before and
+after migration, together with PVC/PV names and UIDs. For each post-rename
+`kubectl exec ... cat` read, the test verifies the exact Pod UID, Node placement
+and original PVC reference, then prints `READ OK` with the Node, Pod, PVC, file
+and actual content. A final `VERIFIED` message counts successful reads from newly
+created Pods on the renamed Node and confirms unchanged PVC/PV identities.
 
 The suite watches actual Node API events for cordoning, the completed-drain
 marker, replacement readiness and old-Node deletion, in that order. It also checks
@@ -115,7 +131,7 @@ Passing on one worker type does not establish integration coverage for the other
 The fixture helpers can be tested without a cluster or hostname changes:
 
 ```console
-go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestRenameObserverLifecycle'
+go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestSMBReaderPlacement|TestSyntheticNodeDaemonPod|TestRenameObserverLifecycle'
 ```
 
 ### Windows Workload Readiness Diagnostics

@@ -28,7 +28,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/util/retry"
 )
 
 const (
@@ -41,19 +40,14 @@ const (
 var bootIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func ensureLinuxSMB(ctx SpecContext) string {
-	output := suite.K2sCli().MustExec(ctx, "addons", "status", "storage", "smb", "-o", "json")
-	var status addonstatus.AddonPrintStatus
-	Expect(json.Unmarshal([]byte(output), &status)).To(Succeed())
-	Expect(status.Error).To(BeNil())
-	Expect(status.Enabled).NotTo(BeNil())
+	status := waitForSMBStatus(ctx)
 	if !*status.Enabled {
 		suite.K2sCli().MustExec(ctx, "addons", "enable", "storage", "smb", "-t", "linux", "-o")
 		DeferCleanup(func(ctx SpecContext) {
 			// Never delete pre-existing share folders when undoing the test's addon enable.
 			suite.K2sCli().MustExec(ctx, "addons", "disable", "storage", "smb", "-k", "-o")
 		}, NodeTimeout(20*time.Minute))
-		output = suite.K2sCli().MustExec(ctx, "addons", "status", "storage", "smb", "-o", "json")
-		Expect(json.Unmarshal([]byte(output), &status)).To(Succeed())
+		status = waitForSMBStatus(ctx)
 	}
 	Expect(status.Error).To(BeNil())
 	Expect(status.Enabled).NotTo(BeNil())
@@ -76,6 +70,32 @@ func ensureLinuxSMB(ctx SpecContext) string {
 		return "smb"
 	}
 	return names[0]
+}
+
+func waitForSMBStatus(ctx SpecContext) addonstatus.AddonPrintStatus {
+	var status addonstatus.AddonPrintStatus
+	By("waiting for SMB addon status and CSI Pod readiness to stabilize")
+	Eventually(func() error {
+		output, code := suite.K2sCli().Exec(ctx, "addons", "status", "storage", "smb", "-o", "json")
+		if code != 0 {
+			return fmt.Errorf("SMB status failed with exit code %d; inspect CSI Pod events in storage-smb (CLI output: %s)", code, output)
+		}
+		var current addonstatus.AddonPrintStatus
+		if err := json.Unmarshal([]byte(output), &current); err != nil {
+			return fmt.Errorf("decode SMB addon status: %w", err)
+		}
+		if current.Error != nil || current.Enabled == nil {
+			return fmt.Errorf("SMB addon status is unavailable: enabled=%v, error=%v", current.Enabled, current.Error)
+		}
+		if *current.Enabled && !slices.ContainsFunc(current.Props, func(prop addonstatus.AddonStatusProp) bool {
+			return prop.Name == "AreCsiPodsRunning" && prop.Value == true
+		}) {
+			return fmt.Errorf("SMB is enabled but its CSI Pods are not reported ready")
+		}
+		status = current
+		return nil
+	}, 2*time.Minute, 5*time.Second).Should(Succeed(), "SMB must be healthy before migrating the worker; do not ignore pending CSI Pods")
+	return status
 }
 
 func rebootWorker(ctx SpecContext, worker clusterconfig.Node, newName string) {
@@ -204,6 +224,7 @@ func createMigrationWorkload(ctx SpecContext, worker clusterconfig.Node, newName
 	By("writing a unique marker to the SMB PV from the old worker")
 	_, err = client.CoreV1().Pods(fixture.namespace).Create(ctx, markerWriter(fixture.namespace, worker.Name, fixture.marker), metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
+	var writer *corev1.Pod
 	Eventually(func() error {
 		pod, err := client.CoreV1().Pods(fixture.namespace).Get(ctx, "write-marker", metav1.GetOptions{})
 		if err != nil {
@@ -212,15 +233,20 @@ func createMigrationWorkload(ctx SpecContext, worker clusterconfig.Node, newName
 		if pod.Status.Phase != corev1.PodSucceeded {
 			return fmt.Errorf("SMB marker writer has not succeeded: %s", pod.Status.Phase)
 		}
+		writer = pod
 		return nil
 	}, workloadTimeout, 2*time.Second).Should(Succeed())
-	Expect(strings.TrimSpace(suite.Kubectl().MustExec(ctx, "logs", "-n", fixture.namespace, "write-marker"))).To(Equal(fixture.marker))
+	Expect(writer.Spec.NodeName).To(Equal(worker.Name))
+	fixture.logPlacement("writer before rename", []corev1.Pod{*writer})
+	Expect(strings.TrimSpace(suite.Kubectl().NoStdOut().MustExec(ctx, "logs", "-n", fixture.namespace, "write-marker"))).To(Equal(fixture.marker))
+	GinkgoWriter.Printf("[SMB] Writer Pod %s on Node %s wrote original content=%q\n", writer.Name, writer.Spec.NodeName, fixture.marker)
 	Expect(client.CoreV1().Pods(fixture.namespace).Delete(ctx, "write-marker", metav1.DeleteOptions{})).To(Succeed())
 	By("starting three SMB reader replicas spread across the old worker and control plane")
 	_, err = client.AppsV1().Deployments(fixture.namespace).Create(ctx,
 		readerDeployment(fixture.namespace, fixture.controlPlane, newName, fixture.marker), metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
-	fixture.beforePods = fixture.waitForReaders(ctx, worker.Name, true)
+	fixture.beforePods = fixture.waitForReaders(ctx, worker.Name)
+	fixture.logPlacement("readers before rename", fixture.beforePods)
 	return fixture
 }
 
@@ -291,7 +317,37 @@ func smbVolumes() []corev1.Volume {
 	}}}
 }
 
-func (fixture *migrationWorkload) waitForReaders(ctx SpecContext, workerName string, requireWorker bool) []corev1.Pod {
+func (fixture *migrationWorkload) logPlacement(stage string, pods []corev1.Pod) {
+	GinkgoWriter.Printf("[SMB][%s] PVC=%s/%s UID=%s PV=%s UID=%s\n",
+		stage, fixture.namespace, fixture.pvc.Name, fixture.pvc.UID, fixture.pv.Name, fixture.pv.UID)
+	GinkgoWriter.Printf("POD\tUID\tNODE\tPHASE\n")
+	for _, pod := range pods {
+		GinkgoWriter.Printf("%s\t%s\t%s\t%s\n", pod.Name, pod.UID, pod.Spec.NodeName, pod.Status.Phase)
+	}
+}
+
+func validateReaderPlacement(pods []corev1.Pod, workerName, controlPlane string) error {
+	onWorker, onControlPlane := false, false
+	for _, pod := range pods {
+		if pod.Spec.NodeName != workerName && pod.Spec.NodeName != controlPlane {
+			return fmt.Errorf("reader %s is assigned to unexpected Node %q", pod.Name, pod.Spec.NodeName)
+		}
+		if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || !slices.ContainsFunc(pod.Status.Conditions, func(condition corev1.PodCondition) bool {
+			return condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue
+		}) {
+			return fmt.Errorf("reader %s on %s is not Running and Ready, or is terminating", pod.Name, pod.Spec.NodeName)
+		}
+		onWorker = onWorker || pod.Spec.NodeName == workerName
+		onControlPlane = onControlPlane || pod.Spec.NodeName == controlPlane
+	}
+	if len(pods) != int(migrationReplicas) || !onWorker || !onControlPlane {
+		return fmt.Errorf("ready readers=%d, reader on %s=%t, reader on control plane=%t; require %d replicas with at least one on each Node",
+			len(pods), workerName, onWorker, onControlPlane, migrationReplicas)
+	}
+	return nil
+}
+
+func (fixture *migrationWorkload) waitForReaders(ctx SpecContext, workerName string) []corev1.Pod {
 	var ready []corev1.Pod
 	Eventually(func() error {
 		pods, err := client.CoreV1().Pods(fixture.namespace).List(ctx, metav1.ListOptions{LabelSelector: "app=rename-smb-readers"})
@@ -299,51 +355,21 @@ func (fixture *migrationWorkload) waitForReaders(ctx SpecContext, workerName str
 			return err
 		}
 		ready = nil
-		onWorker, onControlPlane := false, false
 		for _, pod := range pods.Items {
 			if pod.DeletionTimestamp != nil {
 				continue
 			}
-			if pod.Spec.NodeName != workerName && pod.Spec.NodeName != fixture.controlPlane {
-				return fmt.Errorf("reader %s is assigned to unexpected Node %q", pod.Name, pod.Spec.NodeName)
-			}
-			if pod.Status.Phase != corev1.PodRunning || !slices.ContainsFunc(pod.Status.Conditions, func(condition corev1.PodCondition) bool {
-				return condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue
-			}) {
-				return fmt.Errorf("reader %s on %s is not Running and Ready", pod.Name, pod.Spec.NodeName)
-			}
 			ready = append(ready, pod)
-			onWorker = onWorker || pod.Spec.NodeName == workerName
-			onControlPlane = onControlPlane || pod.Spec.NodeName == fixture.controlPlane
 		}
-		if len(ready) != int(migrationReplicas) || (requireWorker && (!onWorker || !onControlPlane)) {
-			return fmt.Errorf("ready readers=%d, reader on %s=%t, reader on control plane=%t; require %d replicas", len(ready), workerName, onWorker, onControlPlane, migrationReplicas)
-		}
-		return nil
+		return validateReaderPlacement(ready, workerName, fixture.controlPlane)
 	}, workloadTimeout, 2*time.Second).Should(Succeed())
 	return ready
 }
 
-func (fixture *migrationWorkload) verifyAfterRename(ctx SpecContext, oldName, newName string, unschedulable bool) {
-	if unschedulable {
-		By("allowing all replicas to fail over to the control plane while the replacement intentionally stays cordoned")
-		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			deployment, err := client.AppsV1().Deployments(fixture.namespace).Get(ctx, "readers", metav1.GetOptions{})
-			if err != nil {
-				return err
-			}
-			deployment.Spec.Template.Spec.TopologySpreadConstraints = nil
-			_, err = client.AppsV1().Deployments(fixture.namespace).Update(ctx, deployment, metav1.UpdateOptions{})
-			return err
-		})).To(Succeed())
-	}
+func (fixture *migrationWorkload) verifyAfterRename(ctx SpecContext, oldName, newName string) {
 	By("verifying three Running replicas and replacement Pod UIDs after migration")
-	after := fixture.waitForReaders(ctx, newName, !unschedulable)
-	if unschedulable {
-		for _, pod := range after {
-			Expect(pod.Spec.NodeName).To(Equal(fixture.controlPlane), "the cordoned replacement must not receive reader Pods")
-		}
-	}
+	after := fixture.waitForReaders(ctx, newName)
+	fixture.logPlacement("readers after rename", after)
 	for _, pod := range fixture.beforePods {
 		if pod.Spec.NodeName != oldName {
 			continue
@@ -364,11 +390,26 @@ func (fixture *migrationWorkload) verifyAfterRename(ctx SpecContext, oldName, ne
 		}, workloadTimeout, 2*time.Second).Should(Succeed())
 	}
 	By("reading the original marker from every replacement SMB reader without rewriting it")
+	renamedNodeReads := 0
 	for _, pod := range after {
-		output := suite.Kubectl().MustExec(ctx, "exec", "-n", fixture.namespace, pod.Name, "-c", "reader", "--", "cat", markerPath)
-		Expect(strings.TrimSpace(output)).To(Equal(fixture.marker))
-		GinkgoWriter.Printf("SMB reader %s (UID %s) is Running on %s and read the original marker\n", pod.Name, pod.UID, pod.Spec.NodeName)
+		current, err := client.CoreV1().Pods(fixture.namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(current.UID).To(Equal(pod.UID), "read from the exact Pod whose placement was verified")
+		Expect(current.Spec.NodeName).To(Equal(pod.Spec.NodeName))
+		Expect(slices.ContainsFunc(current.Spec.Volumes, func(volume corev1.Volume) bool {
+			return volume.Name == "data" && volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == fixture.pvc.Name
+		})).To(BeTrue(), "reader %s on Node %s must mount the original PVC %s", current.Name, current.Spec.NodeName, fixture.pvc.Name)
+		output := suite.Kubectl().NoStdOut().MustExec(ctx, "exec", "-n", fixture.namespace, current.Name, "-c", "reader", "--", "cat", markerPath)
+		Expect(strings.TrimSpace(output)).To(Equal(fixture.marker), "SMB read from Pod %s on Node %s must return the original content", current.Name, current.Spec.NodeName)
+		GinkgoWriter.Printf("[SMB] READ OK: Pod=%s UID=%s Node=%s PVC=%s/%s file=%s content=%q\n",
+			current.Name, current.UID, current.Spec.NodeName, fixture.namespace, fixture.pvc.Name, markerPath, strings.TrimSpace(output))
+		if current.Spec.NodeName == newName {
+			Expect(slices.ContainsFunc(fixture.beforePods, func(before corev1.Pod) bool { return before.UID == current.UID })).To(BeFalse(),
+				"the reader on the renamed Node must be a newly created Pod")
+			renamedNodeReads++
+		}
 	}
+	Expect(renamedNodeReads).To(BeNumerically(">", 0), "reads only from kubemaster do not prove SMB access from the renamed Node")
 	pvc, err := client.CoreV1().PersistentVolumeClaims(fixture.namespace).Get(ctx, fixture.pvc.Name, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(pvc.UID).To(Equal(fixture.pvc.UID))
@@ -379,6 +420,8 @@ func (fixture *migrationWorkload) verifyAfterRename(ctx SpecContext, oldName, ne
 	Expect(pv.UID).To(Equal(fixture.pv.UID))
 	Expect(pv.Spec.CSI).NotTo(BeNil())
 	Expect(pv.Spec.CSI.VolumeHandle).To(Equal(fixture.pv.Spec.CSI.VolumeHandle))
+	GinkgoWriter.Printf("[SMB] VERIFIED: %d newly created reader Pod(s) on renamed Node %s read the original content written on %s; PVC UID=%s and PV UID=%s are unchanged\n",
+		renamedNodeReads, newName, oldName, pvc.UID, pv.UID)
 }
 
 type nodeObservation struct {

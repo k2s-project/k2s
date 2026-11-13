@@ -99,9 +99,40 @@ var _ = Describe("node rename rejections", Serial, func() {
 		}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(func(ctx SpecContext) {
-			err := client.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
+			err := client.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &node.UID}})
 			Expect(err == nil || apierrors.IsNotFound(err)).To(BeTrue(), "delete synthetic Node: %v", err)
-		})
+			Eventually(func() error {
+				_, err := client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+				if !apierrors.IsNotFound(err) {
+					return fmt.Errorf("waiting for synthetic Node %s deletion: %v", name, err)
+				}
+				pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+				if err != nil {
+					return err
+				}
+				pending := 0
+				for _, pod := range pods.Items {
+					if !daemonPodTargetsNode(&pod, name) {
+						continue
+					}
+					pending++
+					if pod.DeletionTimestamp != nil {
+						continue
+					}
+					GinkgoWriter.Printf("Removing DaemonSet Pod %s/%s targeting deleted synthetic Node %s\n", pod.Namespace, pod.Name, name)
+					err := client.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+						Preconditions: &metav1.Preconditions{UID: &pod.UID},
+					})
+					if err != nil && !apierrors.IsNotFound(err) {
+						return err
+					}
+				}
+				if pending != 0 {
+					return fmt.Errorf("waiting for %d DaemonSet Pods targeting synthetic Node %s to disappear", pending, name)
+				}
+				return nil
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+		}, NodeTimeout(3*time.Minute))
 		output := rejectRename(ctx, "--old-name", name, "--new-name", name+"-new")
 		Expect(output).To(ContainSubstring("not managed by K2s"))
 
@@ -128,6 +159,8 @@ var _ = Describe("managed Linux worker rename", Serial, func() {
 		Expect(err).NotTo(HaveOccurred())
 		worker, err := renameWorker(config)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(getNode(ctx, worker.Name).Spec.Unschedulable).To(BeFalse(),
+			"the fixture worker must be schedulable before this test: SMB access must be verified from a newly scheduled Pod on the renamed Node, not only kubemaster")
 		_, err = client.CoreV1().Nodes().Get(ctx, newNodeName, metav1.GetOptions{})
 		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "replacement name must not already exist")
 		By(fmt.Sprintf("renaming %s worker %s to %s at %s using stored SSH user %s", worker.NodeType, worker.Name, newNodeName, worker.IpAddress, worker.Username))
@@ -347,7 +380,7 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass str
 	Expect(subject).To(ContainSubstring("CN=system:node:" + newName))
 	Expect(subject).To(ContainSubstring("O=system:nodes"))
 	Expect(strings.Split(remote(ctx, worker, "sudo -n systemctl is-active kubelet"), "\n")).To(ContainElement("active"))
-	migration.verifyAfterRename(ctx, worker.Name, newName, original.Spec.Unschedulable)
+	migration.verifyAfterRename(ctx, worker.Name, newName)
 	for _, before := range unrelated.Items {
 		if before.Name == worker.Name {
 			continue
@@ -438,6 +471,28 @@ func renameWorker(config *clusterconfig.Cluster) (clusterconfig.Node, error) {
 
 func uniqueName() string {
 	return fmt.Sprintf("k2s-rename-%x", time.Now().UnixNano())
+}
+
+func daemonPodTargetsNode(pod *corev1.Pod, nodeName string) bool {
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil || owner.Kind != "DaemonSet" || owner.APIVersion != "apps/v1" {
+		return false
+	}
+	if pod.Spec.NodeName != "" {
+		return pod.Spec.NodeName == nodeName
+	}
+	affinity := pod.Spec.Affinity
+	if affinity == nil || affinity.NodeAffinity == nil || affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		return false
+	}
+	terms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 {
+		return false
+	}
+	return slices.ContainsFunc(terms[0].MatchFields, func(field corev1.NodeSelectorRequirement) bool {
+		return field.Key == "metadata.name" && field.Operator == corev1.NodeSelectorOpIn &&
+			len(field.Values) == 1 && field.Values[0] == nodeName
+	})
 }
 
 func isReady(node *corev1.Node) bool {

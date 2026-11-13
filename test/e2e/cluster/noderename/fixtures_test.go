@@ -195,6 +195,93 @@ func TestSMBWorkloadDefinition(t *testing.T) {
 	}
 }
 
+func TestSMBReaderPlacement(t *testing.T) {
+	readyPod := func(name, node string) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       corev1.PodSpec{NodeName: node},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+			},
+		}
+	}
+	worker := readyPod("new-worker-reader", newNodeName)
+	master1 := readyPod("master-reader-1", "kubemaster")
+	master2 := readyPod("master-reader-2", "kubemaster")
+	unready := worker.DeepCopy()
+	unready.Status.Conditions = nil
+	failed := worker.DeepCopy()
+	failed.Status.Phase = corev1.PodFailed
+	terminating := worker.DeepCopy()
+	now := metav1.Now()
+	terminating.DeletionTimestamp = &now
+	for _, tt := range []struct {
+		name  string
+		pods  []corev1.Pod
+		valid bool
+	}{
+		{"renamed worker and control plane", []corev1.Pod{worker, master1, master2}, true},
+		{"all on kubemaster is insufficient", []corev1.Pod{master1, master2, readyPod("master-reader-3", "kubemaster")}, false},
+		{"old Node is not the renamed Node", []corev1.Pod{readyPod("old-reader", oldNodeName), master1, master2}, false},
+		{"unrelated worker", []corev1.Pod{readyPod("unrelated-reader", "other-worker"), master1, master2}, false},
+		{"missing replica", []corev1.Pod{worker, master1}, false},
+		{"missing control plane reader", []corev1.Pod{worker, readyPod("worker-reader-2", newNodeName), readyPod("worker-reader-3", newNodeName)}, false},
+		{"unready worker reader", []corev1.Pod{*unready, master1, master2}, false},
+		{"failed worker reader", []corev1.Pod{*failed, master1, master2}, false},
+		{"terminating worker reader", []corev1.Pod{*terminating, master1, master2}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateReaderPlacement(tt.pods, newNodeName, "kubemaster"); (err == nil) != tt.valid {
+				t.Fatalf("validateReaderPlacement() = %v, want valid=%t", err, tt.valid)
+			}
+		})
+	}
+}
+
+func TestSyntheticNodeDaemonPod(t *testing.T) {
+	name := "k2s-rename-synthetic"
+	pending := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: "apps/v1", Kind: "DaemonSet", Name: "csi-smb-node", Controller: new(true),
+		}}},
+		Spec: corev1.PodSpec{Affinity: &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+				MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{name}}},
+			}}},
+		}}},
+	}
+	if !daemonPodTargetsNode(&pending, name) || daemonPodTargetsNode(&pending, oldNodeName) {
+		t.Fatal("only the exact synthetic Node's DaemonSet Pod may be cleaned up")
+	}
+	bound := pending.DeepCopy()
+	bound.Spec.NodeName = name
+	if !daemonPodTargetsNode(bound, name) || daemonPodTargetsNode(bound, oldNodeName) {
+		t.Fatal("bound DaemonSet Pods must match the exact Node name")
+	}
+	workload := pending.DeepCopy()
+	workload.OwnerReferences = nil
+	if daemonPodTargetsNode(workload, name) {
+		t.Fatal("never delete a user Pod even if its affinity matches the fixture")
+	}
+	unrestricted := pending.DeepCopy()
+	unrestricted.Spec.Affinity = nil
+	if daemonPodTargetsNode(unrestricted, name) {
+		t.Fatal("never delete a DaemonSet Pod with no exact Node target")
+	}
+	broad := pending.DeepCopy()
+	broad.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values = []string{name, oldNodeName}
+	if daemonPodTargetsNode(broad, name) {
+		t.Fatal("never delete a DaemonSet Pod that could target another Node")
+	}
+	alternative := pending.DeepCopy()
+	selector := alternative.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+	selector.NodeSelectorTerms = append(selector.NodeSelectorTerms, corev1.NodeSelectorTerm{})
+	if daemonPodTargetsNode(alternative, name) {
+		t.Fatal("never delete a DaemonSet Pod with alternative Node affinity terms")
+	}
+}
+
 func TestRenameObserverLifecycle(t *testing.T) {
 	events := []nodeObservation{
 		{uid: "old", unschedulable: true},

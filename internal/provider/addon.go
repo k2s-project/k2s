@@ -25,6 +25,14 @@ type AddonProvider interface {
 	// Import imports addon state from an offline package.
 	Import(config AddonImportConfig) error
 
+	// Backup writes the addon data and a backup.json manifest into
+	// config.BackupDir. The caller packages the directory as a zip archive.
+	Backup(config AddonBackupConfig) error
+
+	// Restore enables the addon and restores the data that the caller
+	// extracted from a backup archive into config.BackupDir.
+	Restore(config AddonRestoreConfig) error
+
 	// RunCommand executes an arbitrary addon command (e.g., enable, disable,
 	// update) as defined in the addon.manifest.yaml. The generic addon command
 	// handler uses this to dispatch manifest-defined operations through the
@@ -107,6 +115,29 @@ type AddonImportConfig struct {
 	ShowOutput bool
 }
 
+// AddonBackupConfig holds parameters for backing up addon data.
+type AddonBackupConfig struct {
+	AddonName      string // Addon metadata name (e.g., "ingress")
+	Implementation string // Implementation name; equals AddonName for single-implementation addons
+	AddonDirectory string // Full path to the implementation directory (contains Backup.ps1 on Windows)
+	BackupDir      string // Staging directory that receives the backup files and backup.json
+	ShowOutput     bool
+}
+
+// AddonRestoreConfig holds parameters for restoring addon data.
+type AddonRestoreConfig struct {
+	AddonName      string // Addon metadata name (e.g., "ingress")
+	Implementation string // Implementation name; equals AddonName for single-implementation addons
+	AddonDirectory string // Full path to the implementation directory (contains Restore.ps1 on Windows)
+	BackupDir      string // Staging directory holding the extracted backup files and backup.json
+	// EnableParams carries pre-formatted Enable.ps1 parameters that replay the
+	// placement recorded in backup.json. Only the Windows provider uses them.
+	EnableParams []string
+	// InfraNodeSelector is the placement recorded in backup.json, if any.
+	InfraNodeSelector string
+	ShowOutput        bool
+}
+
 // AddonRunCommandConfig holds parameters for executing an arbitrary addon
 // command as defined in the addon.manifest.yaml. The Params slice carries
 // pre-formatted script parameters (PowerShell-style) which the Windows provider
@@ -120,4 +151,13 @@ type AddonRunCommandConfig struct {
 	Params          []string          // Pre-formatted script parameters for Windows
 	ParameterValues map[string]string // Raw mapped values for native provider operations
 	ShowOutput      bool
+}
+
+// addonCmdName returns the name users pass to 'k2s addons' commands, e.g.
+// "registry" or "ingress nginx" for an implementation of a multi-implementation addon.
+func addonCmdName(addonName, implementation string) string {
+	if implementation == "" || implementation == addonName {
+		return addonName
+	}
+	return addonName + " " + implementation
 }

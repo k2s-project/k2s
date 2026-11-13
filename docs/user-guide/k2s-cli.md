@@ -470,6 +470,8 @@ k2s addons restore <addon> [implementation] [flags]
 |------|-------|-------------|
 | `--file` | `-f` | Input zip file path (default: newest match in `C:\Temp\k2s\Addons`) |
 
+On a Linux host, backup and restore are available for `registry`, `ingress nginx` and `ingress traefik`. See [Backing Up and Restoring Addons](../op-manual/backing-up-restoring-addons.md#experimental-linux-host).
+
 ---
 
 ## system

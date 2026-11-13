@@ -23,6 +23,99 @@ query is reported as an SSH failure; hostname validation runs only after a
 successful query. The regression cases are in
 `common-setup.module.unit.tests.ps1` under the Windows Linux-node distro module.
 
+### Linux Worker Rename Acceptance Tests
+
+The shared [node-rename suite](../../../test/e2e/cluster/noderename/node_rename_test.go)
+discovers Linux workers added with `k2s node add` from `cluster.json`, using the
+same cluster configuration reader as the other node suites. Each of the three
+shared scenarios runs against every discovered bare-metal (`HOST`) and existing
+Hyper-V VM (`VM-EXISTING`) worker.
+Argo or another fixture provisioner must add the workers before this suite runs.
+Replacement names use the hardcoded scenario prefixes `k2s-rename-normal`,
+`k2s-rename-partial` and `k2s-rename-force`, followed by the worker IP address
+(for example, `k2s-rename-force-172-19-1-102`). IPv6 addresses use their full
+hexadecimal bytes as the suffix. No hostname argument or environment-variable
+opt-in is required. Scenarios run in order, reloading `cluster.json` to discover
+the current names. The suite fails before changing a worker if its replacement
+name already exists.
+The scenarios run with either worker type present; they skip only when no
+supported Linux workers exist, not because one type is absent.
+Windows-host rename E2E is deliberately excluded: changing that hostname requires
+a reboot of the machine running the suite.
+
+Run from an elevated PowerShell on a **disposable Windows K2s installation** with
+a freshly built CLI and Ready Linux workers. The stored SSH users must support
+noninteractive `sudo`, `hostnamectl`, `systemd-run`, `systemctl`, and the tools
+required by `k2s node rename`. The control-plane Node must be Ready and schedulable
+for workload failover. Each scenario changes the remote OS hostname, **reboots the
+Linux worker**, then drains it. A full run reboots each worker three times.
+Reboot verification requires a changed kernel boot ID, recovered SSH and the
+expected hostname; an SSH disconnect alone is not considered proof of reboot.
+Draining can delete pod-local `emptyDir` data. Do not run against production workloads.
+
+```powershell
+go run github.com/onsi/ginkgo/v2/ginkgo --label-filter=node-rename --timeout=180m -v .\test\e2e\cluster\noderename
+```
+
+Argo can select the suite using the existing `node-rename` label. The suite is
+also labeled `disruptive`: selecting it performs real hostname changes and reboots, including
+when run without a label filter. Do not run it concurrently with other lifecycle
+suites or processes modifying `cluster.json`.
+The suite enables `k2s addons enable storage smb -t linux` when SMB is disabled.
+An existing Linux-hosted SMB addon is reused; an existing Windows-hosted addon or
+conflicting storage implementation is not silently replaced. The suite needs an
+SMB StorageClass that dynamically provisions separate PV subdirectories.
+The reader/writer image is `docker.io/curlimages/curl:8.5.0` with `IfNotPresent`;
+pre-cache this image and addon assets for offline execution. The suite is labeled
+`internet-required` because uncached images/addon assets may require downloads.
+Only the separate synthetic partial-registration Pod uses `imagePullPolicy: Never`.
+
+Coverage includes normal migration, original PodCIDR/PodCIDRs, custom labels,
+annotations and taints, both scheduling states, lowercase normalization, a valid
+new kubelet certificate, and retained identities of unrelated Nodes. Partial
+registration tests check recreation with a different Node UID, rejection of a
+bound user Pod, and explicit `--force` recovery. Negative cases cover missing
+flags, equal names, hostname mismatch, missing old Node, control-plane Node,
+unmanaged Node and unsupported managed Node type. The unsupported-type case
+temporarily appends a synthetic descriptor entry and restores the original file;
+it never changes a real worker's type.
+
+Before each reboot, a writer on the old worker creates a unique marker on an
+isolated RWX SMB PVC. A three-replica Deployment mounts it read-only and verifies
+the marker through readiness probes, initially spreading across the worker and
+control plane. After migration, the suite requires replacement Pod UIDs, three
+Running/Ready replicas on the renamed Node/control plane, and exact reads of the
+original marker from every reader. PVC/PV UIDs, the PV name and CSI volume handle
+must remain unchanged. A schedulable replacement must run a reader; for the
+intentionally cordoned scenario, spreading is relaxed after migration so all
+replicas can run on the control plane without uncordoning the replacement.
+
+The suite watches actual Node API events for cordoning, the completed-drain
+marker, replacement readiness and old-Node deletion, in that order. It also checks
+the command's cordon/drain log ordering. Reboot-created partial registrations are
+reused as fixtures when present; otherwise the recovery cases create one.
+
+Cleanup deletes test workloads, PVCs, their dynamically provisioned PVs and
+test-only StorageClasses, and removes test labels, annotations and taints.
+If the suite enabled SMB, it disables the addon with `-k` to retain pre-existing
+share-folder data; an already-enabled Linux SMB addon is left enabled.
+After a successful migration it restores the scheduling state from before the
+scenario, but **does not revert the OS hostname, Kubernetes Node name or
+`cluster.json` entry**. After a successful full run, workers retain their
+`k2s-rename-force-<IP>` names. On failure, later migration scenarios are skipped;
+cleanup leaves rename recovery markers and cordoning state intact for inspection
+and does not automatically retry the rename. Cleanup failures fail the test and
+require inspecting the reported Node/service state; they are not hidden.
+The framework's keep-resources option does not disable test-resource cleanup.
+The per-worker test steps report the actual Node type and name exercised.
+Passing on one worker type does not establish integration coverage for the other.
+
+The fixture helpers can be tested without a cluster or hostname changes:
+
+```console
+go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestRenameObserverLifecycle'
+```
+
 ### Windows Workload Readiness Diagnostics
 
 If the core acceptance suite exhausts its Windows HTTP readiness retries, it

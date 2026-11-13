@@ -21,7 +21,7 @@ Complete the following preparation on the K2s host and on the Debian 13 target b
 
 - Install Debian 13 (Trixie) on a physical machine or an existing VM. The target must not already be a member of a Kubernetes cluster.
 - Configure a stable IPv4 address, either statically or with a DHCP reservation. K2s stores the address supplied to `k2s node add` for later node operations.
-- Set a hostname containing only lowercase letters. K2s uses the remote hostname as the Kubernetes node name; if `--name` is supplied, it must match that hostname.
+- Set a hostname containing only lowercase letters. K2s uses the remote hostname as the Kubernetes node name.
 - Install and enable an SSH server, and make TCP port 22 reachable from the K2s host.
 - Use a user that can run commands with `sudo`. The K2s provisioning process uses `sudo` to install packages, configure services, and add routes.
 - Install `lsb-release`, which K2s uses to identify the Debian release:
@@ -270,7 +270,7 @@ Recommended handling:
 
 ```console
 k2s node remove --name <NodeName>
-k2s node add --ip-addr <NewIpAddress> --username <UserNameForRemoteConnection> --name <NodeName>
+k2s node add --ip-addr <NewIpAddress> --username <UserNameForRemoteConnection>
 ```
 
 If you use offline installation, include `--node-package <PathToNodePackageZip>` again during the re-add operation.

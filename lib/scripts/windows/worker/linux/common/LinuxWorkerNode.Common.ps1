@@ -98,17 +98,11 @@ function Get-LinuxWorkerNodeProvisioningContext {
     Param(
         [string] $UserName = $(throw 'Argument missing: UserName'),
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
-        [string] $NodeName = '',
         [string] $LogPrefix = '[NodeAdd]',
         [string] $TargetDescription = 'remote computer'
     )
-
     $actualHostname = (Invoke-CmdOnVmViaSSHKey -CmdToExecute 'echo $(hostname)' -UserName $UserName -IpAddress $IpAddress).Output
     $k8sFormattedNodeName = $actualHostname.ToLower()
-
-    if (![string]::IsNullOrWhiteSpace($NodeName) -and ($NodeName.ToLower() -ne $k8sFormattedNodeName)) {
-        throw "$LogPrefix Precondition not met: the passed NodeName '$NodeName' does not match the hostname '$actualHostname' of the $TargetDescription with IP '$IpAddress'."
-    }
 
     $installedDistribution = Get-InstalledDistribution -UserName $UserName -IpAddress $IpAddress
     $osMessage = "{0} Detected OS on {1}: {2}" -f $LogPrefix, $TargetDescription, $installedDistribution

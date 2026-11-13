@@ -26,7 +26,6 @@ func newWindowsNodeProvider(cfg ProviderConfig) *windowsNodeProvider {
 }
 
 func (p *windowsNodeProvider) Add(cfg NodeAddConfig) error {
-
 	scriptDir := "bare-metal"
 	if cfg.IsLocalVM {
 		scriptDir = filepath.Join("hyper-v-vm", "existing-vm")
@@ -39,9 +38,6 @@ func (p *windowsNodeProvider) Add(cfg NodeAddConfig) error {
 	}
 	if cfg.IpAddress != "" {
 		params += " -IpAddress " + cfg.IpAddress
-	}
-	if cfg.NodeName != "" {
-		params += " -NodeName " + cfg.NodeName
 	}
 	if cfg.NodePackagePath != "" {
 		params += " -NodePackagePath '" + cfg.NodePackagePath + "'"

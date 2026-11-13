@@ -685,7 +685,6 @@ k2s node add [flags]
 |------|-------|-------------|
 | `--ip-addr` | `-i` | **Required.** IP address of the node |
 | `--username` | `-u` | **Required.** SSH username |
-| `--name` | `-m` | Hostname of the node |
 | `--role` | `-r` | Node role (default `worker`). Only `worker` is supported at the moment; any other value prints a warning and no node is added |
 | `--node-package` | `-p` | Path to a node package ZIP for offline installation |
 

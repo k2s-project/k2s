@@ -18,7 +18,6 @@ type NodeProvider interface {
 type NodeAddConfig struct {
 	IpAddress       string
 	UserName        string
-	NodeName        string
 	Role            string
 	NodePackagePath string
 	ShowOutput      bool

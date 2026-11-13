@@ -325,5 +325,11 @@ func determineRootDir() string {
 }
 
 func (s *K2sTestSuite) LogsDir() string {
+	if runtime.GOOS == "windows" && strings.TrimSpace(stdos.Getenv(logging.LogRootEnvVar)) == "" && s.setupInfo != nil {
+		return logging.RootLogDirForInstallation(
+			s.setupInfo.Config.Host().K2sSetupConfigDir(),
+			s.setupInfo.Config.Host().LogsDir(),
+		)
+	}
 	return logging.RootLogDir()
 }

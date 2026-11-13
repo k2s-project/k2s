@@ -493,8 +493,22 @@ function Set-RoutesToKubemaster {
         Where-Object { $_.DestinationPrefix -eq $ipControlPlaneCIDR -and $_.InterfaceIndex -eq $switchIndex -and $_.NextHop -eq '0.0.0.0' }
     if (-not $connectedRoute) {
         Write-Log "[Routes] Restoring on-link route to $ipControlPlaneCIDR on interface $switchIndex"
-        New-NetRoute -DestinationPrefix $ipControlPlaneCIDR -InterfaceIndex $switchIndex -NextHop '0.0.0.0' `
-            -RouteMetric 3 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+        try {
+            New-NetRoute -DestinationPrefix $ipControlPlaneCIDR -InterfaceIndex $switchIndex -NextHop '0.0.0.0' `
+                -RouteMetric 3 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+        }
+        catch {
+            if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ResourceExists -and
+                $_.FullyQualifiedErrorId -notmatch '^Windows System Error (183|5010),') {
+                throw
+            }
+            $connectedRoute = Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop |
+                Where-Object { $_.DestinationPrefix -eq $ipControlPlaneCIDR -and $_.InterfaceIndex -eq $switchIndex -and $_.NextHop -eq '0.0.0.0' }
+            if (-not $connectedRoute) {
+                throw
+            }
+            Write-Log "[Routes] On-link route to $ipControlPlaneCIDR on interface $switchIndex was created concurrently"
+        }
     }
 
     foreach ($policyStore in @('PersistentStore', 'ActiveStore')) {

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -21,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/k2s-project/k2s/internal/providers/bash"
 	"github.com/k2s-project/k2s/internal/version"
 	"gopkg.in/yaml.v3"
 )
@@ -853,13 +852,11 @@ func runBackupHook(scriptPath, hooksDir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultHookTimeout)
 	defer cancel()
 
-	cmd := bash.NewScript(scriptPath).
-		WithContext(ctx).
-		WithArgs("--backup-dir", hooksDir).
-		WithStdOutWriter(slog.Debug).
-		WithStdErrWriter(slog.Warn)
-	if err := cmd.Exec(); err != nil {
-		slog.Warn("[System Backup] Hook execution failed", "path", scriptPath, "error", err)
+	cmd := exec.CommandContext(ctx, "bash", scriptPath, "--backup-dir", hooksDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		slog.Warn("[System Backup] Hook execution failed", "path", scriptPath, "error", err, "output", string(out))
+	} else {
+		slog.Debug("[System Backup] Hook output", "path", scriptPath, "output", string(out))
 	}
 }
 

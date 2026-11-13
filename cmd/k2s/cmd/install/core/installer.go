@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package core
 
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/common"
 	ic "github.com/k2s-project/k2s/cmd/k2s/cmd/install/config"
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 
@@ -52,10 +53,11 @@ type Installer struct {
 
 func (i *Installer) Install(
 	kind ic.Kind,
-	ccmd *cobra.Command,
+	cCmd *cobra.Command,
 	buildCmdFunc func(config *ic.InstallConfig) (cmd string, err error),
-	cmdSession cc.CmdSession) error {
-	context := ccmd.Context().Value(cc.ContextKeyCmdContext).(*cc.CmdContext)
+	cmdSession cc.CmdSession,
+) error {
+	context := cCmd.Context().Value(cc.ContextKeyCmdContext).(*cc.CmdContext)
 	configDir := context.Config().Host().K2sSetupConfigDir()
 
 	runtimeConfig, err := i.LoadConfigFunc(configDir)
@@ -74,7 +76,7 @@ func (i *Installer) Install(
 		}
 	}
 
-	config, err := i.InstallConfigAccess.Load(kind, ccmd.Flags())
+	config, err := i.InstallConfigAccess.Load(kind, cCmd.Flags())
 	if err != nil {
 		return err
 	}
@@ -103,9 +105,10 @@ func (i *Installer) Install(
 
 	i.Printer.Printfln("🤖 Installing K2s '%s' %s in '%s' on %s", kind, i.GetVersionFunc(), i.GetInstallDirFunc(), i.GetPlatformFunc())
 
-	outputWriter := cc.NewPtermWriter()
+	errorTracker := common.NewErrorTracker()
+	context.StdWriter().OnStdErr(errorTracker.Track)
 
-	err = i.ExecutePsScript(cmd, outputWriter)
+	err = i.ExecutePsScript(cmd, context.StdWriter())
 	if err != nil {
 		if snapshot != nil {
 			if abortErr := snapshot.Abort(); abortErr != nil {
@@ -114,7 +117,7 @@ func (i *Installer) Install(
 		}
 
 		// Check for pre-requisites first
-		errorLine, found := cc.GetInstallPreRequisiteError(outputWriter.ErrorLines)
+		errorLine, found := errorTracker.PreRequisiteError()
 		if found {
 			i.Printer.PrintWarning("Prerequisite check failed,", errorLine)
 			i.Printer.PrintWarning("Have a look at the pre-requisites 'https://github.com/k2s-project/k2s/blob/main/docs/op-manual/installing-k2s.md#prerequisites' and re-issue 'k2s install'")
@@ -125,7 +128,7 @@ func (i *Installer) Install(
 			return nil
 		}
 
-		if outputWriter.ErrorOccurred {
+		if errorTracker.ErrOccurred() {
 			if err := i.MarkSetupAsCorruptedFunc(configDir); err != nil {
 				return fmt.Errorf("error while marking setup as corrupted: %w", err)
 			}

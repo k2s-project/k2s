@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2024 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-License-Identifier:   Apache-2.0
 
 package json_test
 
@@ -11,9 +11,9 @@ import (
 
 	j "encoding/json"
 
+	"github.com/k2s-project/k2s/internal/json"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/k2s-project/k2s/internal/json"
 )
 
 func TestJsonPkg(t *testing.T) {
@@ -43,7 +43,7 @@ var _ = Describe("json pkg", func() {
 	})
 
 	Describe("FromFile", func() {
-		When("file read error occurrs", func() {
+		When("file read error occurs", func() {
 			It("returns the error", func() {
 				nonExistentFile := filepath.Join(GinkgoT().TempDir(), "non-existent")
 
@@ -54,21 +54,14 @@ var _ = Describe("json pkg", func() {
 			})
 		})
 
-		When("unmarshal error occurrs", func() {
+		When("unmarshal error occurs", func() {
 			var filePath string
 
 			BeforeEach(func() {
 				content := "nonsense"
 				filePath = filepath.Join(GinkgoT().TempDir(), "test.json")
 
-				file, err := os.OpenFile(filePath, os.O_CREATE, os.ModeAppend)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, err = file.Write([]byte(content))
-				Expect(err).ToNot(HaveOccurred())
-
-				err = file.Close()
-				Expect(err).ToNot(HaveOccurred())
+				Expect(os.WriteFile(filePath, []byte(content), os.ModePerm)).ToNot(HaveOccurred())
 			})
 
 			It("returns the error", func() {
@@ -87,14 +80,7 @@ var _ = Describe("json pkg", func() {
 				content := "{\"prop1\": \"test-prop\", \"prop2\": 123}"
 				filePath = filepath.Join(GinkgoT().TempDir(), "test.json")
 
-				file, err := os.OpenFile(filePath, os.O_CREATE, os.ModeAppend)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, err = file.Write([]byte(content))
-				Expect(err).ToNot(HaveOccurred())
-
-				err = file.Close()
-				Expect(err).ToNot(HaveOccurred())
+				Expect(os.WriteFile(filePath, []byte(content), os.ModePerm)).ToNot(HaveOccurred())
 			})
 
 			It("returns the json file content", func() {
@@ -119,7 +105,7 @@ var _ = Describe("json pkg", func() {
 			It("writes and reads the json file content", func() {
 				expected := &testData{Prop1: "test-prop", Prop2: 123}
 
-				err := json.ToFile[testData](filePath, expected)
+				err := json.ToFile(filePath, expected)
 
 				actual, err := json.FromFile[testData](filePath)
 

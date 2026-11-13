@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package provider
-
-import "github.com/k2s-project/k2s/internal/output"
 
 // ClusterProvider abstracts cluster lifecycle operations.
 // On Windows: delegates to PowerShell scripts.
@@ -56,9 +54,6 @@ type ClusterInstallConfig struct {
 	ClusterName                       string
 	ControlPlaneHostname              string
 	EffectiveInstallConfig            []byte
-	// StdWriter overrides the default writer for capturing PS output (Windows).
-	// Linux providers ignore this field.
-	StdWriter output.StreamWriter
 }
 
 // ClusterUninstallConfig holds parameters for cluster uninstallation.

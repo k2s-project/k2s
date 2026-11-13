@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package image
 
@@ -217,6 +217,6 @@ func resetFlags() {
 	resetWinStorageCmd.Flags().Set(forceZapFlag, "false")
 
 	k2sConfig := config.NewK2sConfig(config.NewHostConfig(nil, nil, "some-dir", "", ""), nil)
-	cmdContext := common.NewCmdContext(k2sConfig, nil, nil)
+	cmdContext := common.NewCmdContext(k2sConfig, nil, nil, nil)
 	resetWinStorageCmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext))
 }

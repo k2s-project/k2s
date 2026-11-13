@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package common
 
@@ -47,19 +47,15 @@ type CmdResult struct {
 }
 
 type PtermWriter struct {
-	ShowProgress    bool
 	errorLineBuffer *bl.LogBuffer
-	ErrorOccurred   bool
-	ErrorLines      []string
-}
-
-type SlogWriter struct {
+	stdErrListeners []func(line string)
 }
 
 type CmdContext struct {
 	config    *config.K2sConfig
 	logger    *logging.Slogger
 	providers *provider.Registry
+	stdWriter output.ObservableStreamWriter
 }
 
 type CmdSession struct {
@@ -104,24 +100,20 @@ const (
 
 	NodeFlagName  = "node"
 	NodeFlagUsage = "Name of a specific node to start/stop"
-
-	PreReqMarker = "[PREREQ-FAILED]"
 )
 
 func NewPtermWriter() *PtermWriter {
 	return &PtermWriter{
-		ShowProgress:    true,
 		errorLineBuffer: createErrorLineBuffer(),
 	}
 }
 
-func NewSlogWriter() output.StreamWriter { return &SlogWriter{} }
-
-func NewCmdContext(config *config.K2sConfig, logger *logging.Slogger, providers *provider.Registry) *CmdContext {
+func NewCmdContext(config *config.K2sConfig, logger *logging.Slogger, providers *provider.Registry, stdWriter output.ObservableStreamWriter) *CmdContext {
 	return &CmdContext{
 		config:    config,
 		logger:    logger,
 		providers: providers,
+		stdWriter: stdWriter,
 	}
 }
 
@@ -210,19 +202,6 @@ func StopSpinner(spinner Spinner) {
 	}
 }
 
-func GetInstallPreRequisiteError(errorLines []string) (line string, found bool) {
-	for _, line := range errorLines {
-		if strings.Contains(line, PreReqMarker) {
-			// Remove error line with pre-requisite marker e.g [PREREQ-FAILED] Master node memory passed too low
-			cleanedLine := strings.Replace(line, PreReqMarker, "", -1)
-			cleanedLine = strings.Replace(cleanedLine, " ", "", 1)
-			return cleanedLine, true
-		}
-	}
-
-	return "", false
-}
-
 func (c *CmdFailure) Error() string { return fmt.Sprintf("%s: %s", c.Code, c.Message) }
 
 func (s CmdSession) Finish(suppressOutput ...bool) {
@@ -254,34 +233,32 @@ func (w *PtermWriter) WriteStdOut(line string) {
 	if strings.TrimSpace(line) == "" {
 		return
 	}
-	if w.ShowProgress {
-		pterm.Printfln("⏳ %s", line)
-	} else {
-		pterm.Println(line)
-	}
+	pterm.Printfln("⏳ %s", line)
 }
 
 func (w *PtermWriter) WriteStdErr(line string) {
 	w.errorLineBuffer.Log(line)
-	w.ErrorOccurred = true
-	w.ErrorLines = append(w.ErrorLines, line)
+	for _, listener := range w.stdErrListeners {
+		listener(line)
+	}
 
 	pterm.Printfln("⏳ %s", pterm.Yellow(line))
 }
 
+// OnStdErr registers a listener that is called for each stderr line.
+func (w *PtermWriter) OnStdErr(listener func(line string)) {
+	w.stdErrListeners = append(w.stdErrListeners, listener)
+}
+
 func (w *PtermWriter) Flush() { w.errorLineBuffer.Flush() }
-
-func (*SlogWriter) WriteStdOut(message string) { slog.Info(message) }
-
-func (*SlogWriter) WriteStdErr(message string) { slog.Error(message) }
-
-func (*SlogWriter) Flush() { /*empty*/ }
 
 func (c *CmdContext) Config() *config.K2sConfig { return c.config }
 
 func (c *CmdContext) Logger() *logging.Slogger { return c.logger }
 
 func (c *CmdContext) Providers() *provider.Registry { return c.providers }
+
+func (c *CmdContext) StdWriter() output.ObservableStreamWriter { return c.stdWriter }
 
 func (c *CmdContext) EnsureK2sK8sContext(clusterName string) error {
 	slog.Debug("Ensuring correct K8s context", "cluster-name", clusterName)

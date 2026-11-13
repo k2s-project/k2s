@@ -4,58 +4,62 @@
 package bash
 
 import (
-	"context"
 	"log/slog"
 
-	k2sos "github.com/k2s-project/k2s/internal/os"
+	"github.com/k2s-project/k2s/internal/os"
+	"github.com/k2s-project/k2s/internal/output"
 )
 
+const ShowLogsEnvVar = "K2S_SHOW_LOGS"
+
 type scriptBuilder struct {
-	cmdBuilder *k2sos.CmdBuilder
+	script   string
+	args     []string
+	showLogs bool
+	writer   output.StreamWriter
 }
 
-// NewScript creates a new script builder for the given script.
-// It sets up the command to run the script with the necessary environment variables
-// and default output writers (slog.Info for stdout and slog.Error for stderr).
 func NewScript(script string) *scriptBuilder {
-	return &scriptBuilder{
-		cmdBuilder: k2sos.NewCmd("env").
-			WithArgs("K2S_LOG_TO_CLI=true", "bash", script).
-			WithStdOutWriter(slog.Info).
-			WithStdErrWriter(slog.Error),
-	}
-}
-
-// WithContext sets the context for the script builder.
-// It allows the script to be executed with a specific context, which can be used for cancellation and timeouts.
-func (builder *scriptBuilder) WithContext(ctx context.Context) *scriptBuilder {
-	builder.cmdBuilder.WithContext(ctx)
-	return builder
+	return &scriptBuilder{script: script}
 }
 
 func (builder *scriptBuilder) WithArgs(args ...string) *scriptBuilder {
-	builder.cmdBuilder.WithArgs(args...)
+	builder.args = append(builder.args, args...)
 	return builder
 }
 
-// WithStdOutWriter sets the standard output writer for the script builder.
-// Nil writer defaults to a no-op writer.
-func (builder *scriptBuilder) WithStdOutWriter(writer k2sos.StdWriter) *scriptBuilder {
-	builder.cmdBuilder.WithStdOutWriter(writer)
+// WithShowLogs sets the log-enabling env variable for the script.
+func (builder *scriptBuilder) WithShowLogs(show bool) *scriptBuilder {
+	builder.showLogs = show
 	return builder
 }
 
-// WithStdErrWriter sets the standard error writer for the script builder.
-// Nil writer defaults to a no-op writer.
-func (builder *scriptBuilder) WithStdErrWriter(writer k2sos.StdWriter) *scriptBuilder {
-	builder.cmdBuilder.WithStdErrWriter(writer)
+// WithStdWriter sets the writer for stdout and stderr lines; nil discards them.
+// Flush is not called
+func (builder *scriptBuilder) WithStdWriter(writer output.StreamWriter) *scriptBuilder {
+	builder.writer = writer
 	return builder
 }
 
-// Exec executes the script using the configured command builder on the supported platform.
+// Exec returns an error if the script exits with a non-zero code.
 func (builder *scriptBuilder) Exec() error {
 	if err := platformGuard(); err != nil {
 		return err
 	}
-	return builder.cmdBuilder.Exec()
+
+	cmdArgs := []string{}
+	if builder.showLogs {
+		cmdArgs = append(cmdArgs, "env", ShowLogsEnvVar+"=true")
+	}
+	cmdArgs = append(cmdArgs, "bash", builder.script)
+	cmdArgs = append(cmdArgs, builder.args...)
+
+	slog.Debug("Bash command created", "command", cmdArgs)
+
+	cmd := os.NewCmd(cmdArgs[0]).WithArgs(cmdArgs[1:]...)
+	if builder.writer != nil {
+		cmd.WithStdOutWriter(func(msg string, _ ...any) { builder.writer.WriteStdOut(msg) }).
+			WithStdErrWriter(func(msg string, _ ...any) { builder.writer.WriteStdErr(msg) })
+	}
+	return cmd.Exec()
 }

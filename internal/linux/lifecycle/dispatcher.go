@@ -1,5 +1,4 @@
 // SPDX-FileCopyrightText: © 2026 The K2s Authors
-//
 // SPDX-License-Identifier: Apache-2.0
 
 package lifecycle
@@ -11,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/bash"
 )
 
@@ -33,8 +33,8 @@ type Operation struct {
 	WindowsQCOW2Path     string   `json:"windowsQCOW2Path"`
 }
 
-// Execute invokes the platform-first native Linux lifecycle script.
-func Execute(operation string, input Operation) error {
+// Execute invokes the native Linux lifecycle script. A nil writer discards the script output.
+func Execute(operation string, input Operation, writer output.StreamWriter, showLogs bool) error {
 	if !filepath.IsAbs(input.InstallDir) || filepath.Clean(input.InstallDir) == string(os.PathSeparator) {
 		return fmt.Errorf("native Linux install directory must be a non-root absolute path")
 	}
@@ -55,7 +55,7 @@ func Execute(operation string, input Operation) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("native Linux lifecycle script is not a regular file: %s", script)
 	}
-	if err := os.MkdirAll(input.ConfigDir, 0700); err != nil {
+	if err := os.MkdirAll(input.ConfigDir, 0o700); err != nil {
 		return fmt.Errorf("create lifecycle state directory: %w", err)
 	}
 	file, err := os.CreateTemp(input.ConfigDir, ".lifecycle-*.json")
@@ -72,11 +72,11 @@ func Execute(operation string, input Operation) error {
 		file.Close()
 		return fmt.Errorf("verify lifecycle operation file permissions: %w", err)
 	}
-	if fileInfo.Mode().Perm() != 0600 {
+	if fileInfo.Mode().Perm() != 0o600 {
 		file.Close()
 		return fmt.Errorf("lifecycle operation file has unsafe permissions: %o", fileInfo.Mode().Perm())
 	}
-	if err := file.Chmod(0600); err != nil {
+	if err := file.Chmod(0o600); err != nil {
 		file.Close()
 		return fmt.Errorf("secure lifecycle operation file: %w", err)
 	}
@@ -88,7 +88,12 @@ func Execute(operation string, input Operation) error {
 		return fmt.Errorf("close lifecycle operation file: %w", err)
 	}
 
-	if err := bash.NewScript(script).WithArgs("--operation-file", path).Exec(); err != nil {
+	err = bash.NewScript(script).
+		WithArgs("--operation-file", path).
+		WithShowLogs(showLogs).
+		WithStdWriter(writer).
+		Exec()
+	if err != nil {
 		return fmt.Errorf("native Linux %s failed: %w (see log file for more information)", operation, err)
 	}
 	return nil

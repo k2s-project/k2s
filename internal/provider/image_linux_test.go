@@ -22,7 +22,7 @@ func createDummyScript(t *testing.T, path string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatalf("failed to create script dir: %v", err)
 	}
-	content := []byte("#!/usr/bin/env bash\n[[ ${K2S_LOG_TO_CLI:-false} == true ]]\n")
+	content := []byte("#!/usr/bin/env bash\nexit 0\n")
 	if err := os.WriteFile(path, content, 0755); err != nil {
 		t.Fatalf("failed to create dummy script: %v", err)
 	}

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package install
 
@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/buildonly"
+	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/common"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/core"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils/tz"
@@ -243,7 +243,8 @@ func install(cmd *cobra.Command, args []string) error {
 
 	slog.Info("Installing", "kind", kind, "version", ver, "platform", utils.Platform())
 
-	outputWriter := cc.NewPtermWriter()
+	errorTracker := common.NewErrorTracker()
+	context.StdWriter().OnStdErr(errorTracker.Track)
 
 	err = context.Providers().Cluster.Install(provider.ClusterInstallConfig{
 		SetupName:                         string(kind),
@@ -275,11 +276,9 @@ func install(cmd *cobra.Command, args []string) error {
 		ClusterName:                       "k2s-cluster",
 		ControlPlaneHostname:              hostname,
 		EffectiveInstallConfig:            effectiveInstallConfig,
-		StdWriter:                         outputWriter,
 	})
 	if err != nil {
-		// On Windows, check for prerequisite failures in PS output
-		errorLine, found := cc.GetInstallPreRequisiteError(outputWriter.ErrorLines)
+		errorLine, found := errorTracker.PreRequisiteError()
 		if found {
 			slog.Warn("Prerequisite check failed", "detail", errorLine)
 			if delErr := os.Remove(filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)); delErr != nil {
@@ -292,7 +291,7 @@ func install(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		if outputWriter.ErrorOccurred {
+		if errorTracker.ErrOccurred() {
 			if markErr := config.MarkSetupAsCorrupted(configDir); markErr != nil {
 				slog.Error("error while marking setup as corrupted", "error", markErr)
 			}

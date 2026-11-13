@@ -5,7 +5,6 @@ package bash
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -18,7 +17,14 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-type writer = func(string, ...any)
+type recordingWriter struct {
+	stdOut []string
+	stdErr []string
+}
+
+func (w *recordingWriter) WriteStdOut(message string) { w.stdOut = append(w.stdOut, message) }
+func (w *recordingWriter) WriteStdErr(message string) { w.stdErr = append(w.stdErr, message) }
+func (w *recordingWriter) Flush()                     {}
 
 func TestBashPkg(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -55,8 +61,7 @@ var _ = Describe("bash pkg", Label("unit"), func() {
 			It("rejects execution before running the command", func() {
 				for _, sut := range []*scriptBuilder{
 					NewScript("missing.sh"),
-					NewScript("missing.sh").WithContext(context.Background()),
-					NewScript("missing.sh").WithStdOutWriter(nil).WithStdErrWriter(nil),
+					NewScript("missing.sh").WithShowLogs(true).WithStdWriter(nil),
 				} {
 					Expect(sut.Exec()).To(MatchError(ContainSubstring(windowsError)))
 				}
@@ -81,7 +86,7 @@ var _ = Describe("bash pkg", Label("unit"), func() {
 				DeferCleanup(slog.SetDefault, previous)
 
 				scriptPath = filepath.Join(GinkgoT().TempDir(), "script.sh")
-				content := `[[ ${K2S_LOG_TO_CLI:-false} == true ]] || exit 4
+				content := `printf '%s\n' "show=${K2S_SHOW_LOGS:-unset}"
 [[ "$#" == 2 && "$2" == 'literal argument; $HOME' ]] || exit 5
 printf '%s\n' 'script stdout'
 printf '%s\n' 'script stderr' >&2
@@ -90,36 +95,42 @@ exit "$1"
 				Expect(os.WriteFile(scriptPath, []byte(content), 0600)).To(Succeed())
 			})
 
-			DescribeTable("routes script output to the configured writers",
-				func(withWriters bool, stdOut, stdErr writer, stdOutLevel, stdErrLevel string) {
-					sut := NewScript(scriptPath).WithArgs("0", "literal argument; $HOME")
-					if withWriters {
-						sut.WithContext(context.Background()).WithStdOutWriter(stdOut).WithStdErrWriter(stdErr)
-					}
+			It("forwards stdout and stderr to the writer without logging the content", func() {
+				writer := &recordingWriter{}
 
-					Expect(sut.Exec()).To(Succeed())
+				err := NewScript(scriptPath).WithArgs("0", "literal argument; $HOME").WithStdWriter(writer).Exec()
 
-					expectLog := func(level, msg string) {
-						if level == "" {
-							Expect(logs.String()).ToNot(ContainSubstring(msg))
-						} else {
-							Expect(logs.String()).To(ContainSubstring("level=" + level + " " + msg))
-						}
-					}
-					expectLog(stdOutLevel, `msg="script stdout"`)
-					expectLog(stdErrLevel, `msg="script stderr"`)
-				},
-				Entry("defaults", false, nil, nil, "INFO", "ERROR"),
-				Entry("custom writers", true, slog.Debug, slog.Warn, "DEBUG", "WARN"),
-				Entry("nil stdout discards stdout", true, nil, slog.Warn, "", "WARN"),
-				Entry("nil stderr discards stderr", true, slog.Debug, nil, "DEBUG", ""),
-			)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(writer.stdOut).To(Equal([]string{"show=unset", "script stdout"}))
+				Expect(writer.stdErr).To(Equal([]string{"script stderr"}))
+				Expect(logs.String()).ToNot(ContainSubstring("script stdout"))
+				Expect(logs.String()).ToNot(ContainSubstring("script stderr"))
+			})
+
+			It("tells the script to show its logs", func() {
+				writer := &recordingWriter{}
+
+				err := NewScript(scriptPath).WithArgs("0", "literal argument; $HOME").WithShowLogs(true).WithStdWriter(writer).Exec()
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(writer.stdOut).To(ContainElement("show=true"))
+			})
+
+			It("discards the output without a writer", func() {
+				err := NewScript(scriptPath).WithArgs("0", "literal argument; $HOME").WithStdWriter(nil).Exec()
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(logs.String()).ToNot(ContainSubstring("script stdout"))
+			})
 
 			When("script exits with non-zero status", func() {
-				It("returns the exit error", func() {
-					err := NewScript(scriptPath).WithArgs("3", "literal argument; $HOME").Exec()
+				It("returns the exit error and still forwards the output", func() {
+					writer := &recordingWriter{}
+
+					err := NewScript(scriptPath).WithArgs("3", "literal argument; $HOME").WithStdWriter(writer).Exec()
 
 					Expect(err).To(MatchError(ContainSubstring("exit status 3")))
+					Expect(writer.stdErr).To(Equal([]string{"script stderr"}))
 				})
 			})
 		})

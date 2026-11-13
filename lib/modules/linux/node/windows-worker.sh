@@ -75,12 +75,12 @@ k2s_windows_worker_start_libvirt() {
 }
 
 k2s_windows_worker_memory_mb() {
-  [[ "$K2S_WORKER_MEMORY" =~ ^([2-9]|[1-9][0-9]+)(GB|G)$ ]] || { k2s_log ERROR "Invalid --worker-memory value: $K2S_WORKER_MEMORY"; return 2; }
+  [[ "$K2S_WORKER_MEMORY" =~ ^([2-9]|[1-9][0-9]+)(GB|G)$ ]] || { k2s_log_prereq_failure "Invalid --worker-memory value: $K2S_WORKER_MEMORY"; return 2; }
   printf '%s\n' "$(( ${BASH_REMATCH[1]} * 1024 ))"
 }
 
 k2s_windows_worker_disk_gb() {
-  [[ "$K2S_WORKER_DISK_SIZE" =~ ^([2-9][0-9]|[1-9][0-9]{2,})(GB|G)$ ]] || { k2s_log ERROR "Invalid --worker-disk value: $K2S_WORKER_DISK_SIZE"; return 2; }
+  [[ "$K2S_WORKER_DISK_SIZE" =~ ^([2-9][0-9]|[1-9][0-9]{2,})(GB|G)$ ]] || { k2s_log_prereq_failure "Invalid --worker-disk value: $K2S_WORKER_DISK_SIZE"; return 2; }
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
@@ -96,20 +96,20 @@ k2s_windows_worker_image_needed() {
 # Phase 1 needs no tooling and runs before any package is installed.
 k2s_windows_worker_preflight_host() {
   local memory_mb available_mb total_mb disk_gb available_gb disk_check_dir
-  [[ -r /dev/kvm && -c /dev/kvm ]] || { k2s_log ERROR 'KVM is unavailable. Enable nested virtualization and expose /dev/kvm to the Debian host.'; return 3; }
-  [[ "$K2S_WORKER_CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { k2s_log ERROR "Invalid --worker-cpus value: $K2S_WORKER_CPU_COUNT"; return 2; }
+  [[ -r /dev/kvm && -c /dev/kvm ]] || { k2s_log_prereq_failure 'KVM is unavailable. Enable nested virtualization and expose /dev/kvm to the Debian host.'; return 3; }
+  [[ "$K2S_WORKER_CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { k2s_log_prereq_failure "Invalid --worker-cpus value: $K2S_WORKER_CPU_COUNT"; return 2; }
   memory_mb=$(k2s_windows_worker_memory_mb) || return $?
   disk_gb=$(k2s_windows_worker_disk_gb) || return $?
   available_mb=$(awk '/MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
   total_mb=$(awk '/MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
-  (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log ERROR 'Windows worker memory must not exceed 75% of host memory.'; return 3; }
-  (( available_mb >= memory_mb + 2048 )) || { k2s_log ERROR 'Windows worker would leave less than 2GB of host memory available.'; return 3; }
+  (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log_prereq_failure 'Windows worker memory must not exceed 75% of host memory.'; return 3; }
+  (( available_mb >= memory_mb + 2048 )) || { k2s_log_prereq_failure 'Windows worker would leave less than 2GB of host memory available.'; return 3; }
   disk_check_dir=$(k2s_windows_worker_vm_dir)
   while [[ ! -d "$disk_check_dir" ]]; do disk_check_dir=$(dirname "$disk_check_dir"); done
   available_gb=$(df -BG --output=avail "$disk_check_dir" | tail -1 | tr -dc '0-9')
-  (( available_gb - disk_gb >= 20 )) || { k2s_log ERROR 'Windows worker would leave less than 20GB of host disk space available.'; return 3; }
+  (( available_gb - disk_gb >= 20 )) || { k2s_log_prereq_failure 'Windows worker would leave less than 20GB of host disk space available.'; return 3; }
   if k2s_windows_worker_image_needed; then
-    [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log ERROR 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
+    [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log_prereq_failure 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
   fi
 }
 
@@ -117,13 +117,15 @@ k2s_windows_worker_preflight_host() {
 # before the cluster is created.
 k2s_windows_worker_preflight_tools() {
   local command source_format
-  for command in virsh qemu-img sfdisk ssh scp ssh-keyscan ssh-keygen sshpass tar; do k2s_require_command "$command" || return 4; done
-  getent passwd libvirt-qemu >/dev/null || { k2s_log ERROR 'The libvirt-qemu service account is missing. Reinstall libvirt-daemon-system.'; return 3; }
-  getent passwd dnsmasq >/dev/null || { k2s_log ERROR 'The dnsmasq service account is missing. Install dnsmasq-base.'; return 3; }
-  k2s_windows_worker_start_libvirt || return 3
+  for command in virsh qemu-img sfdisk ssh scp ssh-keyscan ssh-keygen sshpass tar; do
+    command -v "$command" >/dev/null 2>&1 || { k2s_log_prereq_failure "Required command is not available: $command"; return 4; }
+  done
+  getent passwd libvirt-qemu >/dev/null || { k2s_log_prereq_failure 'The libvirt-qemu service account is missing. Reinstall libvirt-daemon-system.'; return 3; }
+  getent passwd dnsmasq >/dev/null || { k2s_log_prereq_failure 'The dnsmasq service account is missing. Install dnsmasq-base.'; return 3; }
+  k2s_windows_worker_start_libvirt || { k2s_log_prereq_failure 'libvirt is not available.'; return 3; }
   if k2s_windows_worker_image_needed; then
     source_format=$(qemu-img info --output=json "$K2S_WINDOWS_QCOW2_PATH" | jq -r '.format') || return 1
-    [[ "$source_format" == 'qcow2' ]] || { k2s_log ERROR "Windows worker image must use QCOW2 format, found: $source_format"; return 2; }
+    [[ "$source_format" == 'qcow2' ]] || { k2s_log_prereq_failure "Windows worker image must use QCOW2 format, found: $source_format"; return 2; }
   fi
 }
 
@@ -303,16 +305,16 @@ k2s_windows_worker_wait_for_ssh() {
 k2s_windows_worker_log_ssh_diagnostics() {
   local worker_ip="$1"
   k2s_log ERROR "Windows worker SSH diagnostics for $worker_ip"
-  virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh dominfo "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh domifaddr "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh net-dhcp-leases "$K2S_WINDOWS_WORKER_NETWORK" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  ip -4 neigh show "$worker_ip" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh vncdisplay "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
+  virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
+  virsh dominfo "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
+  virsh domifaddr "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
+  virsh net-dhcp-leases "$K2S_WINDOWS_WORKER_NETWORK" 2>&1 | k2s_log_output || true
+  ip -4 neigh show "$worker_ip" 2>&1 | k2s_log_output || true
+  virsh vncdisplay "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
   if virsh screenshot "$K2S_WINDOWS_WORKER_NAME" "$K2S_CONFIG_DIR/${K2S_WINDOWS_WORKER_NAME}-console.png" >/dev/null 2>&1; then
     k2s_log ERROR "Windows worker console screenshot: $K2S_CONFIG_DIR/${K2S_WINDOWS_WORKER_NAME}-console.png"
   fi
-  tail -n 100 "/var/log/libvirt/qemu/${K2S_WINDOWS_WORKER_NAME}.log" 2>&1 | tee -a "$K2S_LOG_FILE" || true
+  tail -n 100 "/var/log/libvirt/qemu/${K2S_WINDOWS_WORKER_NAME}.log" 2>&1 | k2s_log_output || true
 }
 
 k2s_windows_worker_copy_runtime() {

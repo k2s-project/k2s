@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package registry
 
@@ -85,7 +85,7 @@ func setupTestCmdContext(cmd *cobra.Command, mockImg *mockImageProvider, linuxOn
 		reg = &provider.Registry{Image: mockImg}
 	}
 
-	cmdContext := common.NewCmdContext(k2sConfig, nil, reg)
+	cmdContext := common.NewCmdContext(k2sConfig, nil, reg, nil)
 	ctx := context.WithValue(context.Background(), common.ContextKeyCmdContext, cmdContext)
 	cmd.SetContext(ctx)
 

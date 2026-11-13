@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2024 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package cmd
 
@@ -83,13 +83,14 @@ func CreateRootCmd(logger *logging.Slogger) (*cobra.Command, error) {
 
 			slog.Debug("config loaded", "config", k2sConfig)
 
+			stdWriter := cc.NewPtermWriter()
 			registry := provider.NewRegistry(provider.ProviderConfig{
 				InstallDir: utils.InstallDir(),
 				ConfigDir:  k2sConfig.Host().K2sSetupConfigDir(),
-				StdWriter:  cc.NewPtermWriter(),
+				StdWriter:  stdWriter,
 			})
 
-			cmd.SetContext(context.WithValue(cmd.Context(), cc.ContextKeyCmdContext, cc.NewCmdContext(k2sConfig, logger, registry)))
+			cmd.SetContext(context.WithValue(cmd.Context(), cc.ContextKeyCmdContext, cc.NewCmdContext(k2sConfig, logger, registry, stdWriter)))
 
 			return nil
 		},

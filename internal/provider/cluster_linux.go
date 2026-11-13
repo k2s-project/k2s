@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -13,41 +13,65 @@ import (
 	"strings"
 	"time"
 
-	linuxlifecycle "github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/output"
 )
 
 type linuxClusterProvider struct {
 	installDir string
 	configDir  string
+	stdWriter  output.StreamWriter
 }
 
 func newLinuxClusterProvider(cfg ProviderConfig) *linuxClusterProvider {
 	return &linuxClusterProvider{
 		installDir: cfg.InstallDir,
 		configDir:  cfg.ConfigDir,
+		stdWriter:  cfg.StdWriter,
 	}
 }
 
 func (p *linuxClusterProvider) Install(cfg ClusterInstallConfig) error {
-	return linuxlifecycle.Execute("Install", linuxlifecycle.Operation{
-		InstallDir: cfg.InstallDir, ConfigDir: cfg.ConfigDir, Version: cfg.Version,
-		ClusterName: cfg.ClusterName, ControlPlaneHostname: cfg.ControlPlaneHostname,
-		Proxy: cfg.Proxy, NoProxy: cfg.NoProxy, SkipStart: cfg.SkipStart, LinuxOnly: cfg.LinuxOnly,
-		WorkerCPUCount: cfg.WorkerCPUCount, WorkerMemory: cfg.WorkerMemory,
-		WorkerDiskSize: cfg.WorkerDiskSize, WindowsQCOW2Path: cfg.WindowsQCOW2Path,
-	})
+	return lifecycle.Execute("Install", lifecycle.Operation{
+		InstallDir:           cfg.InstallDir,
+		ConfigDir:            cfg.ConfigDir,
+		Version:              cfg.Version,
+		ClusterName:          cfg.ClusterName,
+		ControlPlaneHostname: cfg.ControlPlaneHostname,
+		Proxy:                cfg.Proxy,
+		NoProxy:              cfg.NoProxy,
+		SkipStart:            cfg.SkipStart,
+		LinuxOnly:            cfg.LinuxOnly,
+		WorkerCPUCount:       cfg.WorkerCPUCount,
+		WorkerMemory:         cfg.WorkerMemory,
+		WorkerDiskSize:       cfg.WorkerDiskSize,
+		WindowsQCOW2Path:     cfg.WindowsQCOW2Path,
+	}, p.stdWriter, cfg.ShowLogs)
 }
 
 func (p *linuxClusterProvider) Uninstall(cfg ClusterUninstallConfig) error {
-	return linuxlifecycle.Execute("Uninstall", linuxlifecycle.Operation{InstallDir: p.installDir, ConfigDir: cfg.ConfigDir, LinuxOnly: cfg.LinuxOnly, SkipPurge: cfg.SkipPurge})
+	return lifecycle.Execute("Uninstall", lifecycle.Operation{
+		InstallDir: p.installDir,
+		ConfigDir:  cfg.ConfigDir,
+		LinuxOnly:  cfg.LinuxOnly,
+		SkipPurge:  cfg.SkipPurge,
+	}, p.stdWriter, cfg.ShowLogs)
 }
 
 func (p *linuxClusterProvider) Start(cfg ClusterStartConfig) error {
-	return linuxlifecycle.Execute("Start", linuxlifecycle.Operation{InstallDir: p.installDir, ConfigDir: p.configDir, LinuxOnly: cfg.LinuxOnly})
+	return lifecycle.Execute("Start", lifecycle.Operation{
+		InstallDir: p.installDir,
+		ConfigDir:  p.configDir,
+		LinuxOnly:  cfg.LinuxOnly,
+	}, p.stdWriter, cfg.ShowLogs)
 }
 
 func (p *linuxClusterProvider) Stop(cfg ClusterStopConfig) error {
-	return linuxlifecycle.Execute("Stop", linuxlifecycle.Operation{InstallDir: p.installDir, ConfigDir: p.configDir, LinuxOnly: cfg.LinuxOnly})
+	return lifecycle.Execute("Stop", lifecycle.Operation{
+		InstallDir: p.installDir,
+		ConfigDir:  p.configDir,
+		LinuxOnly:  cfg.LinuxOnly,
+	}, p.stdWriter, cfg.ShowLogs)
 }
 
 func (p *linuxClusterProvider) Status(_ ClusterStatusConfig) (*ClusterStatus, error) {

@@ -56,7 +56,7 @@ var _ = Describe("reset", func() {
 			cmd := &cobra.Command{Use: "reset"}
 			k2sConfig := contracts.NewK2sConfig(contracts.NewHostConfig(nil, nil, configDir, "", ""), nil)
 			registry := &provider.Registry{System: systemProvider}
-			cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(k2sConfig, nil, registry)))
+			cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(k2sConfig, nil, registry, nil)))
 			return cmd
 		}
 
@@ -109,7 +109,7 @@ var _ = Describe("reset", func() {
 			cmd := &cobra.Command{Use: "reset network"}
 			k2sConfig := contracts.NewK2sConfig(contracts.NewHostConfig(nil, nil, configDir, "", ""), nil)
 			registry := &provider.Registry{System: systemProvider}
-			cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(k2sConfig, nil, registry)))
+			cmd.SetContext(context.WithValue(context.TODO(), common.ContextKeyCmdContext, common.NewCmdContext(k2sConfig, nil, registry, nil)))
 			cmd.Flags().BoolP(forceFlagName, "f", false, "")
 			cmd.Flags().BoolP(common.OutputFlagName, common.OutputFlagShorthand, false, "")
 			return cmd

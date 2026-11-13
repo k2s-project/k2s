@@ -11,9 +11,9 @@ import (
 
 	y "gopkg.in/yaml.v3"
 
+	"github.com/k2s-project/k2s/internal/yaml"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/k2s-project/k2s/internal/yaml"
 )
 
 func TestYamlPkg(t *testing.T) {
@@ -28,7 +28,7 @@ type testData struct {
 
 var _ = Describe("yaml pkg", func() {
 	Describe("FromFile", func() {
-		When("file read error occurrs", func() {
+		When("file read error occurs", func() {
 			It("returns the error", func() {
 				nonExistentFile := filepath.Join(GinkgoT().TempDir(), "non-existent")
 
@@ -39,20 +39,14 @@ var _ = Describe("yaml pkg", func() {
 			})
 		})
 
-		When("unmarshal error occurrs", func() {
+		When("unmarshal error occurs", func() {
 			var filePath string
 
 			BeforeEach(func() {
-				content := "nonsense"
 				filePath = filepath.Join(GinkgoT().TempDir(), "test.yaml")
 
-				file, err := os.OpenFile(filePath, os.O_CREATE, os.ModeAppend)
-				Expect(err).ToNot(HaveOccurred())
+				err := os.WriteFile(filePath, []byte("nonsense"), os.ModePerm)
 
-				_, err = file.Write([]byte(content))
-				Expect(err).ToNot(HaveOccurred())
-
-				err = file.Close()
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -69,16 +63,10 @@ var _ = Describe("yaml pkg", func() {
 			var filePath string
 
 			BeforeEach(func() {
-				content := "prop1: test-prop\nprop2: 123"
 				filePath = filepath.Join(GinkgoT().TempDir(), "test.yaml")
 
-				file, err := os.OpenFile(filePath, os.O_CREATE, os.ModeAppend)
-				Expect(err).ToNot(HaveOccurred())
+				err := os.WriteFile(filePath, []byte("prop1: test-prop\nprop2: 123"), os.ModePerm)
 
-				_, err = file.Write([]byte(content))
-				Expect(err).ToNot(HaveOccurred())
-
-				err = file.Close()
 				Expect(err).ToNot(HaveOccurred())
 			})
 

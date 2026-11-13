@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -22,7 +22,8 @@ import (
 
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
-	kjson "github.com/k2s-project/k2s/internal/json"
+	kJson "github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/bash"
 )
 
@@ -34,13 +35,23 @@ const (
 type linuxImageProvider struct {
 	installDir string
 	configDir  string
+	stdWriter  output.StreamWriter
 }
 
 func newLinuxImageProvider(cfg ProviderConfig) *linuxImageProvider {
 	return &linuxImageProvider{
 		installDir: cfg.InstallDir,
 		configDir:  cfg.ConfigDir,
+		stdWriter:  cfg.StdWriter,
 	}
+}
+
+func (p *linuxImageProvider) runScript(script string, showOutput bool, args ...string) error {
+	return bash.NewScript(script).
+		WithArgs(args...).
+		WithShowLogs(showOutput).
+		WithStdWriter(p.stdWriter).
+		Exec()
 }
 
 func (p *linuxImageProvider) scriptPath(script string) string {
@@ -118,7 +129,7 @@ func (p *linuxImageProvider) Pull(cfg ImagePullConfig) error {
 
 	script := p.scriptPath("Pull-Image.sh")
 	if _, err := os.Stat(script); err == nil {
-		return bash.NewScript(script).WithArgs("-n", cfg.ImageName).Exec()
+		return p.runScript(script, cfg.ShowOutput, "-n", cfg.ImageName)
 	}
 
 	cmd := exec.Command("crictl", "pull", cfg.ImageName)
@@ -152,7 +163,7 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 		if cfg.Force {
 			args = append(args, "--force")
 		}
-		return bash.NewScript(script).WithArgs(args...).Exec()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	if _, err := exec.LookPath("buildah"); err == nil {
@@ -247,7 +258,7 @@ func (p *linuxImageProvider) Build(cfg ImageBuildConfig) error {
 		for k, v := range cfg.BuildArgs {
 			args = append(args, "--build-arg", k+"="+v)
 		}
-		return bash.NewScript(script).WithArgs(args...).Exec()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	args := []string{"build"}
@@ -312,7 +323,7 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 		if cfg.DirPath != "" {
 			args = append(args, "-d", cfg.DirPath)
 		}
-		return bash.NewScript(script).WithArgs(args...).Exec()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "import", path)
@@ -350,7 +361,7 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		if cfg.DockerArchive {
 			args = append(args, "--docker-archive")
 		}
-		return bash.NewScript(script).WithArgs(args...).Exec()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	if cfg.DockerArchive {
@@ -403,7 +414,7 @@ func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
 		if target != "" {
 			args = append(args, "-t", target)
 		}
-		return bash.NewScript(script).WithArgs(args...).Exec()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "tag", ref, target)
@@ -430,7 +441,7 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 		if cfg.ImageName != "" {
 			args = append(args, "-n", cfg.ImageName)
 		}
-		return bash.NewScript(script).WithArgs(args...).Exec()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	cmd := exec.Command("nerdctl", "push", ref)
@@ -446,7 +457,7 @@ func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {
 
 	script := p.scriptPath("Clean-Images.sh")
 	if _, err := os.Stat(script); err == nil {
-		return bash.NewScript(script).Exec()
+		return p.runScript(script, cfg.ShowOutput)
 	}
 
 	if _, err := exec.LookPath("buildah"); err == nil {
@@ -508,7 +519,7 @@ func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 		args = append(args, "--plain-http")
 	}
 
-	if err := bash.NewScript(script).WithArgs(args...).Exec(); err != nil {
+	if err := p.runScript(script, cfg.ShowOutput, args...); err != nil {
 		return fmt.Errorf("failed to add registry '%s': %w", cfg.RegistryName, err)
 	}
 
@@ -518,7 +529,7 @@ func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 
 func (p *linuxImageProvider) RegistryRemove(cfg ImageRegistryRemoveConfig) error {
 	script := p.scriptPath(filepath.Join("registry", "Remove-Registry.sh"))
-	if err := bash.NewScript(script).WithArgs("--registry", cfg.RegistryName).Exec(); err != nil {
+	if err := p.runScript(script, cfg.ShowOutput, "--registry", cfg.RegistryName); err != nil {
 		return fmt.Errorf("failed to remove registry '%s': %w", cfg.RegistryName, err)
 	}
 
@@ -531,7 +542,7 @@ func (p *linuxImageProvider) addRegistryToConfig(registry string) error {
 		return nil
 	}
 	configPath := filepath.Join(p.configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := kJson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -558,7 +569,7 @@ func (p *linuxImageProvider) addRegistryToConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return kjson.ToFile(configPath, cfgMap)
+	return kJson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
@@ -566,7 +577,7 @@ func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
 		return nil
 	}
 	configPath := filepath.Join(p.configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := kJson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -587,7 +598,7 @@ func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return kjson.ToFile(configPath, cfgMap)
+	return kJson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxImageProvider) isLinuxOnly() bool {
@@ -597,7 +608,7 @@ func (p *linuxImageProvider) isLinuxOnly() bool {
 	}
 	if configDir != "" {
 		configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-		cfgMap, err := kjson.FromFile[map[string]any](configPath)
+		cfgMap, err := kJson.FromFile[map[string]any](configPath)
 		if err == nil {
 			if val, ok := (*cfgMap)["LinuxOnly"]; ok {
 				if b, ok := val.(bool); ok {
@@ -917,7 +928,7 @@ func (p *linuxImageProvider) getRegistriesFromConfig() []string {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := kJson.FromFile[map[string]any](configPath)
 	if err != nil {
 		return nil
 	}

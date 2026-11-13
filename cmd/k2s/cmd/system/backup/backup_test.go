@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: © 2025 The K2s Authors
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
 package backup
@@ -131,7 +131,7 @@ var _ = Describe("backup", func() {
 
 		BeforeEach(func() {
 			mockSys = &mockSystemProvider{}
-			cmdContext := common.NewCmdContext(nil, nil, &provider.Registry{System: mockSys})
+			cmdContext := common.NewCmdContext(nil, nil, &provider.Registry{System: mockSys}, nil)
 			ctx := context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext)
 			SystemBackupCmd.SetContext(ctx)
 		})

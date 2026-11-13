@@ -647,6 +647,29 @@
       ],
       "purl": "pkg:github/kubernetes-sigs/krew@v0.5.0",
       "type": "application"
+    },
+    {
+      "group": "https://github.com/oras-project/oras/releases/download/v1.3.6/oras_1.3.6_windows_amd64.zip",
+      "name": "oras",
+      "version": "v1.3.6",
+      "description": "",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://github.com/oras-project/oras/blob/v1.3.6/LICENSE"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "sw360:projectName",
+          "value": "k2s:core:pkg:executables"
+        }
+      ],
+      "purl": "pkg:github/oras-project/oras@v1.3.6",
+      "type": "application"
     }
   ],
   "dependencies": [],

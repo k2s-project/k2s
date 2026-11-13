@@ -9,6 +9,10 @@ Storage addon validation module
 Provides validation functions to ensure only one storage implementation is enabled at a time.
 #>
 
+$addonsModule = "$PSScriptRoot\..\addons.module.psm1"
+
+Import-Module $addonsModule
+
 function Test-StorageImplementationEnabled {
     <#
     .SYNOPSIS

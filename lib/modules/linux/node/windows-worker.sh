@@ -249,11 +249,15 @@ k2s_windows_worker_ssh() {
 k2s_windows_worker_password() { printf '%s' "${K2S_WINDOWS_WORKER_PASSWORD:-admin}"; }
 
 k2s_windows_worker_password_ssh() {
-  SSHPASS=$(k2s_windows_worker_password) sshpass -e ssh -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 "remote@$(k2s_windows_worker_ip)" "$@"
+  # ServerAlive* matters here as much as on k2s_windows_worker_ssh: observed directly, this
+  # call (icacls/Copy-Item against C:\ProgramData\ssh, which Windows Defender's real-time
+  # scanner intercepts) can go idle mid-command under nested virtualization. ConnectTimeout
+  # alone does not bound that -- it only covers the initial TCP connect.
+  SSHPASS=$(k2s_windows_worker_password) sshpass -e ssh -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip)" "$@"
 }
 
 k2s_windows_worker_password_scp() {
-  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$(k2s_windows_worker_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
+  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$(k2s_windows_worker_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
 }
 
 # sshd reads administrators_authorized_keys on every authentication, so the key takes
@@ -285,7 +289,11 @@ k2s_windows_worker_wait_for_ssh() {
   k2s_log INFO 'Windows worker SSH host key retrieved; installing the generated key.'
   # The guest is still settling during its first boot, so the bootstrap itself can fail
   # transiently. Retry it instead of only polling for its result.
-  deadline=$((SECONDS + 900))
+  # Under nested virtualization a single SSH auth attempt can itself legitimately take
+  # upward of 15-20 minutes (observed) instead of failing fast, because the guest is slow
+  # to schedule sshd rather than unreachable; ConnectTimeout does not bound that. Budget
+  # generously so one slow attempt cannot consume the whole deadline before it even retries.
+  deadline=$((SECONDS + 2400))
   until k2s_windows_worker_ssh 'exit 0' 2>/dev/null; do
     if (( SECONDS >= deadline )); then
       k2s_log ERROR 'Windows worker SSH key authentication never succeeded. Last attempt:'
@@ -300,6 +308,41 @@ k2s_windows_worker_wait_for_ssh() {
     sleep 10
   done
   k2s_log INFO "Windows worker SSH key authentication established after $attempt attempt(s)."
+}
+
+# <clock offset='localtime'> and, measured directly, even offset='variable'/'utc' did not
+# reliably land the guest on the correct wall-clock time in this environment (observed up to
+# an hour of skew), which fails kubeadm join's TLS validation ("certificate ... is not yet
+# valid"). Rather than depend on QEMU/libvirt clock plumbing, set the guest's time directly
+# over the SSH channel we already have, using the Linux host's own (NTP-synced) clock as the
+# source of truth.
+k2s_windows_worker_sync_clock() {
+  local now_utc started_at finished_at elapsed_ms deadline=$((SECONDS + 300))
+  # A single unprotected SSH call here is exactly as exposed to the worker's occasional
+  # multi-minute connectivity blips (see k2s_windows_worker_wait_for_ssh) as any other; retry
+  # instead of letting one transient hiccup abort the whole install.
+  while (( SECONDS < deadline )); do
+    started_at=$(date -u +%s%3N) || return 1
+    now_utc=$(date -u -d "@$((started_at / 1000))" +'%Y-%m-%d %H:%M:%S') || return 1
+    if k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date ([DateTimeOffset]::FromUnixTimeMilliseconds($started_at).UtcDateTime)\""; then
+      finished_at=$(date -u +%s%3N) || return 1
+      elapsed_ms=$((finished_at - started_at))
+      if (( elapsed_ms <= 5000 )); then
+        k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc; SSH round trip ${elapsed_ms}ms)."
+        return 0
+      fi
+      k2s_log WARN "Windows worker clock sync took ${elapsed_ms}ms, exceeding the 5000ms skew bound; retrying with a fresh timestamp."
+    else
+      k2s_log WARN 'Setting the Windows worker clock failed; retrying.'
+    fi
+    if (( SECONDS >= deadline )); then
+      k2s_log ERROR 'Timed out setting the Windows worker clock.'
+      return 1
+    fi
+    sleep 10
+  done
+  k2s_log ERROR 'Timed out setting the Windows worker clock.'
+  return 1
 }
 
 k2s_windows_worker_log_ssh_diagnostics() {
@@ -329,7 +372,7 @@ k2s_windows_worker_copy_runtime() {
     --exclude='bin/*.vhdx' \
     -cf "$archive" "${runtime_paths[@]}" || { rm -f "$archive"; return 1; }
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\ProgramData\K2s -Force | Out-Null"' || { rm -f "$archive"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
   result=$?
   rm -f "$archive"
   (( result == 0 )) || return "$result"
@@ -345,7 +388,7 @@ k2s_windows_worker_copy_kubeconfig() {
   k2s_log INFO 'Copying the cluster kubeconfig to the Windows worker.'
   kubeconfig=$(mktemp) || return 1
   cp /etc/kubernetes/admin.conf "$kubeconfig" || { rm -f "$kubeconfig"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
   result=$?
   rm -f "$kubeconfig"
   return "$result"
@@ -366,7 +409,7 @@ k2s_windows_worker_collect_logs() {
   log_dir=${log_dir//\\//}
   log=$(mktemp) || return 0
   k2s_log ERROR "Retrieving the Windows worker K2s log from $log_dir/k2s.log"
-  if scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
+  if scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
     printf '===== Windows worker K2s log (last 300 lines) =====\n'
     tail -n 300 "$log" | tr -d '\r'
     printf '===== end of Windows worker K2s log =====\n'
@@ -389,12 +432,15 @@ k2s_windows_worker_diagnose_node() {
   printf '===== end of Windows worker node diagnostics =====\n'
 }
 
+k2s_windows_worker_join_result_file() { printf '%s' 'C:\ProgramData\K2s\JoinWorker.result'; }
+
 k2s_windows_worker_join_cluster() {
-  local join_command join_script escaped_join gateway worker_ip
+  local join_command join_script escaped_join gateway worker_ip result_file
   join_command=$(kubeadm token create --ttl 30m --print-join-command) || return 1
   escaped_join=${join_command//\'/\'\'}
   gateway=$(k2s_windows_worker_gateway) || return 1
   worker_ip=$(k2s_windows_worker_ip) || return 1
+  result_file=$(k2s_windows_worker_join_result_file)
   join_script=$(mktemp)
   cat > "$join_script" <<EOF
 Import-Module 'C:\\k2s\\lib\\modules\\windows\\infra\\k2s.infra.module\\k2s.infra.module.psm1' -Force
@@ -410,6 +456,12 @@ Initialize-Logging -ShowLogs
 # modules are written and tested against 'Continue'. Forcing 'Stop' here turns
 # their benign non-terminating errors into fatal ones.
 \$ErrorActionPreference = 'Continue'
+
+# Whatever inside Add-WindowsWorkerNodeOnWindowsHost rebinds the worker's NIC (loopback
+# adapter install, VFP rules, HNS) can drop this SSH session the same way starting the
+# node does. Record the outcome so the host can pick it up after reconnecting instead of
+# depending on the SSH exit status.
+try {
 
 \$installationPath = Get-KubePath
 Set-Location \$installationPath
@@ -460,10 +512,21 @@ Copy-Item "\$installationPath\config" -Destination "\$kubeConfigDir\config" -For
 \$env:KUBECONFIG = "\$installationPath\config"
 [Environment]::SetEnvironmentVariable('KUBECONFIG', "\$installationPath\config", [System.EnvironmentVariableTarget]::Machine)
 
+# Add-WindowsWorkerNodeOnWindowsHost requires this path (it reads kubeletOverrides.windowsWorker
+# from it). The native Linux control-plane install does not stage an effective-install-config.json
+# anywhere the worker could fetch it, so provide an empty one: Get-K2sKubeletOverrideContent treats
+# a config with no 'kubeletOverrides' key as "no overrides" rather than an error. Per-worker kubelet
+# overrides are therefore not yet supported for a managed KVM Windows worker.
+\$effectiveInstallConfigPath = 'C:\ProgramData\K2s\effective-install-config.json'
+if (!(Test-Path \$effectiveInstallConfigPath)) {
+    '{}' | Set-Content -Path \$effectiveInstallConfigPath -Encoding ascii
+}
+
 \$workerNodeParams = @{
-    Proxy               = 'http://$gateway:8181'
-    PodSubnetworkNumber = '1'
-    JoinCommand         = '$escaped_join'
+    Proxy                      = 'http://$gateway:8181'
+    PodSubnetworkNumber        = '1'
+    JoinCommand                = '$escaped_join'
+    EffectiveInstallConfigPath = \$effectiveInstallConfigPath
 }
 Add-WindowsWorkerNodeOnWindowsHost @workerNodeParams
 
@@ -472,10 +535,54 @@ Write-Log 'Adding mirror registries'
 foreach (\$registry in (Get-MirrorRegistries)) {
     Set-Registry -Name \$registry.registry -Https -SkipVerify -Mirror \$registry.mirror -Server \$registry.server
 }
+    'OK' | Set-Content -Path '$result_file' -Encoding ascii
+}
+catch {
+    "FAILED: \$_" | Set-Content -Path '$result_file' -Encoding ascii
+    throw
+}
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
+  # The worker disk may be reused after a failed provisioning attempt. Do not launch the
+  # join unless the previous result marker is confirmed absent.
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return $?
+  # The SSH session may die mid-run if the worker's NIC gets rebound; that is expected.
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\JoinWorker.ps1'
+  local result=$?
+  if (( result != 0 && result != 255 )); then
+    k2s_log ERROR "Windows worker join script exited with status $result."
+    return "$result"
+  fi
+  k2s_windows_worker_wait_for_join_result
+}
+
+# Polls for the marker JoinWorker.ps1 writes, reconnecting as needed while the worker's
+# networking settles after a NIC rebind. Mirrors k2s_windows_worker_wait_for_start_result.
+# Each poll's own SSH call can itself stall for many minutes under nested virtualization
+# (see k2s_windows_worker_wait_for_ssh), so the deadline must tolerate more than one such
+# stall rather than just a handful of quick 15s retries.
+k2s_windows_worker_wait_for_join_result() {
+  local result_file outcome deadline=$((SECONDS + 2400))
+  result_file=$(k2s_windows_worker_join_result_file)
+  while :; do
+    outcome=$(k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Get-Content -Path '$result_file' -Raw }\"" 2>/dev/null | tr -d '\r\n')
+    case "$outcome" in
+      OK)
+        k2s_log INFO 'Windows worker joined the cluster.'
+        return 0
+        ;;
+      FAILED*)
+        k2s_log ERROR "Joining the Windows worker reported: $outcome"
+        return 1
+        ;;
+    esac
+    if (( SECONDS >= deadline )); then
+      k2s_log ERROR 'Timed out waiting for the Windows worker to report the result of its join.'
+      return 1
+    fi
+    sleep 15
+  done
 }
 
 # Mirrors lib/scripts/windows/worker/windows-host/Start.ps1. Installing the worker
@@ -528,18 +635,26 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
+  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
-  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Remove-Item -Path '$result_file' -Force -ErrorAction SilentlyContinue\"" || return 1
-  # The SSH session is expected to die mid-run, so its exit status says nothing.
-  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\StartWorker.ps1' || true
+  # The worker disk persists across stop/start, so remove any previous result before launching.
+  k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return 1
+  # A transport error (255) is ambiguous because the worker may have disconnected after
+  # starting the script; poll its marker in that case, but propagate definitive remote errors.
+  k2s_windows_worker_ssh 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\K2s\StartWorker.ps1'
+  local result=$?
+  if (( result != 0 && result != 255 )); then
+    k2s_log ERROR "Windows worker start script exited with status $result."
+    return "$result"
+  fi
   k2s_windows_worker_wait_for_start_result
 }
 
 # Polls for the marker StartWorker.ps1 writes, reconnecting as needed while the worker's
-# networking settles after the l2 bridge is created.
+# networking settles after the l2 bridge is created. See k2s_windows_worker_wait_for_ssh
+# for why the deadline is this generous.
 k2s_windows_worker_wait_for_start_result() {
-  local result_file outcome deadline=$((SECONDS + 900))
+  local result_file outcome deadline=$((SECONDS + 2400))
   result_file=$(k2s_windows_worker_start_result_file)
   while :; do
     outcome=$(k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Get-Content -Path '$result_file' -Raw }\"" 2>/dev/null | tr -d '\r\n')
@@ -588,7 +703,7 @@ k2s_windows_worker_define() {
   fi
   domain_xml=$(mktemp)
   cat > "$domain_xml" <<EOF
-<domain type='kvm'><name>$K2S_WINDOWS_WORKER_NAME</name><memory unit='MiB'>$memory_mb</memory><currentMemory unit='MiB'>$memory_mb</currentMemory><vcpu placement='static'>$K2S_WORKER_CPU_COUNT</vcpu><os><type arch='x86_64' machine='q35'>hvm</type>$firmware_xml<boot dev='hd'/></os><features><acpi/><apic/><hyperv mode='custom'><relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/><vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'/></hyperv></features><cpu mode='host-passthrough' check='none'/><clock offset='localtime'><timer name='hypervclock' present='yes'/><timer name='hpet' present='no'/></clock><devices><disk type='file' device='disk'><driver name='qemu' type='qcow2' discard='unmap'/><source file='$disk'/><target dev='sda' bus='sata'/></disk><interface type='network'><mac address='$K2S_WINDOWS_WORKER_MAC'/><source network='$K2S_WINDOWS_WORKER_NETWORK'/><model type='e1000'/></interface><serial type='pty'/><console type='pty'/><graphics type='vnc' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics><video><model type='vga' vram='16384' heads='1' primary='yes'/></video><rng model='virtio'><backend model='random'>/dev/urandom</backend></rng><memballoon model='virtio'/></devices></domain>
+<domain type='kvm'><name>$K2S_WINDOWS_WORKER_NAME</name><memory unit='MiB'>$memory_mb</memory><currentMemory unit='MiB'>$memory_mb</currentMemory><vcpu placement='static'>$K2S_WORKER_CPU_COUNT</vcpu><os><type arch='x86_64' machine='q35'>hvm</type>$firmware_xml<boot dev='hd'/></os><features><acpi/><apic/><hyperv mode='custom'><relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/><vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'/></hyperv></features><cpu mode='host-passthrough' check='none'/><clock offset='utc'><timer name='hypervclock' present='yes'/><timer name='hpet' present='no'/></clock><devices><disk type='file' device='disk'><driver name='qemu' type='qcow2' discard='unmap'/><source file='$disk'/><target dev='sda' bus='sata'/></disk><interface type='network'><mac address='$K2S_WINDOWS_WORKER_MAC'/><source network='$K2S_WINDOWS_WORKER_NETWORK'/><model type='e1000'/></interface><serial type='pty'/><console type='pty'/><graphics type='vnc' autoport='yes' listen='127.0.0.1'><listen type='address' address='127.0.0.1'/></graphics><video><model type='vga' vram='16384' heads='1' primary='yes'/></video><rng model='virtio'><backend model='random'>/dev/urandom</backend></rng><memballoon model='virtio'/></devices></domain>
 EOF
   virsh define "$domain_xml"; local result=$?; rm -f "$domain_xml"; return "$result"
 }
@@ -614,6 +729,7 @@ k2s_windows_worker_provision() {
   k2s_log INFO "Starting the Windows worker and waiting for SSH on $(k2s_windows_worker_ip)."
   virsh start "$K2S_WINDOWS_WORKER_NAME" || return 1
   k2s_windows_worker_wait_for_ssh || return $?
+  k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_copy_runtime || return $?
   k2s_windows_worker_copy_kubeconfig || return $?
   k2s_log INFO 'Joining the Windows worker to the cluster. Output below comes from the worker.'
@@ -628,6 +744,7 @@ k2s_windows_worker_start() {
   virsh net-start "$K2S_WINDOWS_WORKER_NETWORK" 2>/dev/null || true
   virsh start "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true
   k2s_windows_worker_wait_for_ssh || return $?
+  k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_start_node
 }
 k2s_windows_worker_stop() {

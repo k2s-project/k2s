@@ -64,6 +64,15 @@ jobs:
               if (-not (Test-Path $binary)) { throw "Build did not produce $binary" }
           }
 
+      - name: Resolve Hyper-V Default Switch network conflicts
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          Import-Module '.\lib\modules\windows\infra\k2s.infra.module\k2s.infra.module.psm1' -Force
+          Initialize-Logging
+          Test-DefaultSwitch -ResolveConflict
+
       - name: Install K2s with Linux control plane and Windows worker
         id: install
         timeout-minutes: 120
@@ -143,15 +152,23 @@ jobs:
                   Out-File "$outDir\hyperv.txt" -Append
           }
 
-      - name: Upload results and K2s log before uninstall
+      - name: Upload test results
         if: ${{ always() && steps.preflight.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/k2s-test-results/
-            C:/var/log/k2s.log
+          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}-test-results
+          path: ${{ runner.temp }}/k2s-test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload K2s log before uninstall
+        if: ${{ always() && steps.preflight.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 5
+        with:
+          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}-k2s-log
+          path: C:/var/log/k2s.log
           if-no-files-found: warn
           retention-days: 7
 

@@ -32,15 +32,18 @@ cluster configuration reader as the other node suites. Argo or another fixture
 provisioner must add this worker with `k2s node add` before the suite runs.
 It can be either a bare-metal (`HOST`) or existing Hyper-V VM (`VM-EXISTING`)
 worker; other workers are not renamed.
-The single migration renames that worker to the fixed name `node-db13-renamed`,
+The first migration renames that worker to the fixed name `node-db13-renamed`,
 without an IP suffix, hostname argument or environment-variable opt-in.
 It combines metadata, reboot, workload, SMB persistence and partial-registration
 recovery checks rather than resetting the hostname between separate migrations.
+A second spec then renames the worker back to its original name without `--force`.
+This covers the plain rename and restores the fixture, so a repeat run needs no
+new worker. It runs only if the first migration passed.
 The suite is skipped when `cluster.json` is missing or lists no worker. Otherwise,
 missing, duplicate or unsupported fixture entries fail the test before SMB
-setup, as does an existing `node-db13-renamed` Kubernetes Node. A repeat run
-requires the fixture provisioner to supply the fixture worker again; the suite never
-automatically restores that identity.
+setup, as does an existing `node-db13-renamed` Kubernetes Node. If either rename
+fails, the worker is left as it is and the fixture provisioner must supply the
+fixture worker again.
 Windows-host rename E2E is deliberately excluded: changing that hostname requires
 a reboot of the machine running the suite.
 
@@ -50,9 +53,9 @@ noninteractive `sudo`, `hostnamectl`, `systemd-run`, `systemctl`, and the tools
 required by `k2s node rename`. Both the worker and control-plane Node must be Ready
 and schedulable. An initially cordoned worker fails the precondition before SMB
 setup: reads only from kubemaster do not establish storage access from the renamed
-worker. The migration changes the remote OS hostname, **reboots the
+worker. Each of the two migrations changes the remote OS hostname, **reboots the
 Linux worker once**, then drains it.
-After the rename and initial storage checks, the suite also runs **`k2s stop`
+After the first rename and initial storage checks, the suite also runs **`k2s stop`
 and `k2s start` for the whole cluster**, not just the renamed worker.
 Reboot verification requires a changed kernel boot ID, recovered SSH and the
 expected hostname; an SSH disconnect alone is not considered proof of reboot.
@@ -82,8 +85,11 @@ annotations and taints, preservation of the initially schedulable state,
 lowercase normalization, a valid
 new kubelet certificate, and retained identities of unrelated Nodes. Partial
 registration checks reject a bound user Pod without mutation, then verify
-explicit `--force` recovery and recreation with a different Node UID. Separate
-normal and empty-partial migrations are not run with this fixed-name fixture.
+explicit `--force` recovery and recreation with a different Node UID. The rename
+back covers a normal migration without `--force`: it checks the original PodCIDRs,
+scheduling state, custom labels and taints, the kubelet certificate, the hostname,
+the original `cluster.json` content and the identities of unrelated Nodes.
+It does not repeat the SMB or stop/start checks.
 Negative cases cover missing
 flags, equal names, hostname mismatch, missing old Node, control-plane Node,
 unmanaged Node and unsupported managed Node type. The unsupported-type case
@@ -131,10 +137,10 @@ Cleanup deletes test workloads, PVCs, their dynamically provisioned PVs and
 test-only StorageClasses, and removes test labels, annotations and taints.
 If the suite enabled SMB, it disables the addon with `-k` to retain pre-existing
 share-folder data; an already-enabled Linux SMB addon is left enabled.
-After a successful migration it restores the scheduling state from before the
-test, but **does not revert the OS hostname, Kubernetes Node name or
-`cluster.json` entry**. After success, the worker retains the
-`node-db13-renamed` name. On migration failure, cleanup leaves rename recovery
+After the first migration it restores the scheduling state from before the
+test. The rename back then **reverts the OS hostname, Kubernetes Node name and
+`cluster.json` entry**, so after a fully successful run the worker has its
+original name again. On migration failure, cleanup leaves rename recovery
 markers and cordoning state intact for inspection
 and does not automatically retry the rename. Cleanup failures fail the test and
 require inspecting the reported Node/service state; they are not hidden.

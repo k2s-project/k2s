@@ -159,22 +159,37 @@ var _ = Describe("node rename rejections", Serial, func() {
 	})
 })
 
-var _ = Describe("managed Linux worker rename", Serial, func() {
+var _ = Describe("managed Linux worker rename", Serial, Ordered, func() {
+	var worker clusterconfig.Node
+	var before renameBaseline
+
 	It("preserves identity and SMB data while rejecting partial workloads and recovering with --force", func(ctx SpecContext) {
 		config, err := clusterconfig.Read(configDir)
 		Expect(err).NotTo(HaveOccurred())
-		worker, err := renameWorker(config)
+		worker, err = renameWorker(config)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(getNode(ctx, worker.Name).Spec.Unschedulable).To(BeFalse(),
 			"the fixture worker must be schedulable before this test: SMB access must be verified from a newly scheduled Pod on the renamed Node, not only kubemaster")
 		_, err = client.CoreV1().Nodes().Get(ctx, newNodeName, metav1.GetOptions{})
 		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "replacement name must not already exist")
 		By(fmt.Sprintf("renaming %s worker %s to %s at %s using stored SSH user %s", worker.NodeType, worker.Name, newNodeName, worker.IpAddress, worker.Username))
-		exerciseRename(ctx, worker, ensureLinuxSMB(ctx))
+		before = exerciseRename(ctx, worker, ensureLinuxSMB(ctx))
+	})
+
+	It("renames the worker back without --force and restores the fixture", func(ctx SpecContext) {
+		restoreWorkerName(ctx, worker, before)
 	})
 })
 
-func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass string) {
+// State of the fixture worker before the suite changed anything
+type renameBaseline struct {
+	hostname   string
+	node       *corev1.Node
+	descriptor []byte
+	others     []corev1.Node
+}
+
+func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass string) renameBaseline {
 	original := getNode(ctx, worker.Name).DeepCopy()
 	Expect(isReady(original)).To(BeTrue())
 	Expect(original.Spec.PodCIDR).NotTo(BeEmpty())
@@ -337,7 +352,7 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass str
 
 	observer := observeRename(ctx)
 	// Uppercase input exercises case-insensitive hostname validation and lowercase normalization.
-	output = rename(ctx, worker.Name, strings.ToUpper(newName))
+	output = rename(ctx, worker.Name, strings.ToUpper(newName), "--force")
 	renamed = true
 	replacement := getNode(ctx, newName)
 	Expect(isReady(replacement)).To(BeTrue())
@@ -407,11 +422,68 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass str
 	migration.verifyAfterRename(ctx, worker.Name, newName)
 	migration.cleanup(ctx)
 	cleanupWorker(ctx)
-	By(fmt.Sprintf("leaving worker %s renamed to %s in the OS, Kubernetes and cluster.json", worker.IpAddress, newName))
+	return renameBaseline{hostname: originalHostname, node: original, descriptor: descriptor, others: unrelated.Items}
 }
 
-func rename(ctx context.Context, oldName, newName string) string {
-	args := []string{"node", "rename", "--old-name", oldName, "--new-name", newName, "--timeout", "15m", "-o", "--force"}
+func restoreWorkerName(ctx SpecContext, worker clusterconfig.Node, before renameBaseline) {
+	renamed := getNode(ctx, newNodeName).DeepCopy()
+	Expect(isReady(renamed)).To(BeTrue())
+	By(fmt.Sprintf("setting the hostname of %s back to %s and rebooting", worker.IpAddress, before.hostname))
+	setHostname(ctx, worker, before.hostname)
+	rebootWorker(ctx, worker, before.hostname)
+	_, err := client.CoreV1().Nodes().Get(ctx, worker.Name, metav1.GetOptions{})
+	if err == nil {
+		// A Node the machine registered itself must stay empty, or the rename would need --force
+		mutateNode(ctx, worker.Name, func(node *corev1.Node) { node.Spec.Unschedulable = true })
+	} else {
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "inspect Node %s before renaming back: %v", worker.Name, err)
+	}
+
+	By(fmt.Sprintf("renaming %s back to %s without --force", newNodeName, worker.Name))
+	output := rename(ctx, newNodeName, worker.Name)
+	Expect(output).NotTo(ContainSubstring("--force"))
+	restored := getNode(ctx, worker.Name)
+	Expect(isReady(restored)).To(BeTrue())
+	Expect(restored.UID).NotTo(Equal(renamed.UID))
+	Expect(restored.Spec.PodCIDR).To(Equal(before.node.Spec.PodCIDR))
+	Expect(restored.Spec.PodCIDRs).To(Equal(before.node.Spec.PodCIDRs))
+	Expect(restored.Spec.Unschedulable).To(Equal(before.node.Spec.Unschedulable))
+	Expect(restored.Labels["kubernetes.io/hostname"]).To(Equal(worker.Name))
+	for key, value := range before.node.Labels {
+		if !managedKey(key) {
+			Expect(restored.Labels).To(HaveKeyWithValue(key, value))
+		}
+	}
+	for _, taint := range before.node.Spec.Taints {
+		if !managedKey(taint.Key) {
+			Expect(restored.Spec.Taints).To(ContainElement(taint))
+		}
+	}
+	for key := range restored.Annotations {
+		Expect(key).NotTo(HavePrefix("k2s.io/rename-"))
+	}
+	_, err = client.CoreV1().Nodes().Get(ctx, newNodeName, metav1.GetOptions{})
+	Expect(apierrors.IsNotFound(err)).To(BeTrue(), "Node %s must be retired after renaming back", newNodeName)
+	bom := []byte{0xef, 0xbb, 0xbf}
+	Expect(bytes.TrimPrefix(readDescriptor(), bom)).To(MatchJSON(bytes.TrimPrefix(before.descriptor, bom)),
+		"cluster.json must describe the worker as it did before the suite")
+	subject := remote(ctx, worker, "sudo -n openssl verify -CAfile /etc/kubernetes/pki/ca.crt /var/lib/kubelet/pki/kubelet-client-current.pem && sudo -n openssl x509 -in /var/lib/kubelet/pki/kubelet-client-current.pem -noout -subject -nameopt RFC2253")
+	Expect(subject).To(ContainSubstring("CN=system:node:" + worker.Name))
+	Expect(subject).To(ContainSubstring("O=system:nodes"))
+	Expect(strings.Split(remote(ctx, worker, "sudo -n systemctl is-active kubelet"), "\n")).To(ContainElement("active"))
+	Expect(remote(ctx, worker, "hostname")).To(Equal(before.hostname))
+	for _, other := range before.others {
+		if other.Name == worker.Name {
+			continue
+		}
+		after := getNode(ctx, other.Name)
+		Expect(after.UID).To(Equal(other.UID), "unrelated Node %s must not be recreated", other.Name)
+		Expect(isReady(after)).To(BeTrue(), "unrelated Node %s must remain Ready", other.Name)
+	}
+}
+
+func rename(ctx context.Context, oldName, newName string, flags ...string) string {
+	args := append([]string{"node", "rename", "--old-name", oldName, "--new-name", newName, "--timeout", "15m", "-o"}, flags...)
 	output := suite.K2sCli().MustExec(ctx, args...)
 	Expect(output).To(ContainSubstring("SUCCESS"))
 	return output

@@ -49,9 +49,15 @@ var (
 // Result is memoized; tests must reset via ResetRootLogDirCache.
 func RootLogDir() string {
 	rootLogDirOnce.Do(func() {
-		rootLogDirValue = resolveRootLogDir()
+		rootLogDirValue = ensureLogDir(resolveRootLogDir())
 	})
 	return rootLogDirValue
+}
+
+// RootLogDirForInstallation resolves the log directory using an installation's
+// persisted setup config and configured fallback.
+func RootLogDirForInstallation(configDir, configuredLogsDir string) string {
+	return ensureLogDir(resolveRootLogDirForInstallation(configDir, configuredLogsDir))
 }
 
 // ResetRootLogDirCache clears the memoized RootLogDir value. Intended for tests only.
@@ -66,25 +72,33 @@ func GlobalLogFilePath() string {
 }
 
 func resolveRootLogDir() string {
+	return resolveRootLogDirForInstallation(host.K2sConfigDir(), "")
+}
+
+func resolveRootLogDirForInstallation(configDir, configuredLogsDir string) string {
 	candidates := []func() string{
 		readLogRootFromEnv,
-		readLogRootFromSetupJson,
+		func() string { return readLogRootFromSetupJson(configDir) },
+		func() string { return configuredLogsDir },
 		readLogRootFromConfigJson,
 	}
 	for _, fn := range candidates {
 		if v := fn(); v != "" {
-			return ensureLogDir(expandPath(v))
+			return expandPath(v)
 		}
 	}
-	return ensureLogDir(filepath.Join(host.SystemDrive(), "var", "log"))
+	return filepath.Join(host.SystemDrive(), "var", "log")
 }
 
 func readLogRootFromEnv() string {
 	return strings.TrimSpace(os.Getenv(LogRootEnvVar))
 }
 
-func readLogRootFromSetupJson() string {
-	path := filepath.Join(host.K2sConfigDir(), definitions.K2sRuntimeConfigFileName)
+func readLogRootFromSetupJson(configDir string) string {
+	if configDir == "" {
+		return ""
+	}
+	path := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
 	return readJsonStringField(path, setupJsonLogRootKey)
 }
 

@@ -327,7 +327,13 @@ func determineRootDir() string {
 func (s *K2sTestSuite) LogsDir() string {
 	if runtime.GOOS == "windows" && strings.TrimSpace(stdos.Getenv(logging.LogRootEnvVar)) == "" && s.setupInfo != nil {
 		if logsDir := strings.TrimSpace(s.setupInfo.Config.Host().LogsDir()); logsDir != "" {
-			return filepath.Clean(stdos.ExpandEnv(logsDir))
+			logsDir = stdos.ExpandEnv(logsDir)
+			if strings.HasPrefix(logsDir, "~") {
+				if home, err := stdos.UserHomeDir(); err == nil {
+					logsDir = filepath.Join(home, strings.TrimPrefix(logsDir, "~"))
+				}
+			}
+			return filepath.Clean(logsDir)
 		}
 	}
 	return logging.RootLogDir()

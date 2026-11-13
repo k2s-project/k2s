@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 [![ci](https://github.com/k2s-project/k2s/actions/workflows/build-k2s-artifacts.yml/badge.svg)](https://github.com/k2s-project/k2s/actions/workflows/build-k2s-artifacts.yml)
 [![ci](https://github.com/k2s-project/k2s/actions/workflows/build-docs-next.yml/badge.svg)](https://github.com/k2s-project/k2s/actions/workflows/build-docs-next.yml)
 
-<span style="font-size: large;border: medium solid #326CE5;border-radius: 5px;padding: 10px;">Read the [K2s Online Documentation](https://k2s-project.github.io/K2s/).</span>
+<span style="font-size: large;border: medium solid #326CE5;border-radius: 5px;padding: 10px;">Read the [K2s Online Documentation](https://k2s-project.github.io/k2s/).</span>
 
 ---
 

@@ -8,6 +8,7 @@ package nodepackage
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,25 @@ func TestValidateBuildHostOS(t *testing.T) {
 	}
 }
 
+func TestEnvironmentWithOverridesReplacesExistingValues(t *testing.T) {
+	const key = "K2S_TEST_APT_CONFIG"
+	t.Setenv(key, "original")
+
+	values := environmentWithOverrides(map[string]string{key: "isolated"})
+	count := 0
+	for _, entry := range values {
+		if strings.HasPrefix(entry, key+"=") {
+			count++
+			if entry != key+"=isolated" {
+				t.Fatalf("environment value = %q, want %q", entry, key+"=isolated")
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("found %d entries for %s, want exactly one", count, key)
+	}
+}
+
 func TestRestoreFilesRestoresExistingFilesAndRemovesNewFiles(t *testing.T) {
 	dir := t.TempDir()
 	existingPath := filepath.Join(dir, "existing.list")
@@ -119,7 +139,7 @@ func TestRestoreFilesRestoresSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := filepath.Join(dir, "target")
 	linkPath := filepath.Join(dir, "source.list")
-	if err := os.WriteFile(targetPath, []byte("target"), 0o644); err != nil {
+	if err := os.WriteFile(targetPath, []byte("original target"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(targetPath, linkPath); err != nil {
@@ -128,6 +148,9 @@ func TestRestoreFilesRestoresSymlinks(t *testing.T) {
 
 	snapshots, err := snapshotFiles([]string{linkPath})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, []byte("modified target"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(linkPath); err != nil {
@@ -146,5 +169,19 @@ func TestRestoreFilesRestoresSymlinks(t *testing.T) {
 	}
 	if linkTarget != targetPath {
 		t.Fatalf("restored symlink target = %q, want %q", linkTarget, targetPath)
+	}
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "original target" {
+		t.Fatalf("restored symlink target content = %q, want %q", content, "original target")
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("restored symlink target mode = %o, want %o", info.Mode().Perm(), 0o640)
 	}
 }

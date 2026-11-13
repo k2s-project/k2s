@@ -21,9 +21,9 @@
 # The two jobs run concurrently (not via 'needs', which would make GitHub Actions wait
 # for the worker job to fully *finish* before the control-plane job even starts - but
 # the worker has to stay up and reachable over SSH while control-plane joins it). They
-# rendezvous over the Tailscale mesh and hand off the SSH trust (control-plane's public
-# key) and the worker's mesh IP via upload-artifact/download-artifact, polling until the
-# other side's artifact appears.
+# rendezvous over the Tailscale mesh and hand off the run-scoped SSH key, worker host key,
+# and mesh IP via upload-artifact/download-artifact, polling until the other side's
+# artifact appears.
 name: CI - arm64 Node Join
 
 on:
@@ -56,12 +56,15 @@ jobs:
         run: |
           mkdir -p /tmp/k8s-packages
           sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
-          sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" "" false
+          registry_token="$(tr -d '\r\n[:space:]' < bin/registry.dat)"
+          sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" "$registry_token" false
+          unset registry_token
           sudo systemctl enable kubelet
 
       - name: Start sshd and wait for the control-plane's public key
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server
+          sudo ssh-keygen -A
           sudo systemctl enable --now ssh
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
 
@@ -72,9 +75,10 @@ jobs:
             fi
             sleep 10
           done
-          test -f /tmp/cp-pubkey/id_rsa.pub || { echo "::error::control-plane public key never arrived"; exit 1; }
-          cat /tmp/cp-pubkey/id_rsa.pub >> ~/.ssh/authorized_keys
+          test -f /tmp/cp-pubkey/id_ed25519.pub || { echo "::error::control-plane public key never arrived"; exit 1; }
+          cat /tmp/cp-pubkey/id_ed25519.pub >> ~/.ssh/authorized_keys
           chmod 600 ~/.ssh/authorized_keys
+          sudo ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key > /tmp/worker-host-key.pub
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -83,6 +87,7 @@ jobs:
           mkdir -p /tmp/worker-ready
           tailscale ip -4 > /tmp/worker-ready/ip
           whoami > /tmp/worker-ready/user
+          cp /tmp/worker-host-key.pub /tmp/worker-ready/host-key.pub
 
       - uses: actions/upload-artifact@v4
         with:
@@ -105,6 +110,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           JOIN_TIMEOUT_SECONDS: ${{ env.JOIN_TIMEOUT_SECONDS }}
+
+      - name: Remove run-scoped SSH authorization and worker cluster state
+        if: always()
+        run: |
+          if [ -f /tmp/cp-pubkey/id_ed25519.pub ] && [ -f ~/.ssh/authorized_keys ]; then
+            key="$(cat /tmp/cp-pubkey/id_ed25519.pub)"
+            awk -v key="$key" '$0 != key' ~/.ssh/authorized_keys > /tmp/authorized_keys.k2s
+            cat /tmp/authorized_keys.k2s > ~/.ssh/authorized_keys
+            rm -f /tmp/authorized_keys.k2s
+          fi
+          sudo kubeadm reset -f || true
+          sudo systemctl disable --now kubelet crio 2>/dev/null || true
+          sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet /etc/cni/net.d/10-flannel.conflist /run/flannel
+          sudo rm -f /root/.config/containers/auth.json
+          rm -rf /tmp/k8s-packages /tmp/cp-pubkey /tmp/worker-ready /tmp/worker-host-key.pub
 
   control-plane:
     name: Linux Host control plane - bootstrap and join the arm64 worker
@@ -134,12 +154,17 @@ jobs:
 
       - name: Generate an SSH keypair and publish the public half to the worker
         run: |
-          mkdir -p ~/.ssh
-          ssh-keygen -t rsa -b 4096 -N '' -f ~/.ssh/id_rsa
-          sudo install -d -m 700 /root/.ssh
-          sudo install -m 600 ~/.ssh/id_rsa /root/.ssh/id_rsa
+          ssh_home="/tmp/k2s-arm64-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          install -d -m 700 "$ssh_home/.ssh"
+          ssh-keygen -t ed25519 -N '' -C "k2s-ci-${GITHUB_RUN_ID}" -f "$ssh_home/.ssh/id_ed25519"
+          echo "K2S_CI_SSH_HOME=$ssh_home" >> "$GITHUB_ENV"
+          if [ -f "$HOME/.kube/config" ]; then
+            cp -p "$HOME/.kube/config" "$ssh_home/kubeconfig.original"
+          else
+            touch "$ssh_home/kubeconfig.absent"
+          fi
           mkdir -p /tmp/cp-pubkey
-          cp ~/.ssh/id_rsa.pub /tmp/cp-pubkey/id_rsa.pub
+          cp "$ssh_home/.ssh/id_ed25519.pub" /tmp/cp-pubkey/id_ed25519.pub
 
       - uses: actions/upload-artifact@v4
         with:
@@ -158,6 +183,15 @@ jobs:
           test -f /tmp/worker-ready/ip || { echo "::error::worker never published its mesh IP"; exit 1; }
           echo "WORKER_IP=$(cat /tmp/worker-ready/ip)" >> "$GITHUB_ENV"
           echo "WORKER_USER=$(cat /tmp/worker-ready/user)" >> "$GITHUB_ENV"
+          worker_ip="$(cat /tmp/worker-ready/ip)"
+          runner_known_hosts="$HOME/.ssh/known_hosts"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          if ! ssh-keygen -F "$worker_ip" -f "$runner_known_hosts" >/dev/null 2>&1; then
+            printf '%s %s\n' "$worker_ip" "$(cat /tmp/worker-ready/host-key.pub)" >> "$runner_known_hosts"
+          fi
+          cp "$runner_known_hosts" "$K2S_CI_SSH_HOME/.ssh/known_hosts"
+          chmod 600 "$K2S_CI_SSH_HOME/.ssh/known_hosts"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -178,7 +212,7 @@ jobs:
 
       - name: Add the arm64 worker node
         run: |
-          sudo "${{ github.workspace }}/k2s" node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
+          sudo env HOME="$K2S_CI_SSH_HOME" "${{ github.workspace }}/k2s" node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
 
       - name: Assert the worker joined as arm64 and is Ready
         run: |
@@ -206,3 +240,25 @@ jobs:
           name: join-done
           path: /tmp/join-done
           retention-days: 1
+
+      - name: Restore control-plane cluster and SSH state
+        if: always()
+        run: |
+          ssh_home="${K2S_CI_SSH_HOME:-}"
+          sudo kubeadm reset -f || true
+          sudo systemctl disable --now kubelet crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true
+          sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet /etc/cni/net.d/10-flannel.conflist /run/flannel /var/lib/k2s
+          sudo rm -f /etc/systemd/system/kubelet.service.d/20-k2s-logging.conf /root/.config/containers/auth.json
+          sudo ip link delete cni0 2>/dev/null || true
+          sudo ip link delete flannel.1 2>/dev/null || true
+          if [ -n "$ssh_home" ] && [ -f "$ssh_home/kubeconfig.original" ]; then
+            mkdir -p "$HOME/.kube"
+            cp -p "$ssh_home/kubeconfig.original" "$HOME/.kube/config"
+          elif [ -n "$ssh_home" ] && [ -f "$ssh_home/kubeconfig.absent" ]; then
+            rm -f "$HOME/.kube/config"
+            rmdir "$HOME/.kube" 2>/dev/null || true
+          fi
+          if [ -n "$ssh_home" ]; then
+            rm -rf "$ssh_home"
+          fi
+          rm -rf /tmp/cp-pubkey /tmp/worker-ready /tmp/join-done

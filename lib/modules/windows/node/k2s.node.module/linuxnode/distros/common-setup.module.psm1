@@ -254,15 +254,21 @@ Function Add-KubernetesArtifactsToRemoteComputer {
     #binPath\linuxnode\packages\debian12\ kubernetes
     $debPackagesSourcePath = "$SourcePath\$kubernetesDebPackagesDirectory"
     
-    if ((($Architecture -eq $ControlPlaneArchitecture) -or $UseNodePackageArtifacts) -and (Test-Path -Path $debPackagesSourcePath)) {
+    $packageCacheExists = Test-Path -Path $debPackagesSourcePath
+    if ($packageCacheExists -and (Test-DebPackageArchitecture -SourcePath $debPackagesSourcePath -Architecture $Architecture)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
+        return
     }
-    else {
-        if (($Architecture -ne $ControlPlaneArchitecture) -and !$UseNodePackageArtifacts) {
-            Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading Kubernetes packages for the worker."
-        }
-        Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+    if ($UseNodePackageArtifacts) {
+        throw "[NodeAdd] Node package Kubernetes artifacts are missing or do not match worker architecture '$Architecture'"
     }
+    if ($packageCacheExists) {
+        Write-Log "[NodeAdd] Ignoring Kubernetes package cache that does not match worker architecture '$Architecture'."
+    }
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading Kubernetes packages for the worker."
+    }
+    Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
 }
 
 Function Add-BuildahArtifactsToRemoteComputer {
@@ -279,15 +285,40 @@ Function Add-BuildahArtifactsToRemoteComputer {
 
     $debPackagesSourcePath = "$SourcePath\$buildahDebPackagesDirectory"
     
-    if ((($Architecture -eq $ControlPlaneArchitecture) -or $UseNodePackageArtifacts) -and (Test-Path -Path $debPackagesSourcePath)) {
+    $packageCacheExists = Test-Path -Path $debPackagesSourcePath
+    if ($packageCacheExists -and (Test-DebPackageArchitecture -SourcePath $debPackagesSourcePath -Architecture $Architecture)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
+        return
     }
-    else {
-        if (($Architecture -ne $ControlPlaneArchitecture) -and !$UseNodePackageArtifacts) {
-            Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading buildah packages for the worker."
-        }
-        Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+    if ($UseNodePackageArtifacts) {
+        throw "[NodeAdd] Node package Buildah artifacts are missing or do not match worker architecture '$Architecture'"
     }
+    if ($packageCacheExists) {
+        Write-Log "[NodeAdd] Ignoring Buildah package cache that does not match worker architecture '$Architecture'."
+    }
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading buildah packages for the worker."
+    }
+    Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+}
+
+Function Test-DebPackageArchitecture {
+    param (
+        [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
+        [string] $Architecture = $(throw 'Argument missing: Architecture')
+    )
+    $debPackages = @(Get-ChildItem -LiteralPath $SourcePath -Filter '*.deb' -File -ErrorAction SilentlyContinue)
+    if ($debPackages.Count -eq 0) {
+        return $false
+    }
+
+    $architecturePattern = "_(all|$([regex]::Escape($Architecture)))\.deb$"
+    $incompatiblePackages = @($debPackages | Where-Object { $_.Name -notmatch $architecturePattern })
+    if ($incompatiblePackages.Count -gt 0) {
+        Write-Log "[NodeAdd] Package cache '$SourcePath' contains packages incompatible with '$Architecture': $($incompatiblePackages.Name -join ', ')"
+        return $false
+    }
+    return $true
 }
 
 Function Get-OfflineK2sDebPackagesPath {

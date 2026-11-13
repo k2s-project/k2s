@@ -5,11 +5,8 @@
 # (k2s-project/k2s#3052). This is a release-process input, not a PR check -
 # workflow_dispatch only.
 #
-# ubuntu-24.04-arm is Ubuntu, not Debian 13 (same caveat as ci-arm64-node-smoke.yml):
-# this validates that the package *build* succeeds on real arm64 hardware, not that it
-# was built on an exact Debian 13 environment. The resulting .deb packages still target
-# Debian 13 (apt resolves them from the Debian 13 Kubernetes/CRI-O repos regardless of
-# the host OS).
+# The build host must be Debian 13 because APT resolves package dependencies from the
+# host's configured repositories and installed-package database.
 #
 # Unlike the amd64 packages built via New-K2sNodePackage.ps1 on Windows, this does not
 # pre-stage container images as OCI archives - see BuildLinux's doc comment in
@@ -31,7 +28,7 @@ env:
 jobs:
   build-arm64-node-package:
     name: Build debian13 arm64 node package
-    runs-on: ubuntu-24.04-arm
+    runs-on: [self-hosted, linux, ARM64, debian-13]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

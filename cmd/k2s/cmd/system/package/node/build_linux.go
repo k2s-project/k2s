@@ -39,6 +39,33 @@ func runLogged(name string, args ...string) error {
 	return cmd.Run()
 }
 
+func runLoggedWithEnv(env map[string]string, name string, args ...string) error {
+	fmt.Printf("[NodePkg] + %s %s (env: %d extra var(s))\n", name, strings.Join(args, " "), len(env))
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = environmentWithOverrides(env)
+	return cmd.Run()
+}
+
+func environmentWithOverrides(overrides map[string]string) []string {
+	env := os.Environ()
+	for key, value := range overrides {
+		found := false
+		for i, entry := range env {
+			entryKey, _, ok := strings.Cut(entry, "=")
+			if ok && entryKey == key {
+				env[i] = key + "=" + value
+				found = true
+			}
+		}
+		if !found {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
 // runShellWithEnv runs script with the given extra environment variables appended to
 // the current process's environment, referenced in script as "$NAME" rather than
 // interpolated into the script text - the values (e.g. a user-supplied --proxy) are
@@ -48,10 +75,7 @@ func runShellWithEnv(script string, env map[string]string) error {
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd.Env = environmentWithOverrides(env)
 	fmt.Printf("[NodePkg] + bash -c %q (env: %d extra var(s))\n", script, len(env))
 	return cmd.Run()
 }
@@ -120,11 +144,15 @@ func validateBuildHostOS(targetOS, osReleasePath string) error {
 // instead of over SSH into a VM. targetPath and proxy are both ultimately attacker-
 // controllable (--target-dir / --proxy, run as root) so neither is ever interpolated
 // into shell source - both cross into bash only via $K2S_GPU_* environment variables.
-func downloadNvidiaGpuPackages(targetPath, proxy string) error {
+func downloadNvidiaGpuPackages(targetPath, proxy, aptConfigPath string) error {
 	if err := os.MkdirAll(targetPath, 0o755); err != nil {
 		return err
 	}
-	env := map[string]string{"K2S_GPU_TARGET_PATH": targetPath, "K2S_GPU_PROXY": proxy}
+	env := map[string]string{
+		"APT_CONFIG":          aptConfigPath,
+		"K2S_GPU_TARGET_PATH": targetPath,
+		"K2S_GPU_PROXY":       proxy,
+	}
 
 	if proxy != "" {
 		proxyConf := fmt.Sprintf("Acquire::http::Proxy %q;\nAcquire::https::Proxy %q;\n", proxy, proxy)
@@ -147,7 +175,7 @@ func downloadNvidiaGpuPackages(targetPath, proxy string) error {
 		return fmt.Errorf("could not set up NVIDIA Container Toolkit apt repository: %w", err)
 	}
 
-	if err := runLogged("apt-get", "update"); err != nil {
+	if err := runLoggedWithEnv(env, "apt-get", "update"); err != nil {
 		return fmt.Errorf("apt-get update failed: %w", err)
 	}
 
@@ -235,13 +263,19 @@ var hostAptFiles = []string{
 }
 
 type fileSnapshot struct {
-	path       string
-	content    []byte
-	mode       os.FileMode
-	uid        int
-	gid        int
-	linkTarget string
-	exists     bool
+	path              string
+	content           []byte
+	mode              os.FileMode
+	uid               int
+	gid               int
+	linkTarget        string
+	linkTargetPath    string
+	linkTargetContent []byte
+	linkTargetMode    os.FileMode
+	linkTargetUID     int
+	linkTargetGID     int
+	linkTargetExists  bool
+	exists            bool
 }
 
 func snapshotFiles(paths []string) ([]fileSnapshot, error) {
@@ -264,6 +298,34 @@ func snapshotFiles(paths []string) ([]fileSnapshot, error) {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			snapshot.linkTarget, err = os.Readlink(path)
+			if err == nil {
+				targetPath := snapshot.linkTarget
+				if !filepath.IsAbs(targetPath) {
+					targetPath = filepath.Join(filepath.Dir(path), targetPath)
+				}
+				targetPath, err = filepath.Abs(targetPath)
+				if err == nil {
+					if resolvedPath, resolveErr := filepath.EvalSymlinks(path); resolveErr == nil {
+						targetPath = resolvedPath
+					}
+					snapshot.linkTargetPath = targetPath
+					targetInfo, targetErr := os.Stat(targetPath)
+					if targetErr == nil {
+						if !targetInfo.Mode().IsRegular() {
+							return nil, fmt.Errorf("cannot snapshot non-regular APT symlink target %s", targetPath)
+						}
+						snapshot.linkTargetExists = true
+						snapshot.linkTargetMode = targetInfo.Mode()
+						if stat, ok := targetInfo.Sys().(*syscall.Stat_t); ok {
+							snapshot.linkTargetUID = int(stat.Uid)
+							snapshot.linkTargetGID = int(stat.Gid)
+						}
+						snapshot.linkTargetContent, err = os.ReadFile(targetPath)
+					} else if !os.IsNotExist(targetErr) {
+						return nil, fmt.Errorf("could not inspect APT symlink target %s: %w", targetPath, targetErr)
+					}
+				}
+			}
 		} else if info.Mode().IsRegular() {
 			snapshot.content, err = os.ReadFile(path)
 		} else {
@@ -288,6 +350,17 @@ func restoreFiles(snapshots []fileSnapshot) error {
 		}
 
 		if snapshot.mode&os.ModeSymlink != 0 {
+			if snapshot.linkTargetPath != "" {
+				if snapshot.linkTargetExists {
+					if err := restoreRegularFile(snapshot.linkTargetPath, snapshot.linkTargetContent, snapshot.linkTargetMode, snapshot.linkTargetUID, snapshot.linkTargetGID); err != nil {
+						restoreErr = errors.Join(restoreErr, fmt.Errorf("could not restore symlink target %s: %w", snapshot.linkTargetPath, err))
+						continue
+					}
+				} else if err := os.Remove(snapshot.linkTargetPath); err != nil && !os.IsNotExist(err) {
+					restoreErr = errors.Join(restoreErr, fmt.Errorf("could not remove new symlink target %s: %w", snapshot.linkTargetPath, err))
+					continue
+				}
+			}
 			if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
 				restoreErr = errors.Join(restoreErr, fmt.Errorf("could not replace %s: %w", snapshot.path, err))
 				continue
@@ -298,36 +371,44 @@ func restoreFiles(snapshots []fileSnapshot) error {
 			continue
 		}
 
-		temp, err := os.CreateTemp(filepath.Dir(snapshot.path), ".k2s-apt-restore-*")
-		if err != nil {
-			restoreErr = errors.Join(restoreErr, fmt.Errorf("could not create restore file for %s: %w", snapshot.path, err))
-			continue
-		}
-		tempPath := temp.Name()
-		if _, err := temp.Write(snapshot.content); err == nil {
-			err = temp.Chmod(snapshot.mode.Perm())
-		}
-		if err == nil {
-			if current, statErr := os.Stat(tempPath); statErr == nil {
-				if currentUID, currentGID, ok := fileOwner(current); ok &&
-					(currentUID != snapshot.uid || currentGID != snapshot.gid) {
-					err = os.Chown(tempPath, snapshot.uid, snapshot.gid)
-				}
-			}
-		}
-		closeErr := temp.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			err = os.Rename(tempPath, snapshot.path)
-		}
-		if err != nil {
-			os.Remove(tempPath)
+		if err := restoreRegularFile(snapshot.path, snapshot.content, snapshot.mode, snapshot.uid, snapshot.gid); err != nil {
 			restoreErr = errors.Join(restoreErr, fmt.Errorf("could not restore %s: %w", snapshot.path, err))
 		}
 	}
 	return restoreErr
+}
+
+func restoreRegularFile(path string, content []byte, mode os.FileMode, uid, gid int) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".k2s-apt-restore-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	if _, err = temp.Write(content); err == nil {
+		err = temp.Chmod(mode.Perm())
+	}
+	if err == nil {
+		if current, statErr := os.Stat(tempPath); statErr == nil {
+			if currentUID, currentGID, ok := fileOwner(current); ok &&
+				(currentUID != uid || currentGID != gid) {
+				err = os.Chown(tempPath, uid, gid)
+			}
+		}
+	}
+	closeErr := temp.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tempPath, path)
+	}
+	if err != nil {
+		os.Remove(tempPath)
+	}
+	return err
 }
 
 func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
@@ -343,6 +424,8 @@ func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
 // architecture, which is what makes arm64 node packages possible at all --
 // New-K2sNodePackage.ps1 can only ever build amd64 packages because it provisions an
 // x86 Hyper-V guest, and Hyper-V cannot run an arm64 guest on an x86 host.
+// Dependency resolution uses an isolated empty package database so installed build-host
+// packages cannot be omitted from the resulting offline package.
 //
 // Unlike the Windows-built package, this does not pre-stage container images as OCI
 // archives: 'k2s node add' with a package built here still needs network access to
@@ -411,6 +494,32 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 		}
 	}
 
+	aptStateDir := filepath.Join(stagingDir, "apt-state")
+	for _, d := range []string{
+		filepath.Join(aptStateDir, "lists", "partial"),
+		filepath.Join(aptStateDir, "cache", "archives", "partial"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("could not create isolated APT state directory %s: %w", d, err)
+		}
+	}
+	aptStatusPath := filepath.Join(aptStateDir, "status")
+	if err := os.WriteFile(aptStatusPath, nil, 0o644); err != nil {
+		return fmt.Errorf("could not create isolated APT package database: %w", err)
+	}
+	aptConfigPath := filepath.Join(aptStateDir, "apt.conf")
+	aptConfig := fmt.Sprintf(
+		"Dir::State::status %q;\nDir::State::extended_states %q;\nDir::State::lists %q;\nDir::Cache %q;\nDir::Cache::archives %q;\n",
+		aptStatusPath,
+		filepath.Join(aptStateDir, "extended_states"),
+		filepath.Join(aptStateDir, "lists"),
+		filepath.Join(aptStateDir, "cache"),
+		filepath.Join(aptStateDir, "cache", "archives"),
+	)
+	if err := os.WriteFile(aptConfigPath, []byte(aptConfig), 0o600); err != nil {
+		return fmt.Errorf("could not create isolated APT configuration: %w", err)
+	}
+
 	aptSnapshots, err := snapshotFiles(hostAptFiles)
 	if err != nil {
 		return fmt.Errorf("could not snapshot host APT files: %w", err)
@@ -421,13 +530,19 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 		}
 	}()
 
+	downloadEnv := map[string]string{
+		"APT_CONFIG":                      aptConfigPath,
+		"K2S_APT_CONFIG":                  aptConfigPath,
+		"K2S_PACKAGE_DOWNLOAD_ONLY":       "true",
+		"K2S_DISABLE_ZSCALER_CERT_IMPORT": "true",
+	}
 	fmt.Printf("[NodePkg] === Downloading Kubernetes packages (k8sVersion=%s, arch=%s) ===\n", k8sVersion, arch)
-	if err := runLogged("bash", filepath.Join(scriptsDir, "download-k8s-packages.sh"), k8sPkgDir, k8sVersion, proxy); err != nil {
+	if err := runLoggedWithEnv(downloadEnv, "bash", filepath.Join(scriptsDir, "download-k8s-packages.sh"), k8sPkgDir, k8sVersion, proxy); err != nil {
 		return fmt.Errorf("kubernetes package download failed: %w", err)
 	}
 
 	fmt.Println("[NodePkg] === Downloading buildah packages ===")
-	if err := runLogged("bash", filepath.Join(scriptsDir, "download-buildah-packages.sh"), buildahPkgDir, proxy); err != nil {
+	if err := runLoggedWithEnv(downloadEnv, "bash", filepath.Join(scriptsDir, "download-buildah-packages.sh"), buildahPkgDir, proxy); err != nil {
 		return fmt.Errorf("buildah package download failed: %w", err)
 	}
 
@@ -436,7 +551,7 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 			return err
 		}
 		fmt.Println("[NodePkg] === Downloading NVIDIA Container Toolkit packages (GPU support) ===")
-		if err := downloadNvidiaGpuPackages(gpuPkgDir, proxy); err != nil {
+		if err := downloadNvidiaGpuPackages(gpuPkgDir, proxy, aptConfigPath); err != nil {
 			return fmt.Errorf("GPU package download failed: %w", err)
 		}
 	}
@@ -444,8 +559,8 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 	k8sDebCount := countDebFiles(k8sPkgDir)
 	buildahDebCount := countDebFiles(buildahPkgDir)
 	fmt.Printf("[NodePkg] Local package counts: kubernetes=%d, buildah=%d\n", k8sDebCount, buildahDebCount)
-	if k8sDebCount+buildahDebCount == 0 {
-		return fmt.Errorf("no .deb packages were downloaded; check script output above")
+	if k8sDebCount == 0 || buildahDebCount == 0 {
+		return fmt.Errorf("required package set is empty: kubernetes=%d, buildah=%d; check script output above", k8sDebCount, buildahDebCount)
 	}
 
 	fmt.Println("[NodePkg] === Creating output zip ===")

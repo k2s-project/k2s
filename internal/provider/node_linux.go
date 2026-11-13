@@ -25,8 +25,7 @@ func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
 // unlike sshCmd which always targets the fixed Windows worker VM.
 func sshCmdToNode(user, ip, command string) (string, error) {
 	cmd := exec.Command("ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=yes",
 		"-o", "ConnectTimeout=10",
 		fmt.Sprintf("%s@%s", user, ip),
 		command,

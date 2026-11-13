@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -7,15 +7,18 @@ package nodepackage
 
 import (
 	"archive/zip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/spf13/pflag"
@@ -31,6 +34,32 @@ var gpuDebPackages = []string{
 	"nvidia-container-toolkit",
 }
 
+func validateRequiredDebPackages(dir string, required []string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("could not read package directory %s: %w", dir, err)
+	}
+	found := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".deb") {
+			continue
+		}
+		if packageName, _, ok := strings.Cut(entry.Name(), "_"); ok {
+			found[packageName] = true
+		}
+	}
+	var missing []string
+	for _, packageName := range required {
+		if !found[packageName] {
+			missing = append(missing, packageName)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("required packages are missing from %s: %s", dir, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func runLogged(name string, args ...string) error {
 	fmt.Printf("[NodePkg] + %s %s\n", name, strings.Join(args, " "))
 	cmd := exec.Command(name, args...)
@@ -39,13 +68,26 @@ func runLogged(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func runLoggedWithEnv(env map[string]string, name string, args ...string) error {
+func runLoggedWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
 	fmt.Printf("[NodePkg] + %s %s (env: %d extra var(s))\n", name, strings.Join(args, " "), len(env))
-	cmd := exec.Command(name, args...)
+	cmd := buildCommand(ctx, name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = environmentWithOverrides(env)
 	return cmd.Run()
+}
+
+func buildCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return os.ErrProcessDone
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
 }
 
 func environmentWithOverrides(overrides map[string]string) []string {
@@ -71,8 +113,8 @@ func environmentWithOverrides(overrides map[string]string) []string {
 // interpolated into the script text - the values (e.g. a user-supplied --proxy) are
 // never passed through shell string formatting/quoting, so they can't be used to
 // inject shell commands no matter what characters they contain.
-func runShellWithEnv(script string, env map[string]string) error {
-	cmd := exec.Command("bash", "-c", script)
+func runShellWithEnv(ctx context.Context, script string, env map[string]string) error {
+	cmd := buildCommand(ctx, "bash", "-c", script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = environmentWithOverrides(env)
@@ -144,7 +186,7 @@ func validateBuildHostOS(targetOS, osReleasePath string) error {
 // instead of over SSH into a VM. targetPath and proxy are both ultimately attacker-
 // controllable (--target-dir / --proxy, run as root) so neither is ever interpolated
 // into shell source - both cross into bash only via $K2S_GPU_* environment variables.
-func downloadNvidiaGpuPackages(targetPath, proxy, aptConfigPath string) error {
+func downloadNvidiaGpuPackages(ctx context.Context, targetPath, proxy, aptConfigPath string) error {
 	if err := os.MkdirAll(targetPath, 0o755); err != nil {
 		return err
 	}
@@ -171,18 +213,18 @@ func downloadNvidiaGpuPackages(targetPath, proxy, aptConfigPath string) error {
 			| sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
 			| tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 	`
-	if err := runShellWithEnv(repoSetup, env); err != nil {
+	if err := runShellWithEnv(ctx, repoSetup, env); err != nil {
 		return fmt.Errorf("could not set up NVIDIA Container Toolkit apt repository: %w", err)
 	}
 
-	if err := runLoggedWithEnv(env, "apt-get", "update"); err != nil {
+	if err := runLoggedWithEnv(ctx, env, "apt-get", "update"); err != nil {
 		return fmt.Errorf("apt-get update failed: %w", err)
 	}
 
 	for _, pkg := range gpuDebPackages {
 		fmt.Printf("[NodePkg][GpuPkg] Downloading GPU package: %s\n", pkg)
 		env["K2S_GPU_PKG"] = pkg
-		if err := runShellWithEnv(`cd "$K2S_GPU_TARGET_PATH" && apt-get download "$K2S_GPU_PKG"`, env); err != nil {
+		if err := runShellWithEnv(ctx, `cd "$K2S_GPU_TARGET_PATH" && apt-get download "$K2S_GPU_PKG"`, env); err != nil {
 			return fmt.Errorf("could not download %s: %w", pkg, err)
 		}
 		depsScript := `
@@ -192,7 +234,7 @@ func downloadNvidiaGpuPackages(targetPath, proxy, aptConfigPath string) error {
 				--simulate ./"$K2S_GPU_PKG"*.deb 2>/dev/null \
 				| { grep 'Inst ' || true; } | cut -d ' ' -f 2 | sort -u | xargs -r apt-get download
 		`
-		if err := runShellWithEnv(depsScript, env); err != nil {
+		if err := runShellWithEnv(ctx, depsScript, env); err != nil {
 			return fmt.Errorf("could not download dependencies for %s: %w", pkg, err)
 		}
 	}
@@ -208,24 +250,47 @@ func downloadNvidiaGpuPackages(targetPath, proxy, aptConfigPath string) error {
 // buildZip writes srcRoot (recursively, under a "packages" prefix) into a new zip file
 // at destZipPath. Callers are responsible for only exposing destZipPath to the rest of
 // the system once this returns successfully - see its caller in BuildLinux.
-func buildZip(destZipPath, srcRoot string) error {
-	zf, err := os.Create(destZipPath)
+func buildZip(ctx context.Context, destZipPath, srcRoot string) error {
+	zf, err := os.CreateTemp(filepath.Dir(destZipPath), "."+filepath.Base(destZipPath)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("could not create %s: %w", destZipPath, err)
+		return fmt.Errorf("could not create temporary output for %s: %w", destZipPath, err)
 	}
-	defer zf.Close()
+	tmpZipPath := zf.Name()
+	defer os.Remove(tmpZipPath)
 
 	zw := zip.NewWriter(zf)
-	if err := zipDir(zw, srcRoot, "packages"); err != nil {
+	if err := zipDir(ctx, zw, srcRoot, "packages"); err != nil {
 		zw.Close()
+		zf.Close()
 		return fmt.Errorf("could not zip packages: %w", err)
 	}
-	return zw.Close()
+	if err := zw.Close(); err != nil {
+		zf.Close()
+		return err
+	}
+	if err := zf.Sync(); err != nil {
+		zf.Close()
+		return err
+	}
+	if err := zf.Chmod(0o644); err != nil {
+		zf.Close()
+		return err
+	}
+	if err := zf.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpZipPath, destZipPath); err != nil {
+		return fmt.Errorf("could not finalize %s: %w", destZipPath, err)
+	}
+	return nil
 }
 
-func zipDir(zw *zip.Writer, srcRoot, destPrefix string) error {
+func zipDir(ctx context.Context, zw *zip.Writer, srcRoot, destPrefix string) error {
 	return filepath.Walk(srcRoot, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if info.IsDir() {
@@ -530,6 +595,9 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 		}
 	}()
 
+	buildCtx, stopOnSignal := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopOnSignal()
+
 	downloadEnv := map[string]string{
 		"APT_CONFIG":                      aptConfigPath,
 		"K2S_APT_CONFIG":                  aptConfigPath,
@@ -537,12 +605,12 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 		"K2S_DISABLE_ZSCALER_CERT_IMPORT": "true",
 	}
 	fmt.Printf("[NodePkg] === Downloading Kubernetes packages (k8sVersion=%s, arch=%s) ===\n", k8sVersion, arch)
-	if err := runLoggedWithEnv(downloadEnv, "bash", filepath.Join(scriptsDir, "download-k8s-packages.sh"), k8sPkgDir, k8sVersion, proxy); err != nil {
+	if err := runLoggedWithEnv(buildCtx, downloadEnv, "bash", filepath.Join(scriptsDir, "download-k8s-packages.sh"), k8sPkgDir, k8sVersion, proxy); err != nil {
 		return fmt.Errorf("kubernetes package download failed: %w", err)
 	}
 
 	fmt.Println("[NodePkg] === Downloading buildah packages ===")
-	if err := runLoggedWithEnv(downloadEnv, "bash", filepath.Join(scriptsDir, "download-buildah-packages.sh"), buildahPkgDir, proxy); err != nil {
+	if err := runLoggedWithEnv(buildCtx, downloadEnv, "bash", filepath.Join(scriptsDir, "download-buildah-packages.sh"), buildahPkgDir, proxy); err != nil {
 		return fmt.Errorf("buildah package download failed: %w", err)
 	}
 
@@ -551,16 +619,23 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 			return err
 		}
 		fmt.Println("[NodePkg] === Downloading NVIDIA Container Toolkit packages (GPU support) ===")
-		if err := downloadNvidiaGpuPackages(gpuPkgDir, proxy, aptConfigPath); err != nil {
+		if err := downloadNvidiaGpuPackages(buildCtx, gpuPkgDir, proxy, aptConfigPath); err != nil {
 			return fmt.Errorf("GPU package download failed: %w", err)
 		}
+	}
+
+	if err := buildCtx.Err(); err != nil {
+		return fmt.Errorf("node package build interrupted: %w", err)
 	}
 
 	k8sDebCount := countDebFiles(k8sPkgDir)
 	buildahDebCount := countDebFiles(buildahPkgDir)
 	fmt.Printf("[NodePkg] Local package counts: kubernetes=%d, buildah=%d\n", k8sDebCount, buildahDebCount)
-	if k8sDebCount == 0 || buildahDebCount == 0 {
-		return fmt.Errorf("required package set is empty: kubernetes=%d, buildah=%d; check script output above", k8sDebCount, buildahDebCount)
+	if err := validateRequiredDebPackages(k8sPkgDir, []string{"cri-o", "cri-tools", "kubeadm", "kubectl", "kubelet"}); err != nil {
+		return err
+	}
+	if err := validateRequiredDebPackages(buildahPkgDir, []string{"buildah"}); err != nil {
+		return err
 	}
 
 	fmt.Println("[NodePkg] === Creating output zip ===")
@@ -571,14 +646,8 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 	// written: a partial zip left at zipTarget after a failed/interrupted run would
 	// otherwise be mistaken for a finished package by the "already exists" check above
 	// on the next invocation.
-	tmpZipTarget := zipTarget + ".tmp"
-	if err := buildZip(tmpZipTarget, filepath.Join(stagingDir, "packages")); err != nil {
-		os.Remove(tmpZipTarget)
+	if err := buildZip(buildCtx, zipTarget, filepath.Join(stagingDir, "packages")); err != nil {
 		return err
-	}
-	if err := os.Rename(tmpZipTarget, zipTarget); err != nil {
-		os.Remove(tmpZipTarget)
-		return fmt.Errorf("could not finalize %s: %w", zipTarget, err)
 	}
 
 	gpuMsg := ""

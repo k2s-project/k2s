@@ -282,6 +282,10 @@ function Add-LinuxWorkerNode {
         [string] $VmName = ''  # Hyper-V VM name (for VM-EXISTING nodes)
     )
 
+    if ($Architecture -notin @('amd64', 'arm64')) {
+        throw "[NodeAdd] Unsupported worker architecture '$Architecture'"
+    }
+
     $nodeParams = @{
         Name = $NodeName
         IpAddress = $IpAddress

@@ -60,7 +60,7 @@ jobs:
         run: |
           mkdir -p /tmp/k8s-packages
           sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
-          registry_token="$(tr -d '\r\n[:space:]' < bin/registry.dat)"
+          registry_token="$(sed '1s/^\xEF\xBB\xBF//' bin/registry.dat | tr -d '\r\n[:space:]')"
           sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" "$registry_token" false
           unset registry_token
           sudo systemctl enable kubelet
@@ -155,6 +155,13 @@ jobs:
         run: |
           cd cmd/k2s
           GOOS=linux GOARCH=amd64 go build -o "${{ github.workspace }}/k2s" .
+          cd "${{ github.workspace }}"
+          GOOS=linux GOARCH=amd64 go build -o bin/httpproxy ./cmd/httpproxy
+          dnsproxy_dir="$(mktemp -d)"
+          curl -fsSL https://github.com/AdguardTeam/dnsproxy/releases/download/v0.86.0/dnsproxy-linux-amd64-v0.86.0.tar.gz \
+            | tar -xz -C "$dnsproxy_dir" --strip-components=1 linux-amd64/dnsproxy
+          install -m 755 "$dnsproxy_dir/dnsproxy" bin/dnsproxy
+          rm -rf "$dnsproxy_dir"
 
       - name: Generate an SSH keypair and publish the public half to the worker
         run: |
@@ -216,7 +223,11 @@ jobs:
 
       - name: Add the arm64 worker node
         run: |
-          sudo env HOME="$K2S_CI_SSH_HOME" "${{ github.workspace }}/k2s" node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
+          sudo env \
+            HOME="$K2S_CI_SSH_HOME" \
+            K2S_SSH_IDENTITY_FILE="$K2S_CI_SSH_HOME/.ssh/id_ed25519" \
+            K2S_SSH_KNOWN_HOSTS_FILE="$K2S_CI_SSH_HOME/.ssh/known_hosts" \
+            "${{ github.workspace }}/k2s" node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
 
       - name: Assert the worker joined as arm64 and is Ready
         run: |
@@ -249,6 +260,9 @@ jobs:
         if: always()
         run: |
           ssh_home="${K2S_CI_SSH_HOME:-}"
+          if [ -f /tmp/k2s-install-operation.json ]; then
+            sudo bash lib/scripts/linux/debian/linuxonly/Uninstall.sh --operation-file /tmp/k2s-install-operation.json || true
+          fi
           sudo kubeadm reset -f || true
           sudo systemctl disable --now kubelet crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true
           sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet /etc/cni/net.d/10-flannel.conflist /run/flannel /var/lib/k2s

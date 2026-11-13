@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -27,9 +28,14 @@ func sshCmdToNode(user, ip, command string) (string, error) {
 	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "ConnectTimeout=10",
-		fmt.Sprintf("%s@%s", user, ip),
-		command,
 	)
+	if identityFile := os.Getenv("K2S_SSH_IDENTITY_FILE"); identityFile != "" {
+		cmd.Args = append(cmd.Args, "-i", identityFile, "-o", "IdentitiesOnly=yes")
+	}
+	if knownHostsFile := os.Getenv("K2S_SSH_KNOWN_HOSTS_FILE"); knownHostsFile != "" {
+		cmd.Args = append(cmd.Args, "-o", "UserKnownHostsFile="+knownHostsFile)
+	}
+	cmd.Args = append(cmd.Args, fmt.Sprintf("%s@%s", user, ip), command)
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -63,8 +69,11 @@ func assertSupportedNodeArchitecture(user, ip string) error {
 		return fmt.Errorf("failed to detect architecture on remote node: %w", err)
 	}
 	arch := normalizeArch(unameOut)
-	if arch != "arm64" {
+	if arch == "amd64" {
 		return nil
+	}
+	if arch != "arm64" {
+		return fmt.Errorf("unsupported external node architecture '%s'; supported architectures are amd64 and arm64", arch)
 	}
 
 	osIDOut, err := sshCmdToNode(user, ip, ". /etc/os-release 2>/dev/null; echo \"$ID\"")

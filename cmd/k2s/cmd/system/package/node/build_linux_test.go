@@ -1,11 +1,12 @@
 //go:build linux
 
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package nodepackage
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,66 @@ func TestEnvironmentWithOverridesReplacesExistingValues(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("found %d entries for %s, want exactly one", count, key)
+	}
+}
+
+func TestValidateRequiredDebPackages(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"cri-o", "cri-tools", "kubeadm", "kubectl", "kubelet"} {
+		path := filepath.Join(dir, name+"_1.0_amd64.deb")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := validateRequiredDebPackages(dir, []string{"cri-o", "cri-tools", "kubeadm", "kubectl", "kubelet"}); err != nil {
+		t.Fatalf("validateRequiredDebPackages() error = %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "cri-o_1.0_amd64.deb")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRequiredDebPackages(dir, []string{"cri-o", "cri-tools", "kubeadm", "kubectl", "kubelet"}); err == nil || !strings.Contains(err.Error(), "cri-o") {
+		t.Fatalf("validateRequiredDebPackages() error = %v, want missing cri-o package", err)
+	}
+}
+
+func TestBuildZipDoesNotFollowExistingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "source")
+	if err := os.Mkdir(sourceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victimPath := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victimPath, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	zipPath := filepath.Join(dir, "package.zip")
+	if err := os.Symlink(victimPath, zipPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildZip(context.Background(), zipPath, sourceDir); err == nil {
+		t.Fatal("buildZip() succeeded with an existing symlink destination")
+	}
+	content, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "preserve" {
+		t.Fatalf("symlink target content = %q, want %q", content, "preserve")
+	}
+}
+
+func TestBuildCommandCancellationStopsProcessGroup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := buildCommand(ctx, "sh", "-c", "sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("build command succeeded after cancellation")
 	}
 }
 

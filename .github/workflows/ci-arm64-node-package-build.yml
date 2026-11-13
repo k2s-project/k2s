@@ -27,6 +27,7 @@ on:
 
 env:
   GOVERSION: "1.27.3"
+  NODE_PACKAGE_ROOT: ${{ runner.temp }}/k2s-node-package-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   build-arm64-node-package:
@@ -57,26 +58,27 @@ jobs:
 
       - name: Build the arm64 node package
         run: |
-          mkdir -p /tmp/node-package-out
+          rm -rf "$NODE_PACKAGE_ROOT"
+          mkdir -p "$NODE_PACKAGE_ROOT/out"
           gpu_flag=""
           if [ "${{ inputs.include_gpu }}" = "true" ]; then
             gpu_flag="--include-gpu"
           fi
           sudo install -m 755 /tmp/k2s-cli "${{ github.workspace }}/k2s"
           sudo "${{ github.workspace }}/k2s" system package --node-package --os debian13 --arch arm64 $gpu_flag \
-            --target-dir /tmp/node-package-out \
+            --target-dir "$NODE_PACKAGE_ROOT/out" \
             --name "k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
 
       - name: Verify package contents
         run: |
-          zip_path="/tmp/node-package-out/k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
-          mkdir -p /tmp/node-package-extract
-          unzip -q "$zip_path" -d /tmp/node-package-extract
-          find /tmp/node-package-extract -name '*.deb' | while read -r deb; do
+          zip_path="$NODE_PACKAGE_ROOT/out/k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+          mkdir -p "$NODE_PACKAGE_ROOT/extract"
+          unzip -q "$zip_path" -d "$NODE_PACKAGE_ROOT/extract"
+          find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | while read -r deb; do
             echo "=== $deb ==="
             dpkg --info "$deb" | grep -E 'Package|Architecture'
           done
-          find /tmp/node-package-extract -name '*.deb' | grep -q . || {
+          find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | grep -q . || {
             echo "::error::no .deb packages found in the built zip"
             exit 1
           }
@@ -84,5 +86,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: debian13-arm64-node-package
-          path: /tmp/node-package-out/*.zip
+          path: ${{ env.NODE_PACKAGE_ROOT }}/out/*.zip
           retention-days: 14

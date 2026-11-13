@@ -51,6 +51,23 @@ Describe 'Add-LinuxWorkerNode failure cleanup' -Tag 'unit', 'ci', 'worker-node' 
     }
 }
 
+Describe 'Add-LinuxWorkerNode architecture validation' -Tag 'unit', 'ci', 'worker-node' {
+    It 'rejects unsupported architectures before adding node configuration' {
+        InModuleScope $moduleName {
+            function script:Add-NodeConfig { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            Mock Add-NodeConfig {}
+
+            {
+                Add-LinuxWorkerNode -NodeName worker -UserName remote -IpAddress '172.19.1.101' `
+                    -WindowsHostIpAddress '172.19.1.1' -installedDistributionOnRemoteComputer debian13 `
+                    -Architecture riscv64 -NodeType VM-EXISTING
+            } | Should -Throw '*Unsupported worker architecture*'
+
+            Should -Invoke Add-NodeConfig -Times 0 -Exactly
+        }
+    }
+}
+
 Describe 'Add-LinuxWorkerNode Debian13 hardening' -Tag 'unit', 'ci', 'worker-node' {
     BeforeEach {
         InModuleScope $moduleName {

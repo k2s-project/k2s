@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: (C) 2026 The K2s Authors
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
 // SPDX-License-Identifier: MIT
 
 package core

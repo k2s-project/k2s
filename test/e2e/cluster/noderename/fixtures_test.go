@@ -17,58 +17,53 @@ import (
 )
 
 func TestWorkerDiscovery(t *testing.T) {
-	host := clusterconfig.Node{Name: "host", OS: "linux", Role: "worker", NodeType: clusterconfig.NodeTypeHost}
-	vm := clusterconfig.Node{Name: "vm", OS: "linux", Role: "worker", NodeType: clusterconfig.NodeTypeVMExisting}
-	excluded := []clusterconfig.Node{
-		{Name: "master", OS: "linux", Role: "control-plane", NodeType: clusterconfig.NodeTypeHost},
-		{Name: "windows", OS: "windows", Role: "worker", NodeType: clusterconfig.NodeTypeHost},
-		{Name: "unsupported", OS: "linux", Role: "worker", NodeType: "VM-NEW"},
-	}
+	host := clusterconfig.Node{Name: oldNodeName, OS: "linux", Role: "worker", NodeType: clusterconfig.NodeTypeHost, IpAddress: "192.0.2.2", Username: "admin"}
+	vm := host
+	vm.NodeType = clusterconfig.NodeTypeVMExisting
+	other := host
+	other.Name = "another-worker"
+	renamed := host
+	renamed.Name = newNodeName
+	controlPlane := host
+	controlPlane.Role = "control-plane"
+	windows := host
+	windows.OS = "windows"
+	unsupported := host
+	unsupported.NodeType = "VM-NEW"
 	for _, tt := range []struct {
 		name   string
 		config *clusterconfig.Cluster
-		want   []clusterconfig.Node
+		want   clusterconfig.Node
+		fail   bool
 	}{
-		{"bare-metal only", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host}}, []clusterconfig.Node{host}},
-		{"Hyper-V only", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{vm}}, []clusterconfig.Node{vm}},
-		{"mixed workers", &clusterconfig.Cluster{Nodes: append([]clusterconfig.Node{host, vm}, excluded...)}, []clusterconfig.Node{host, vm}},
-		{"unsupported only", &clusterconfig.Cluster{Nodes: excluded}, nil},
-		{"empty config", &clusterconfig.Cluster{}, nil},
-		{"missing config", nil, nil},
+		{"bare-metal", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host}}, host, false},
+		{"Hyper-V", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{vm}}, vm, false},
+		{"ignore other workers", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{other, host}}, host, false},
+		{"missing fixed name", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{other}}, clusterconfig.Node{}, true},
+		{"already renamed", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{renamed}}, clusterconfig.Node{}, true},
+		{"ambiguous identity", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{host, vm}}, clusterconfig.Node{}, true},
+		{"control plane", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{controlPlane}}, clusterconfig.Node{}, true},
+		{"Windows", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{windows}}, clusterconfig.Node{}, true},
+		{"unsupported type", &clusterconfig.Cluster{Nodes: []clusterconfig.Node{unsupported}}, clusterconfig.Node{}, true},
+		{"empty config", &clusterconfig.Cluster{}, clusterconfig.Node{}, true},
+		{"missing config", nil, clusterconfig.Node{}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := supportedLinuxWorkers(tt.config); !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("supportedLinuxWorkers() = %+v, want %+v", got, tt.want)
+			got, err := renameWorker(tt.config)
+			if (err != nil) != tt.fail || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("renameWorker() = %+v, %v; want %+v, failure=%t", got, err, tt.want, tt.fail)
 			}
 		})
 	}
 }
 
 func TestReplacementName(t *testing.T) {
-	for _, tt := range []struct {
-		prefix  string
-		address string
-		want    string
-	}{
-		{"k2s-rename-normal", "172.19.1.102", "k2s-rename-normal-172-19-1-102"},
-		{"k2s-rename-partial", "192.0.2.2", "k2s-rename-partial-192-0-2-2"},
-		{"k2s-rename-force", "192.0.2.3", "k2s-rename-force-192-0-2-3"},
-		{"k2s-rename-normal", "::ffff:192.0.2.2", "k2s-rename-normal-192-0-2-2"},
-		{"k2s-rename-partial", "2001:db8::2", "k2s-rename-partial-20010db8000000000000000000000002"},
-	} {
-		t.Run(tt.want, func(t *testing.T) {
-			got, err := replacementName(tt.prefix, tt.address)
-			if err != nil || got != tt.want {
-				t.Fatalf("replacementName() = %q, %v; want %q", got, err, tt.want)
-			}
-			if problems := validation.IsDNS1123Label(got); len(problems) != 0 {
-				t.Fatalf("invalid replacement hostname %q: %v", got, problems)
-			}
-		})
+	if oldNodeName != "node-deb13" || newNodeName != "node-db13-renamed" {
+		t.Fatalf("unexpected fixed rename pair %q -> %q", oldNodeName, newNodeName)
 	}
-	for _, address := range []string{"", "not-an-ip", "192.0.2.2; reboot", "fe80::2%eth0"} {
-		if _, err := replacementName("k2s-rename-normal", address); err == nil {
-			t.Errorf("accepted invalid worker IP %q", address)
+	for _, name := range []string{oldNodeName, newNodeName} {
+		if problems := validation.IsDNS1123Label(name); len(problems) != 0 {
+			t.Errorf("invalid fixed hostname %q: %v", name, problems)
 		}
 	}
 }

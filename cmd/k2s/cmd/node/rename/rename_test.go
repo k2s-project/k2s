@@ -19,7 +19,7 @@ import (
 )
 
 func TestRenameCommandRequiresNames(t *testing.T) {
-	for _, args := range [][]string{nil, {"--old-name", "old"}, {"--new-name", "new"}} {
+	for _, args := range [][]string{nil, {"--old-name", "node-deb13"}, {"--new-name", "node-db13-renamed"}} {
 		cmd := NewCmd()
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = true
@@ -32,10 +32,10 @@ func TestRenameCommandRequiresNames(t *testing.T) {
 
 func TestRenameCommandRejectsInvalidInputBeforeLoadingContext(t *testing.T) {
 	for _, args := range [][]string{
-		{"--old-name", "old", "--new-name", "old"},
-		{"--old-name", "old", "--new-name", "new;hostname"},
-		{"--old-name", "old", "--new-name", "new", "--timeout", "0s"},
-		{"--old-name", "old", "--new-name", "new", "unexpected"},
+		{"--old-name", "node-deb13", "--new-name", "node-deb13"},
+		{"--old-name", "node-deb13", "--new-name", "node-db13-renamed;hostname"},
+		{"--old-name", "node-deb13", "--new-name", "node-db13-renamed", "--timeout", "0s"},
+		{"--old-name", "node-deb13", "--new-name", "node-db13-renamed", "unexpected"},
 	} {
 		cmd := NewCmd()
 		cmd.SilenceUsage = true
@@ -108,12 +108,12 @@ contexts:
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
 			cmd.SetContext(context.WithValue(context.Background(), common.ContextKeyCmdContext, cmdContext))
-			cmd.SetArgs([]string{"--old-name", "OLD-NODE", "--new-name", "NEW-NODE", "--timeout", "20m", "--force", "--output"})
+			cmd.SetArgs([]string{"--old-name", "NODE-DEB13", "--new-name", "NODE-DB13-RENAMED", "--timeout", "20m", "--force", "--output"})
 			err := cmd.Execute()
 			if !errors.Is(err, expectedErr) {
 				t.Fatalf("Execute() error = %v, want %v", err, expectedErr)
 			}
-			want := provider.NodeRenameConfig{OldName: "old-node", NewName: "new-node", Timeout: 20 * time.Minute, Force: true, ShowOutput: true}
+			want := provider.NodeRenameConfig{OldName: "node-deb13", NewName: "node-db13-renamed", Timeout: 20 * time.Minute, Force: true, ShowOutput: true}
 			if nodeProvider.calls != 1 || nodeProvider.cfg != want {
 				t.Fatalf("Rename called %d times with %+v, want once with %+v", nodeProvider.calls, nodeProvider.cfg, want)
 			}

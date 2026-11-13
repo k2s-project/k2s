@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	"os"
 	"runtime"
 	"slices"
@@ -28,7 +27,11 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-const metadataKey = "rename.e2e.k2s.io/test"
+const (
+	metadataKey = "rename.e2e.k2s.io/test"
+	oldNodeName = "node-deb13"
+	newNodeName = "node-db13-renamed"
+)
 
 var suite *framework.K2sTestSuite
 var client kubernetes.Interface
@@ -119,42 +122,20 @@ var _ = Describe("node rename rejections", Serial, func() {
 	})
 })
 
-type renameScenario struct {
-	namePrefix    string
-	partial       bool
-	workload      bool
-	unschedulable bool
-}
-
-var _ = Describe("managed Linux worker rename", Ordered, Serial, func() {
-	var smbStorageClass string
-	BeforeAll(func(ctx SpecContext) {
+var _ = Describe("managed Linux worker rename", Serial, func() {
+	It("preserves identity and SMB data while rejecting partial workloads and recovering with --force", func(ctx SpecContext) {
 		config, err := clusterconfig.Read(configDir)
 		Expect(err).NotTo(HaveOccurred())
-		if len(supportedLinuxWorkers(config)) == 0 {
-			Skip("No supported Linux workers in cluster.json; provision a HOST or VM-EXISTING worker with k2s node add")
-		}
-		smbStorageClass = ensureLinuxSMB(ctx)
+		worker, err := renameWorker(config)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = client.CoreV1().Nodes().Get(ctx, newNodeName, metav1.GetOptions{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "replacement name must not already exist")
+		By(fmt.Sprintf("renaming %s worker %s to %s at %s using stored SSH user %s", worker.NodeType, worker.Name, newNodeName, worker.IpAddress, worker.Username))
+		exerciseRename(ctx, worker, ensureLinuxSMB(ctx))
 	})
-	DescribeTable("preserves identity and recovers partial replacements", func(ctx SpecContext, scenario renameScenario) {
-		config, err := clusterconfig.Read(configDir)
-		Expect(err).NotTo(HaveOccurred())
-		workers := supportedLinuxWorkers(config)
-		if len(workers) == 0 {
-			Skip("No supported Linux workers in cluster.json; provision a HOST or VM-EXISTING worker with k2s node add")
-		}
-		for _, worker := range workers {
-			By(fmt.Sprintf("renaming %s worker %s at %s using stored SSH user %s", worker.NodeType, worker.Name, worker.IpAddress, worker.Username))
-			exerciseRename(ctx, worker, scenario, smbStorageClass)
-		}
-	},
-		Entry("normal rename and schedulability", renameScenario{namePrefix: "k2s-rename-normal"}),
-		Entry("empty partial replacement and a cordoned old Node", renameScenario{namePrefix: "k2s-rename-partial", partial: true, unschedulable: true}),
-		Entry("reject partial workloads, then recover with --force", renameScenario{namePrefix: "k2s-rename-force", partial: true, workload: true}),
-	)
 })
 
-func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameScenario, storageClass string) {
+func exerciseRename(ctx SpecContext, worker clusterconfig.Node, storageClass string) {
 	original := getNode(ctx, worker.Name).DeepCopy()
 	Expect(isReady(original)).To(BeTrue())
 	Expect(original.Spec.PodCIDR).NotTo(BeEmpty())
@@ -166,9 +147,8 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameS
 	for _, taint := range original.Spec.Taints {
 		Expect(taint.Key).NotTo(Equal(metadataKey))
 	}
-	newName, err := replacementName(scenario.namePrefix, worker.IpAddress)
-	Expect(err).NotTo(HaveOccurred())
-	_, err = client.CoreV1().Nodes().Get(ctx, newName, metav1.GetOptions{})
+	newName := newNodeName
+	_, err := client.CoreV1().Nodes().Get(ctx, newName, metav1.GetOptions{})
 	Expect(apierrors.IsNotFound(err)).To(BeTrue(), "replacement name must not already exist")
 	descriptor := readDescriptor()
 	unrelated, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
@@ -230,7 +210,7 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameS
 	})
 	migration := createMigrationWorkload(ctx, worker, newName, storageClass)
 	mutateNode(ctx, worker.Name, func(node *corev1.Node) {
-		node.Spec.Unschedulable = scenario.unschedulable
+		node.Spec.Unschedulable = original.Spec.Unschedulable
 	})
 	saved := getNode(ctx, worker.Name).DeepCopy()
 	hostnameChanged = true
@@ -244,7 +224,7 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameS
 	} else {
 		Expect(err).NotTo(HaveOccurred())
 	}
-	if scenario.partial && partial == nil {
+	if partial == nil {
 		By("creating a partial registration when the reboot did not automatically register one")
 		partial, err = client.CoreV1().Nodes().Create(ctx, &corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: newName, Labels: map[string]string{"kubernetes.io/os": "linux"}},
@@ -266,73 +246,67 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameS
 			})).To(Succeed())
 		}
 	}
-	if partial != nil {
-		By("cordoning the partial registration before testing its recovery")
-		mutateNode(ctx, newName, func(node *corev1.Node) { node.Spec.Unschedulable = true })
-		Eventually(func() (bool, error) {
-			current, err := client.CoreV1().Nodes().Get(ctx, newName, metav1.GetOptions{})
-			if err != nil {
-				return false, err
-			}
-			return slices.ContainsFunc(current.Status.Addresses, func(address corev1.NodeAddress) bool {
-				return address.Type == corev1.NodeInternalIP && address.Address == worker.IpAddress
-			}), nil
-		}, time.Minute, time.Second).Should(BeTrue(), "the partial registration must belong to the same worker IP")
-	}
-	var removeWorkload func(SpecContext)
-	if scenario.workload {
-		namespace := newName + "-recovery"
-		_, err = client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, metav1.CreateOptions{})
-		Expect(err).NotTo(HaveOccurred())
-		removed := false
-		removeWorkload = func(ctx SpecContext) {
-			if removed {
-				return
-			}
-			err := client.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
-			Expect(err == nil || apierrors.IsNotFound(err)).To(BeTrue(), "delete test namespace: %v", err)
-			Eventually(func() bool {
-				_, err := client.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
-				return apierrors.IsNotFound(err)
-			}, 3*time.Minute, time.Second).Should(BeTrue(), "remove the synthetic partial-registration workload")
-			removed = true
+	Expect(partial).NotTo(BeNil())
+	By("cordoning the partial registration before testing its recovery")
+	mutateNode(ctx, newName, func(node *corev1.Node) { node.Spec.Unschedulable = true })
+	Eventually(func() (bool, error) {
+		current, err := client.CoreV1().Nodes().Get(ctx, newName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
 		}
-		DeferCleanup(removeWorkload, NodeTimeout(4*time.Minute))
-		_, err = client.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Name: "partial-workload"},
-			Spec: corev1.PodSpec{
-				NodeName: newName,
-				Containers: []corev1.Container{{
-					Name: "never-pull", Image: "k2s-node-rename-test.invalid/never-pull:local", ImagePullPolicy: corev1.PullNever,
-				}},
-				Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
-			},
-		}, metav1.CreateOptions{})
-		Expect(err).NotTo(HaveOccurred())
-		By("refusing a partial replacement carrying user workloads without deleting either Node")
-		beforeRejection := readKubeletIdentity(ctx, worker)
-		output = rejectRename(ctx, "--old-name", worker.Name, "--new-name", newName)
-		Expect(output).To(ContainSubstring("--force"))
-		Expect(output).To(ContainSubstring("partial-workload"))
-		Expect(getNode(ctx, worker.Name).UID).To(Equal(original.UID))
-		Expect(getNode(ctx, newName).UID).To(Equal(partial.UID))
-		Expect(readDescriptor()).To(Equal(descriptor))
-		Expect(readKubeletIdentity(ctx, worker)).To(Equal(beforeRejection))
+		return slices.ContainsFunc(current.Status.Addresses, func(address corev1.NodeAddress) bool {
+			return address.Type == corev1.NodeInternalIP && address.Address == worker.IpAddress
+		}), nil
+	}, time.Minute, time.Second).Should(BeTrue(), "the partial registration must belong to the same worker IP")
+	namespace := newName + "-recovery"
+	_, err = client.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, metav1.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	removed := false
+	removeWorkload := func(ctx SpecContext) {
+		if removed {
+			return
+		}
+		err := client.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
+		Expect(err == nil || apierrors.IsNotFound(err)).To(BeTrue(), "delete test namespace: %v", err)
+		Eventually(func() bool {
+			_, err := client.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+			return apierrors.IsNotFound(err)
+		}, 3*time.Minute, time.Second).Should(BeTrue(), "remove the synthetic partial-registration workload")
+		removed = true
 	}
+	DeferCleanup(removeWorkload, NodeTimeout(4*time.Minute))
+	_, err = client.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "partial-workload"},
+		Spec: corev1.PodSpec{
+			NodeName: newName,
+			Containers: []corev1.Container{{
+				Name: "never-pull", Image: "k2s-node-rename-test.invalid/never-pull:local", ImagePullPolicy: corev1.PullNever,
+			}},
+			Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+		},
+	}, metav1.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	By("refusing a partial replacement carrying user workloads without deleting either Node")
+	beforeRejection := readKubeletIdentity(ctx, worker)
+	output = rejectRename(ctx, "--old-name", worker.Name, "--new-name", newName)
+	Expect(output).To(ContainSubstring("--force"))
+	Expect(output).To(ContainSubstring("partial-workload"))
+	Expect(getNode(ctx, worker.Name).UID).To(Equal(original.UID))
+	Expect(getNode(ctx, newName).UID).To(Equal(partial.UID))
+	Expect(readDescriptor()).To(Equal(descriptor))
+	Expect(readKubeletIdentity(ctx, worker)).To(Equal(beforeRejection))
 
 	observer := observeRename(ctx)
 	// Uppercase input exercises case-insensitive hostname validation and lowercase normalization.
-	output = rename(ctx, worker.Name, strings.ToUpper(newName), scenario.workload)
+	output = rename(ctx, worker.Name, strings.ToUpper(newName))
 	renamed = true
 	replacement := getNode(ctx, newName)
 	Expect(isReady(replacement)).To(BeTrue())
 	Expect(replacement.UID).NotTo(Equal(original.UID))
-	if partial != nil {
-		Expect(replacement.UID).NotTo(Equal(partial.UID), "recreate, rather than reuse, an unowned partial registration")
-	}
+	Expect(replacement.UID).NotTo(Equal(partial.UID), "recreate, rather than reuse, an unowned partial registration")
 	Expect(replacement.Spec.PodCIDR).To(Equal(saved.Spec.PodCIDR))
 	Expect(replacement.Spec.PodCIDRs).To(Equal(saved.Spec.PodCIDRs))
-	Expect(replacement.Spec.Unschedulable).To(Equal(scenario.unschedulable))
+	Expect(replacement.Spec.Unschedulable).To(Equal(original.Spec.Unschedulable))
 	Expect(replacement.Labels["kubernetes.io/os"]).To(Equal("linux"))
 	Expect(replacement.Labels["kubernetes.io/hostname"]).To(Equal(newName))
 	for key, value := range saved.Labels {
@@ -373,7 +347,7 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameS
 	Expect(subject).To(ContainSubstring("CN=system:node:" + newName))
 	Expect(subject).To(ContainSubstring("O=system:nodes"))
 	Expect(strings.Split(remote(ctx, worker, "sudo -n systemctl is-active kubelet"), "\n")).To(ContainElement("active"))
-	migration.verifyAfterRename(ctx, worker.Name, newName, scenario.unschedulable)
+	migration.verifyAfterRename(ctx, worker.Name, newName, original.Spec.Unschedulable)
 	for _, before := range unrelated.Items {
 		if before.Name == worker.Name {
 			continue
@@ -384,19 +358,14 @@ func exerciseRename(ctx SpecContext, worker clusterconfig.Node, scenario renameS
 		Expect(after.Spec.Unschedulable).To(Equal(before.Spec.Unschedulable))
 		Expect(isReady(after)).To(BeTrue(), "unrelated Node %s must remain Ready", before.Name)
 	}
-	if removeWorkload != nil {
-		removeWorkload(ctx)
-	}
+	removeWorkload(ctx)
 	migration.cleanup(ctx)
 	cleanupWorker(ctx)
 	By(fmt.Sprintf("leaving worker %s renamed to %s in the OS, Kubernetes and cluster.json", worker.IpAddress, newName))
 }
 
-func rename(ctx context.Context, oldName, newName string, force bool) string {
-	args := []string{"node", "rename", "--old-name", oldName, "--new-name", newName, "--timeout", "15m", "-o"}
-	if force {
-		args = append(args, "--force")
-	}
+func rename(ctx context.Context, oldName, newName string) string {
+	args := []string{"node", "rename", "--old-name", oldName, "--new-name", newName, "--timeout", "15m", "-o", "--force"}
 	output := suite.K2sCli().MustExec(ctx, args...)
 	Expect(output).To(ContainSubstring("SUCCESS"))
 	return output
@@ -447,37 +416,28 @@ func readDescriptor() []byte {
 	return data
 }
 
-func supportedLinuxWorkers(config *clusterconfig.Cluster) []clusterconfig.Node {
-	var workers []clusterconfig.Node
+func renameWorker(config *clusterconfig.Cluster) (clusterconfig.Node, error) {
+	var matches []clusterconfig.Node
 	if config != nil {
 		for _, node := range config.Nodes {
-			if node.OS == clusterconfig.OsTypeLinux && node.Role == clusterconfig.RoleWorker &&
-				(node.NodeType == clusterconfig.NodeTypeHost || node.NodeType == clusterconfig.NodeTypeVMExisting) {
-				workers = append(workers, node)
+			if node.Name == oldNodeName {
+				matches = append(matches, node)
 			}
 		}
 	}
-	return workers
+	if len(matches) != 1 {
+		return clusterconfig.Node{}, fmt.Errorf("expected exactly one worker named %q in cluster.json, found %d; provision it with k2s node add before running this suite", oldNodeName, len(matches))
+	}
+	worker := matches[0]
+	if worker.OS != clusterconfig.OsTypeLinux || worker.Role != clusterconfig.RoleWorker ||
+		(worker.NodeType != clusterconfig.NodeTypeHost && worker.NodeType != clusterconfig.NodeTypeVMExisting) {
+		return clusterconfig.Node{}, fmt.Errorf("worker %q must be a managed Linux HOST or VM-EXISTING worker", oldNodeName)
+	}
+	return worker, nil
 }
 
 func uniqueName() string {
 	return fmt.Sprintf("k2s-rename-%x", time.Now().UnixNano())
-}
-
-func replacementName(prefix, address string) (string, error) {
-	ip, err := netip.ParseAddr(address)
-	if err != nil {
-		return "", fmt.Errorf("invalid worker IP address %q: %w", address, err)
-	}
-	if ip.Zone() != "" {
-		return "", fmt.Errorf("worker IP address %q must not contain a zone", address)
-	}
-	ip = ip.Unmap()
-	suffix := strings.ReplaceAll(ip.String(), ".", "-")
-	if ip.Is6() {
-		suffix = fmt.Sprintf("%x", ip.As16())
-	}
-	return prefix + "-" + suffix, nil
 }
 
 func isReady(node *corev1.Node) bool {

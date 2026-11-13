@@ -102,12 +102,12 @@ k2s_windows_worker_preflight_host() {
   disk_gb=$(k2s_windows_worker_disk_gb) || return $?
   available_mb=$(awk '/MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
   total_mb=$(awk '/MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
-  (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log_prereq_failure 'Windows worker memory must not exceed 75% of host memory.'; return 3; }
-  (( available_mb >= memory_mb + 2048 )) || { k2s_log_prereq_failure 'Windows worker would leave less than 2GB of host memory available.'; return 3; }
+  (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log_prereq_failure "Windows worker memory (${memory_mb} MB) must not exceed 75% of host memory (${total_mb} MB). Lower --worker-memory."; return 3; }
+  (( available_mb >= memory_mb + 2048 )) || { k2s_log_prereq_failure "Windows worker needs ${memory_mb} MB plus 2048 MB headroom for the host, but only ${available_mb} MB of host memory is available (total: ${total_mb} MB). Free up memory or lower --worker-memory."; return 3; }
   disk_check_dir=$(k2s_windows_worker_vm_dir)
   while [[ ! -d "$disk_check_dir" ]]; do disk_check_dir=$(dirname "$disk_check_dir"); done
   available_gb=$(df -BG --output=avail "$disk_check_dir" | tail -1 | tr -dc '0-9')
-  (( available_gb - disk_gb >= 20 )) || { k2s_log_prereq_failure 'Windows worker would leave less than 20GB of host disk space available.'; return 3; }
+  (( available_gb - disk_gb >= 20 )) || { k2s_log_prereq_failure "Windows worker needs ${disk_gb} GB plus 20 GB headroom for the host, but only ${available_gb} GB of disk space is available in '${disk_check_dir}'. Free up disk space or lower --worker-disk."; return 3; }
   if k2s_windows_worker_image_needed; then
     [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log_prereq_failure 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
   fi

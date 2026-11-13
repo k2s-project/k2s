@@ -9,6 +9,9 @@
 # an actual kubeadm join - see ci-arm64-node-join.yml for that.
 name: CI - arm64 Node Smoke
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   pull_request:

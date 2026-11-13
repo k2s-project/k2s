@@ -14,6 +14,9 @@
 # docs/op-manual/creating-offline-package.md for the documented gap.
 name: CI - arm64 Node Package Build
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:

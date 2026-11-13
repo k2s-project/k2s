@@ -26,6 +26,10 @@
 # artifact appears.
 name: CI - arm64 Node Join
 
+permissions:
+  actions: read
+  contents: read
+
 on:
   workflow_dispatch:
 

@@ -1,6 +1,6 @@
 <!--
-SPDX-FileCopyrightText: © 2024 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: © 2026 The K2s Authors
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Automated Testing
@@ -525,7 +525,7 @@ This enables control over *slog* output, i.e. the output can be enabled when run
 **To mark acceptance tests as such** and provide additional information about test prerequisites (e.g. a running *K2s* cluster, internet connectivity, etc.), **use [Tags/Labels](tags-labels.md)**.
 
 #### Tech Stack
-The tech stack mostly comprises the [*Go* testing package](https://pkg.go.dev/testing){target="_blank"}, [*Ginkgo*](https://onsi.github.io/ginkgo/#top){target="_blank"}/[*Gomega*](https://onsi.github.io/gomega/#top){target="_blank"} and the *[K2s Testing Framework](https://github.com/k2s-project/k2s/blob/main/k2s/test/framework/README.md){target="_blank"}* to write acceptance tests in an efficient way without having to write boilerplate code repeatedly. The levels of abstraction are depicted in the following:
+The tech stack mostly comprises the [*Go* testing package](https://pkg.go.dev/testing){target="_blank"}, [*Ginkgo*](https://onsi.github.io/ginkgo/#top){target="_blank"}/[*Gomega*](https://onsi.github.io/gomega/#top){target="_blank"} and the *[K2s Testing Framework](https://github.com/k2s-project/k2s/blob/main/test/framework/README.md){target="_blank"}* to write acceptance tests in an efficient way without having to write boilerplate code repeatedly. The levels of abstraction are depicted in the following:
 
 ```mermaid
 flowchart TD
@@ -534,7 +534,7 @@ flowchart TD
 ```
 
 #### Implementing Tests/Specs
-See [*K2s* Acceptance Tests/Specs](https://github.com/k2s-project/k2s/blob/main/k2s/test/README.md){target="_blank"}.
+See [*K2s* Acceptance Tests/Specs](https://github.com/k2s-project/k2s/blob/main/test/README.md){target="_blank"}.
 
 #### Executing Tests/Specs
 Multiple options exist to run *Go*-based test specs:

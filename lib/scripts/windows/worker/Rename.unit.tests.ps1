@@ -14,8 +14,8 @@ BeforeAll {
     . ([scriptblock]::Create(($renameFunctions.Extent.Text -join "`n")))
     function Invoke-Kubectl { param($Params) }
     function Invoke-CmdOnVmViaSSHKey { param($UserName, $IpAddress, $CmdToExecute, $ExecutionTimeoutSeconds) }
-    function Invoke-CmdOnControlPlaneViaSSHKey { param($CmdToExecute, [switch] $IgnoreErrors, [switch] $NoLog) }
-    function Copy-ToRemoteComputerViaSshKey { param($Source, $Target, $UserName, $IpAddress) }
+    function Invoke-CmdOnControlPlaneViaSSHKey { param($CmdToExecute, [switch] $IgnoreErrors, [switch] $NoLog, $ExecutionTimeoutSeconds) }
+    function Copy-ToRemoteComputerViaSshKey { param($Source, $Target, $UserName, $IpAddress, $ExecutionTimeoutSeconds) }
     function Write-Log { param([Parameter(ValueFromPipeline)] $Message, [switch] $Console) }
     function Get-ClusterDescriptorFilePath {}
     function Update-NodeConfig { param($Name, $Updates) }
@@ -72,7 +72,9 @@ Describe 'Linux worker rename lifecycle' -Tag 'unit', 'ci', 'node-rename' {
         Mock Invoke-NodeRenameKubectl {
             $script:events.Add(($Arguments -join ' '))
             if (($Arguments -join ' ') -eq 'get nodes -o json') {
-                return @{ items = $script:nodeList } | ConvertTo-Json -Depth 30
+                # The cluster no longer lists the old Node once it is deleted
+                $nodes = @($script:nodeList | Where-Object { $script:events -notcontains 'delete-old' -or $_.metadata.name -ne 'old-node' })
+                return @{ items = $nodes } | ConvertTo-Json -Depth 30
             }
             if (($Arguments -join ' ') -eq 'get node new-node -o json') {
                 return $script:ready | ConvertTo-Json -Depth 30
@@ -180,11 +182,41 @@ Describe 'Linux worker rename lifecycle' -Tag 'unit', 'ci', 'node-rename' {
         }
     }
 
-    It 'removes its bookkeeping annotations from the replacement as the last step' {
+    It 'removes its bookkeeping annotations from the replacement as the last change' {
         Invoke-WorkerRename -OldName 'old-node' -NewName 'new-node'
-        $script:events[$script:events.Count - 1] |
+        $changes = @($script:events | Where-Object { $_ -notlike 'get *' })
+        $changes[$changes.Count - 1] |
             Should -Be 'annotate node new-node k2s.io/rename-source-uid- k2s.io/rename-source-name- k2s.io/rename-original-unschedulable-'
-        $script:events[$script:events.Count - 2] | Should -Be 'uncordon new-node'
+        $changes[$changes.Count - 2] | Should -Be 'uncordon new-node'
+    }
+
+    Context 'pod network range after the old node is retired' {
+        BeforeEach {
+            $script:joined = $script:controlPlane | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            $script:joined.metadata.name = 'joined-node'
+            $script:joined.metadata.labels = [pscustomobject]@{ 'kubernetes.io/os' = 'linux' }
+            Mock Invoke-NodeRenameKubectl {
+                $script:events.Add('read-nodes-after-retirement')
+                @{ items = @($script:controlPlane, $script:ready, $script:joined) } | ConvertTo-Json -Depth 30
+            } -ParameterFilter { ($Arguments -join ' ') -eq 'get nodes -o json' -and $script:events -contains 'delete-old' }
+        }
+
+        It 'fails the completed rename, names the Node that received the same range and says how to add it again' {
+            $script:joined.spec.podCIDR = '172.20.2.0/24'
+            { Invoke-WorkerRename -OldName 'old-node' -NewName 'new-node' } | Should -Throw (
+                "*failed while checking the pod network range: Pod network range conflict: Node 'joined-node' was assigned the pod network range 172.20.2.0/24, " +
+                "but Node 'new-node' already uses 172.20.2.0/24. Remove it with 'k2s node remove --name joined-node' and add it again with 'k2s node add', " +
+                'so that it receives a free range. The rename itself is complete and must not be retried.')
+            $script:events | Should -Contain 'uncordon new-node'
+            Should -Invoke Write-Log -Times 0 -ParameterFilter { $Message -like '*Renamed old-node to new-node*' }
+        }
+
+        It 'reads the Nodes only after its last change of the replacement and accepts a Node with another range' {
+            $script:joined.spec.podCIDR = '172.20.3.0/24'
+            Invoke-WorkerRename -OldName 'old-node' -NewName 'new-node'
+            $script:events.IndexOf('read-nodes-after-retirement') | Should -Be ($script:events.Count - 1)
+            Should -Invoke Write-Log -Times 1 -ParameterFilter { $Message -like '*Renamed old-node to new-node*' }
+        }
     }
 
     It 'ignores a scheduling marker left on a Node by an earlier rename' {
@@ -664,6 +696,36 @@ Describe 'Node rename certificate and command helpers' -Tag 'unit', 'ci', 'node-
             Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -ParameterFilter { $CmdToExecute -like "rm -f -- '/tmp/k2s-node-rename.ABC123xy/join.json'*" }
             Test-Path -LiteralPath $script:temporaryConfigurationPath | Should -BeFalse
         }
+
+        It 'gives the token creation and the upload only the time that is left, and the token revocation its own short limit' {
+            $script:nodeRenameDeadline = [DateTime]::UtcNow.AddSeconds(90)
+            Repair-NodeRenameCertificates -Node $script:target -NewName 'new-node' -Socket 'unix:///run/crio/crio.sock'
+            Should -Invoke Invoke-CmdOnControlPlaneViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like 'sudo kubeadm token create*' -and $ExecutionTimeoutSeconds -ge 85 -and $ExecutionTimeoutSeconds -le 90
+            }
+            Should -Invoke Copy-ToRemoteComputerViaSshKey -Times 1 -Exactly -ParameterFilter {
+                $ExecutionTimeoutSeconds -ge 85 -and $ExecutionTimeoutSeconds -le 90
+            }
+            Should -Invoke Invoke-CmdOnControlPlaneViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like 'sudo kubeadm token delete*' -and $ExecutionTimeoutSeconds -eq 30
+            }
+        }
+
+        It 'still revokes the token within its own limit when the upload used up the time' {
+            Mock Copy-ToRemoteComputerViaSshKey {
+                $script:nodeRenameDeadline = [DateTime]::UtcNow.AddSeconds(-1)
+                throw '[SCP] Copying timed out'
+            }
+            { Repair-NodeRenameCertificates -Node $script:target -NewName 'new-node' -Socket 'unix:///run/crio/crio.sock' } |
+                Should -Throw '*Copying timed out*'
+            Should -Invoke Invoke-NodeRenameRemote -Times 0
+            Should -Invoke Invoke-CmdOnControlPlaneViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -eq 'sudo kubeadm token delete abcdef' -and $ExecutionTimeoutSeconds -eq 30
+            }
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like "rm -f -- '/tmp/k2s-node-rename.ABC123xy/join.json'*" -and $ExecutionTimeoutSeconds -eq 10
+            }
+        }
     }
 
     It 'stops kubelet and pod sandboxes without assuming that stopping the runtime stops containers' {
@@ -733,6 +795,29 @@ Describe 'Rename timeout' -Tag 'unit', 'ci', 'node-rename' {
         Mock Invoke-CmdOnVmViaSSHKey {}
         { Invoke-NodeRenameRemote -Node ([pscustomobject]@{ Username = 'admin'; IpAddress = '192.0.2.2' }) -Script 'hostname' } | Should -Throw '*Repair timed out*'
         Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 0
+    }
+
+    It 'waits for a Windows service at most <Max> seconds when <Left> seconds are left' -ForEach @(
+        @{ Left = 20; Min = 15; Max = 20 },
+        @{ Left = 600; Min = 60; Max = 60 }
+    ) {
+        $script:nodeRenameDeadline = [DateTime]::UtcNow.AddSeconds($Left)
+        $script:serviceWait = $null
+        Mock Get-Service {
+            [pscustomobject]@{ Name = "$Name" } |
+                Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value { param($Status, $Timeout) $script:serviceWait = "$Status", $Timeout } -PassThru
+        }
+        Wait-NodeRenameWindowsService -Name 'kubelet'
+        $script:serviceWait[0] | Should -Be 'Running'
+        $script:serviceWait[1].TotalSeconds | Should -BeGreaterOrEqual $Min
+        $script:serviceWait[1].TotalSeconds | Should -BeLessOrEqual $Max
+    }
+
+    It 'does not wait for a Windows service once the time is used up' {
+        $script:nodeRenameDeadline = [DateTime]::UtcNow.AddSeconds(-1)
+        Mock Get-Service {}
+        { Wait-NodeRenameWindowsService -Name 'kubelet' } | Should -Throw '*Repair timed out*'
+        Should -Invoke Get-Service -Times 0
     }
 }
 
@@ -1036,7 +1121,11 @@ Describe 'Local Windows worker rename lifecycle' -Tag 'unit', 'ci', 'node-rename
         Mock Invoke-NodeRenameKubectl {
             $command = $Arguments -join ' '
             $script:events.Add($command)
-            if ($command -eq 'get nodes -o json') { return @{ items = $script:nodeList } | ConvertTo-Json -Depth 30 }
+            if ($command -eq 'get nodes -o json') {
+                # The cluster no longer lists the old Node once it is deleted
+                $nodes = @($script:nodeList | Where-Object { $script:events -notcontains 'delete-old' -or $_.metadata.name -ne 'old-host' })
+                return @{ items = $nodes } | ConvertTo-Json -Depth 30
+            }
             if ($command -eq 'get node new-host -o json') { return $script:ready | ConvertTo-Json -Depth 30 }
             if ($Arguments[1] -eq 'pods') { return '{"items":[]}' }
         }
@@ -1106,6 +1195,8 @@ Describe 'Local Windows worker rename lifecycle' -Tag 'unit', 'ci', 'node-rename
         $other.metadata.name = 'second-windows'
         $other.metadata.annotations = [pscustomobject]@{}
         $other.spec.unschedulable = $false
+        $other.spec.podCIDR = '172.20.3.0/24'
+        $other.spec.podCIDRs = @('172.20.3.0/24')
         $other.spec | Add-Member -NotePropertyName 'taints' -NotePropertyValue @($osTaint)
         $other.status.addresses[0].address = '192.0.2.50'
         $script:nodeList += $other

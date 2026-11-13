@@ -314,7 +314,9 @@ function Invoke-SCPWithKey {
         [Parameter(Mandatory = $false)]
         [uint16]$Retries = 3,
         [Parameter(Mandatory = $false)]
-        [uint16]$RetryDelay = 2
+        [uint16]$RetryDelay = 2,
+        [Parameter(Mandatory = $false, HelpMessage = 'Limit for scp.exe over all attempts; 0 means no limit')]
+        [uint16]$ExecutionTimeoutSeconds = 0
     )
 
     Set-SshPrivateKeyPermissions -Path $key
@@ -325,6 +327,7 @@ function Invoke-SCPWithKey {
     $attempt = 0
     $lastOutput = $null
     $lastScpExitCode = 0
+    $deadline = if ($ExecutionTimeoutSeconds -gt 0) { [DateTime]::UtcNow.AddSeconds($ExecutionTimeoutSeconds) } else { $null }
 
     do {
         $attempt++
@@ -332,17 +335,55 @@ function Invoke-SCPWithKey {
         # Capture all output first, then filter SSH connection warnings
         $rawOutput = $null
         $scpExitCode = 0
+        $timedOut = $false
         $savedErrorActionPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            $rawOutput = &scp.exe $params 2>&1
-            $scpExitCode = $LASTEXITCODE
+            if ($null -ne $deadline) {
+                $stdoutFile = [System.IO.Path]::GetTempFileName()
+                $stderrFile = [System.IO.Path]::GetTempFileName()
+                try {
+                    # Start-Process joins the arguments without quoting them
+                    $quotedParams = $params | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }
+                    $process = Start-Process -FilePath 'scp.exe' -ArgumentList $quotedParams -NoNewWindow -PassThru -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -ErrorAction Stop
+                    # Windows PowerShell returns no ExitCode unless the handle is cached while the process runs (https://github.com/PowerShell/PowerShell/issues/20716)
+                    $null = $process.Handle
+                    $remainingMilliseconds = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+                    if ($process.WaitForExit($remainingMilliseconds)) {
+                        $rawOutput = @(Get-Content -Path $stdoutFile) + @(Get-Content -Path $stderrFile)
+                        $scpExitCode = $process.ExitCode
+                    }
+                    else {
+                        $timedOut = $true
+                        try {
+                            $process.Kill()
+                            $process.WaitForExit()
+                        }
+                        catch {
+                            Write-Log "[SCP] Failed to terminate timed out scp.exe process: $($_.Exception.Message)"
+                        }
+                    }
+                }
+                finally {
+                    Remove-Item -Path $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+            else {
+                $rawOutput = &scp.exe $params 2>&1
+                $scpExitCode = $LASTEXITCODE
+            }
         } catch {
             Write-Log "[SCP] Unexpected error during SCP execution: $_"
             throw
         }
         finally {
             $ErrorActionPreference = $savedErrorActionPreference
+        }
+
+        if ($timedOut) {
+            $timeoutMessage = "[SCP] Copying '$Source' to '$Target' timed out after $ExecutionTimeoutSeconds sec"
+            Write-Log $timeoutMessage
+            throw $timeoutMessage
         }
 
         # Convert to array of strings, handling both regular output and ErrorRecord objects
@@ -438,17 +479,20 @@ function Invoke-CmdOnControlPlaneViaSSHKey(
     [Parameter(Mandatory = $false , HelpMessage = 'When executing ssh.exe in nested environment[host=>VM=>VM], -n flag should not be used.')]
     [switch]$Nested = $false,
     [Parameter(Mandatory = $false, HelpMessage = 'repair CMD for the case first run did not work out')]
-    [string]$RepairCmd = $null) {
+    [string]$RepairCmd = $null,
+    [Parameter(Mandatory = $false)]
+    [uint16]$ExecutionTimeoutSeconds = 0) {
 
     $invocationParams = @{
-        CmdToExecute = $CmdToExecute
-        IgnoreErrors = $IgnoreErrors
-        Retries      = $Retries
-        Timeout      = $Timeout
-        NoLog        = $NoLog
-        Nested       = $Nested
-        RepairCmd    = $RepairCmd
-        IpAddress    = $ipControlPlane
+        CmdToExecute            = $CmdToExecute
+        IgnoreErrors            = $IgnoreErrors
+        Retries                 = $Retries
+        Timeout                 = $Timeout
+        NoLog                   = $NoLog
+        Nested                  = $Nested
+        RepairCmd               = $RepairCmd
+        IpAddress               = $ipControlPlane
+        ExecutionTimeoutSeconds = $ExecutionTimeoutSeconds
     }
     return Invoke-CmdOnVmViaSSHKey @invocationParams
 }
@@ -691,7 +735,9 @@ function Copy-ToRemoteComputerViaSshKey($Source, $Target, $UserName, $IpAddress,
     [Parameter(Mandatory = $false)]
     [uint16]$Retries = 3,
     [Parameter(Mandatory = $false)]
-    [uint16]$RetryDelay = 2) {
+    [uint16]$RetryDelay = 2,
+    [Parameter(Mandatory = $false, HelpMessage = 'Limit for each SSH and SCP step of the copy; 0 means no limit')]
+    [uint16]$ExecutionTimeoutSeconds = 0) {
     Write-Log "Copying '$Source' to '$Target', ignoring errors: '$IgnoreErrors'"
 
     $remoteComputerUser = "$UserName@$IpAddress"
@@ -717,7 +763,7 @@ function Copy-ToRemoteComputerViaSshKey($Source, $Target, $UserName, $IpAddress,
         $targetDirectory = "$targetDirectory/$leaf"
     } else {
          # single file copy
-        $output = Invoke-SCPWithKey -Source "$Source" -Target "${remoteComputerUser}:$Target" -Recursive -Retries $Retries -RetryDelay $RetryDelay
+        $output = Invoke-SCPWithKey -Source "$Source" -Target "${remoteComputerUser}:$Target" -Recursive -Retries $Retries -RetryDelay $RetryDelay -ExecutionTimeoutSeconds $ExecutionTimeoutSeconds
         if ($LASTEXITCODE -ne 0 -and !$IgnoreErrors) {
             throw "Could not copy '$Source' to '$Target': $output"
         }
@@ -727,9 +773,9 @@ function Copy-ToRemoteComputerViaSshKey($Source, $Target, $UserName, $IpAddress,
 
     $isControlPlane = ($IpAddress -eq $ipControlPlane)
     $invokeSshCmd = if ($isControlPlane) {
-        { param($cmd) (Invoke-CmdOnControlPlaneViaSSHKey $cmd).Output | Write-Log }
+        { param($cmd) (Invoke-CmdOnControlPlaneViaSSHKey $cmd -ExecutionTimeoutSeconds $ExecutionTimeoutSeconds).Output | Write-Log }
     } else {
-        { param($cmd) (Invoke-CmdOnVmViaSSHKey -CmdToExecute $cmd -UserName $UserName -IpAddress $IpAddress).Output | Write-Log }
+        { param($cmd) (Invoke-CmdOnVmViaSSHKey -CmdToExecute $cmd -UserName $UserName -IpAddress $IpAddress -ExecutionTimeoutSeconds $ExecutionTimeoutSeconds).Output | Write-Log }
     }
 
     & $invokeSshCmd 'sudo rm -rf /tmp/copy.tar'
@@ -739,7 +785,7 @@ function Copy-ToRemoteComputerViaSshKey($Source, $Target, $UserName, $IpAddress,
         throw "Could not copy '$Source' to '$Target': $output"
     }
 
-    $output = Invoke-SCPWithKey -Source "$env:temp\copy.tar" -Target "${remoteComputerUser}:/tmp" -Retries $Retries -RetryDelay $RetryDelay
+    $output = Invoke-SCPWithKey -Source "$env:temp\copy.tar" -Target "${remoteComputerUser}:/tmp" -Retries $Retries -RetryDelay $RetryDelay -ExecutionTimeoutSeconds $ExecutionTimeoutSeconds
     if ($LASTEXITCODE -ne 0 -and !$IgnoreErrors) {
         throw "Could not copy '$Source' to '$Target': $output"
     }

@@ -168,7 +168,8 @@ function Repair-NodeRenameCertificates {
     $localPath = [IO.Path]::GetTempFileName()
     try {
         $ttl = Get-NodeRenameRemainingSeconds
-        $join = Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute "sudo kubeadm token create --ttl $($ttl)s --print-join-command"
+        $join = Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute "sudo kubeadm token create --ttl $($ttl)s --print-join-command" `
+            -ExecutionTimeoutSeconds ([Math]::Min(65535, $ttl))
         if (-not $join.Success) { throw '[NodeRename] Could not create a short-lived bootstrap token' }
         $match = [regex]::Match(($join.Output -join "`n").Trim(), '^kubeadm join ([a-zA-Z0-9.:\[\]-]+) --token ([a-z0-9]{6}\.[a-z0-9]{16}) --discovery-token-ca-cert-hash (sha256:[a-f0-9]{64})$')
         if (-not $match.Success) { throw '[NodeRename] Control plane returned an invalid bootstrap command' }
@@ -197,7 +198,8 @@ function Repair-NodeRenameCertificates {
             $remoteDirectory = ''
             throw '[NodeRename] Invalid remote bootstrap directory'
         }
-        Copy-ToRemoteComputerViaSshKey -Source $localPath -Target "$remoteDirectory/join.json" -UserName $Node.Username -IpAddress $Node.IpAddress
+        Copy-ToRemoteComputerViaSshKey -Source $localPath -Target "$remoteDirectory/join.json" -UserName $Node.Username -IpAddress $Node.IpAddress `
+            -ExecutionTimeoutSeconds ([Math]::Min(65535, (Get-NodeRenameRemainingSeconds)))
         $scriptText = @'
 set -eu
 systemctl stop kubelet
@@ -235,7 +237,8 @@ exit 1
             if (-not $cleanup.Success) { Write-Log "[NodeRename] Could not remove temporary bootstrap config at $remoteDirectory" -Console }
         }
         if ($token) {
-            $revoke = Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute "sudo kubeadm token delete $($token.Split('.')[0])"
+            # Cleanup runs even after the rename deadline, so it has its own limit
+            $revoke = Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute "sudo kubeadm token delete $($token.Split('.')[0])" -ExecutionTimeoutSeconds 30
             if (-not $revoke.Success) { Write-Log '[NodeRename] Could not revoke bootstrap token; it expires automatically' -Console }
         }
         if ($secureToken) { $secureToken.Dispose() }
@@ -437,7 +440,8 @@ function Invoke-NodeRenameCrictl {
 
 function Wait-NodeRenameWindowsService {
     Param([string] $Name)
-    (Get-Service -Name $Name -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(60))
+    $timeout = [TimeSpan]::FromSeconds([Math]::Min(60, (Get-NodeRenameRemainingSeconds)))
+    (Get-Service -Name $Name -ErrorAction Stop).WaitForStatus('Running', $timeout)
 }
 
 function Get-NodeRenameKubeletStartScript {
@@ -784,6 +788,17 @@ fi
                 Write-Log "[NodeRename] WARNING: the control plane no longer has a route to the pod network $($target.PodCIDR) of $NewName. Pods on $NewName may be unreachable from it until flannel on the control plane node is restarted" -Console
             }
         }
+        # The node IPAM frees the range when the old Node is deleted, so a Node that joined meanwhile can hold it too
+        $phase = 'checking the pod network range'
+        $ranges = @(@($ready.spec.podCIDR) + @($ready.spec.podCIDRs) | Where-Object { $_ } | Select-Object -Unique)
+        $conflicts = @((Invoke-NodeRenameKubectl @('get', 'nodes', '-o', 'json') | ConvertFrom-Json).items | ForEach-Object {
+                $assigned = @(@($_.spec.podCIDR) + @($_.spec.podCIDRs) | Where-Object { $_ -in $ranges } | Select-Object -Unique)
+                if ($_.metadata.name -ne $NewName -and $assigned.Count) {
+                    "Node '$($_.metadata.name)' was assigned the pod network range $($assigned -join ', '), but Node '$NewName' already uses $($ranges -join ', '). " +
+                    "Remove it with 'k2s node remove --name $($_.metadata.name)' and add it again with 'k2s node add', so that it receives a free range"
+                }
+            })
+        if ($conflicts.Count) { throw "[NodeRename] Pod network range conflict: $($conflicts -join '. ')" }
         Write-Log (Format-NodeRenameSummary -OldName $OldName -NewName $NewName -Node $ready -Target $target -Unschedulable $unschedulable) -Console
     } catch {
         $reason = ($_.Exception.Message -replace '^\[NodeRename\] ', '').TrimEnd('.')
@@ -791,6 +806,8 @@ fi
             'No changes were made.'
         } elseif ($phase -eq 'retiring old identity') {
             "Nodes may remain cordoned; the old Node '$OldName' may already be deleted. Inspect target services before retrying the same command."
+        } elseif ($phase -eq 'checking the pod network range') {
+            'The rename itself is complete and must not be retried.'
         } elseif (-not $old -or $phase -in @('restoring scheduling', 'removing rename bookkeeping')) {
             "Node '$NewName' may remain cordoned; the old Node '$OldName' is already deleted. Retry the same command to finish."
         } else {

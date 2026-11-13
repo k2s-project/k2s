@@ -287,7 +287,8 @@ func TestRestartedNodes(t *testing.T) {
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: newNodeName, UID: "renamed-uid",
-				Labels: map[string]string{metadataKey: newNodeName}, Annotations: map[string]string{metadataKey: "preserved"},
+				Labels:      map[string]string{metadataKey: newNodeName, "empty-label": ""},
+				Annotations: map[string]string{metadataKey: "preserved", "empty-annotation": ""},
 			},
 			Spec: corev1.NodeSpec{
 				PodCIDR: "172.20.2.0/24", PodCIDRs: []string{"172.20.2.0/24"},
@@ -318,7 +319,9 @@ func TestRestartedNodes(t *testing.T) {
 		{"PodCIDRs changed", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.PodCIDRs = nil }, false},
 		{"scheduling state changed", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.Unschedulable = true }, false},
 		{"label lost", func(nodes *corev1.NodeList) { delete(nodes.Items[0].Labels, metadataKey) }, false},
+		{"empty label lost", func(nodes *corev1.NodeList) { delete(nodes.Items[0].Labels, "empty-label") }, false},
 		{"annotation lost", func(nodes *corev1.NodeList) { delete(nodes.Items[0].Annotations, metadataKey) }, false},
+		{"empty annotation lost", func(nodes *corev1.NodeList) { delete(nodes.Items[0].Annotations, "empty-annotation") }, false},
 		{"taint lost", func(nodes *corev1.NodeList) { nodes.Items[0].Spec.Taints = nil }, false},
 		{"not Ready", func(nodes *corev1.NodeList) { nodes.Items[0].Status.Conditions[0].Status = corev1.ConditionFalse }, false},
 	} {

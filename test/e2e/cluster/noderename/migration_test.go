@@ -548,13 +548,15 @@ func validateRestartedNodes(before, after *corev1.NodeList, oldName string) erro
 			return fmt.Errorf("Node %s changed its PodCIDRs or scheduling state after stop/start", expected.Name)
 		}
 		for key, value := range expected.Labels {
-			if !managedKey(key) && actual.Labels[key] != value {
+			current, exists := actual.Labels[key]
+			if !managedKey(key) && (!exists || current != value) {
 				return fmt.Errorf("Node %s lost label %s=%s after stop/start", expected.Name, key, value)
 			}
 		}
 		for key, value := range expected.Annotations {
+			current, exists := actual.Annotations[key]
 			if !managedKey(key) && !strings.HasPrefix(key, "flannel.alpha.coreos.com/") &&
-				!strings.HasPrefix(key, "k2s.io/rename-") && actual.Annotations[key] != value {
+				!strings.HasPrefix(key, "k2s.io/rename-") && (!exists || current != value) {
 				return fmt.Errorf("Node %s lost annotation %s after stop/start", expected.Name, key)
 			}
 		}

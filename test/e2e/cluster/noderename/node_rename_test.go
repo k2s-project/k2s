@@ -29,7 +29,7 @@ import (
 
 const (
 	metadataKey = "rename.e2e.k2s.io/test"
-	oldNodeName = "node-deb13"
+	oldNodeName = "k2s-nodepkg-debian13"
 	newNodeName = "node-db13-renamed"
 )
 

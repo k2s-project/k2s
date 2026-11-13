@@ -58,7 +58,7 @@ func TestWorkerDiscovery(t *testing.T) {
 }
 
 func TestReplacementName(t *testing.T) {
-	if oldNodeName != "node-deb13" || newNodeName != "node-db13-renamed" {
+	if oldNodeName != "k2s-nodepkg-debian13" || newNodeName != "node-db13-renamed" {
 		t.Fatalf("unexpected fixed rename pair %q -> %q", oldNodeName, newNodeName)
 	}
 	for _, name := range []string{oldNodeName, newNodeName} {

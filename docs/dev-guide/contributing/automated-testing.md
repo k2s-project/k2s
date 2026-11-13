@@ -26,18 +26,19 @@ successful query. The regression cases are in
 ### Linux Worker Rename Acceptance Tests
 
 The shared [node-rename suite](../../../test/e2e/cluster/noderename/node_rename_test.go)
-selects the Linux worker named `node-deb13` from `cluster.json`, using the same
+selects the Linux worker named `k2s-nodepkg-debian13` from `cluster.json`, using the same
 cluster configuration reader as the other node suites. Argo or another fixture
 provisioner must add this worker with `k2s node add` before the suite runs.
 It can be either a bare-metal (`HOST`) or existing Hyper-V VM (`VM-EXISTING`)
 worker; other workers are not renamed.
-The single migration uses the fixed pair `node-deb13` -> `node-db13-renamed`,
+The single migration uses the fixed pair `k2s-nodepkg-debian13` -> `node-db13-renamed`,
 without an IP suffix, hostname argument or environment-variable opt-in.
 It combines metadata, reboot, workload, SMB persistence and partial-registration
 recovery checks rather than resetting the hostname between separate migrations.
-Missing, duplicate or unsupported `node-deb13` entries fail the test before SMB
+The suite is skipped when `cluster.json` is missing or lists no worker. Otherwise,
+missing, duplicate or unsupported `k2s-nodepkg-debian13` entries fail the test before SMB
 setup, as does an existing `node-db13-renamed` Kubernetes Node. A repeat run
-requires the fixture provisioner to supply `node-deb13` again; the suite never
+requires the fixture provisioner to supply `k2s-nodepkg-debian13` again; the suite never
 automatically restores that identity.
 Windows-host rename E2E is deliberately excluded: changing that hostname requires
 a reboot of the machine running the suite.

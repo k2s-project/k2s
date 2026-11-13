@@ -580,9 +580,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/mikefarah/yq/releases/download/v4.53.4/yq_windows_amd64.exe",
+      "group": "https://github.com/mikefarah/yq/releases/download/v4.54.3/yq_windows_amd64.exe",
       "name": "yq",
-      "version": "v4.53.4",
+      "version": "v4.54.3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -599,7 +599,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/mikefarah/yq@v4.53.4",
+      "purl": "pkg:github/mikefarah/yq@v4.54.3",
       "type": "application"
     },
     {

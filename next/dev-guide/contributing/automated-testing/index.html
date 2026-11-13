@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
       
       
       
-        <link rel="canonical" href="https://k2s-project.github.io/K2s/next/dev-guide/contributing/automated-testing/">
+        <link rel="canonical" href="https://k2s-project.github.io/k2s/next/dev-guide/contributing/automated-testing/">
       
       
         <link rel="prev" href="../building-locally/">
@@ -3809,12 +3809,12 @@ The analyzer would complain:</p>
 </div>
 <p><strong>To mark acceptance tests as such</strong> and provide additional information about test prerequisites (e.g. a running <em>K2s</em> cluster, internet connectivity, etc.), <strong>use <a href="../tags-labels/">Tags/Labels</a></strong>.</p>
 <h4 id="tech-stack">Tech Stack</h4>
-<p>The tech stack mostly comprises the <a href="https://pkg.go.dev/testing" target="_blank" rel="noopener"><em>Go</em> testing package</a>, <a href="https://onsi.github.io/ginkgo/#top" target="_blank" rel="noopener"><em>Ginkgo</em></a>/<a href="https://onsi.github.io/gomega/#top" target="_blank" rel="noopener"><em>Gomega</em></a> and the <em><a href="https://github.com/k2s-project/k2s/blob/main/k2s/test/framework/README.md" target="_blank" rel="noopener">K2s Testing Framework</a></em> to write acceptance tests in an efficient way without having to write boilerplate code repeatedly. The levels of abstraction are depicted in the following:</p>
+<p>The tech stack mostly comprises the <a href="https://pkg.go.dev/testing" target="_blank" rel="noopener"><em>Go</em> testing package</a>, <a href="https://onsi.github.io/ginkgo/#top" target="_blank" rel="noopener"><em>Ginkgo</em></a>/<a href="https://onsi.github.io/gomega/#top" target="_blank" rel="noopener"><em>Gomega</em></a> and the <em><a href="https://github.com/k2s-project/k2s/blob/main/test/framework/README.md" target="_blank" rel="noopener">K2s Testing Framework</a></em> to write acceptance tests in an efficient way without having to write boilerplate code repeatedly. The levels of abstraction are depicted in the following:</p>
 <pre class="mermaid"><code>flowchart TD
     A(K2s Testing Framework) --&gt; |utilizes|B(Ginkgo/Gomega)
     B --&gt; |utilizes|C(Go Testing Package)</code></pre>
 <h4 id="implementing-testsspecs">Implementing Tests/Specs</h4>
-<p>See <a href="https://github.com/k2s-project/k2s/blob/main/k2s/test/README.md" target="_blank" rel="noopener"><em>K2s</em> Acceptance Tests/Specs</a>.</p>
+<p>See <a href="https://github.com/k2s-project/k2s/blob/main/test/README.md" target="_blank" rel="noopener"><em>K2s</em> Acceptance Tests/Specs</a>.</p>
 <h4 id="executing-testsspecs">Executing Tests/Specs</h4>
 <p>Multiple options exist to run <em>Go</em>-based test specs:</p>
 <ul>

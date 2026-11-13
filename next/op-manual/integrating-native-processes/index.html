@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
       
       
       
-        <link rel="canonical" href="https://k2s-project.github.io/K2s/next/op-manual/integrating-native-processes/">
+        <link rel="canonical" href="https://k2s-project.github.io/k2s/next/op-manual/integrating-native-processes/">
       
       
         <link rel="prev" href="../running-apps-as-hostprocess/">
@@ -3380,13 +3380,13 @@ processes into the cluster <strong>without rewriting them</strong>, so they can 
 secured, observed, and — if you want — managed by <em>Kubernetes</em> itself.</p>
 <p>This guide describes the recommended <strong>best practices</strong> for making a native process "cluster‑friendly", and
 the <strong>two integration options</strong> with their trade‑offs. Throughout, we use the small test executable
-<a href="https://github.com/k2s-project/k2s/blob/main/k2s/test/e2e/cluster/hostprocess/albumswin/main.go"><code>albumswin</code></a>
+<a href="https://github.com/k2s-project/k2s/blob/main/test/e2e/cluster/hostprocess/albumswin/main.go"><code>albumswin</code></a>
 as the running example. Ready‑to‑use manifests for both options live under
-<a href="https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples"><code>k2s/test/e2e/cluster/hostprocess/examples</code></a>.</p>
+<a href="https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples"><code>test/e2e/cluster/hostprocess/examples</code></a>.</p>
 <pre class="mermaid"><code>flowchart TD
     A[Native process on the Windows host] --&gt; Q{Who controls the&lt;br/&gt;process lifecycle?}
-    Q --&gt;|"You / the OS&lt;br/&gt;(service, scheduled task, installer)"| O1["&lt;b&gt;Option 1&lt;/b&gt;&lt;br/&gt;Managed outside Kubernetes&lt;br/&gt;Expose via an external Service"]
-    Q --&gt;|"Kubelet / containerd"| O2["&lt;b&gt;Option 2 (preferred)&lt;/b&gt;&lt;br/&gt;Managed by Kubernetes&lt;br/&gt;HostProcess container + anchor compartment"]
+    Q --&gt;|"You / the OS&lt;br/&gt;(service, scheduled task, installer)"| O1["Option 1&lt;br/&gt;Managed outside Kubernetes&lt;br/&gt;Expose via an external Service"]
+    Q --&gt;|"Kubelet / containerd"| O2["Option 2 (preferred)&lt;br/&gt;Managed by Kubernetes&lt;br/&gt;HostProcess container + anchor compartment"]
     O1 --&gt; R1[Reachable from all pods&lt;br/&gt;via KubeSwitch 172.19.1.1]
     O2 --&gt; R2[Reachable + probes, resource limits,&lt;br/&gt;rollout, zero‑trust security]
     classDef opt fill:#e8f0fe,stroke:#4285f4,color:#000;
@@ -3464,7 +3464,7 @@ the host <abbr title="Internet Protocol">IP</abbr>.</p>
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">    </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8080</span>
 </code></pre></div>
 <p>Full, runnable manifests (with Linux and Windows test clients) are in
-<a href="https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-1-external-service"><code>examples/option-1-external-service</code></a>.</p>
+<a href="https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-1-external-service"><code>examples/option-1-external-service</code></a>.</p>
 <h3 id="firewall">Firewall</h3>
 <p>The native process listens on the host. Ensure an <strong>inbound allow rule</strong> exists for its port on the KubeSwitch
 so pods can connect:</p>
@@ -3575,7 +3575,7 @@ resources — for example, a <code>GET</code> on <code>/x/y</code> only.</p>
 native host processes. See <a href="../../security/security-features/">Security Features</a> and
 <a href="../../security/policy-enforcement/">Policy Enforcement</a>.</p>
 <p>An illustrative policy manifest is provided in
-<a href="https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment"><code>examples/option-2-hostprocess-compartment</code></a>.</p>
+<a href="https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment"><code>examples/option-2-hostprocess-compartment</code></a>.</p>
 <h3 id="pros-cons_1">Pros &amp; cons</h3>
 <table>
 <thead>
@@ -3678,8 +3678,8 @@ environment (interfaces, ports, compartment) should be injectable so the product
 needs — without recompiling. <code>albumswin</code> demonstrates all three knobs via environment variables.</p>
 <p>See these best practices applied end‑to‑end in the runnable examples:</p>
 <ul>
-<li><a href="https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-1-external-service"><code>examples/option-1-external-service</code></a> — process managed outside Kubernetes.</li>
-<li><a href="https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment"><code>examples/option-2-hostprocess-compartment</code></a> — process managed by Kubernetes (HostProcess + compartment).</li>
+<li><a href="https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-1-external-service"><code>examples/option-1-external-service</code></a> — process managed outside Kubernetes.</li>
+<li><a href="https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples/option-2-hostprocess-compartment"><code>examples/option-2-hostprocess-compartment</code></a> — process managed by Kubernetes (HostProcess + compartment).</li>
 </ul>
 <div class="admonition note">
 <p class="admonition-title">These are best practices, not a hard requirement</p>
@@ -3996,7 +3996,7 @@ certificate and <abbr title="NT LAN Manager">NTLM</abbr>/Windows authentication.
 <li><a href="../networking-architecture/">Networking Architecture for K2s</a></li>
 <li><a href="../../security/security-features/">Security Features</a> · <a href="../../security/policy-enforcement/">Policy Enforcement</a></li>
 <li><a href="https://github.com/k2s-project/k2s/blob/main/addons/security/README.md">security addon README</a></li>
-<li>Example manifests: <a href="https://github.com/k2s-project/k2s/tree/main/k2s/test/e2e/cluster/hostprocess/examples"><code>hostprocess/examples</code></a></li>
+<li>Example manifests: <a href="https://github.com/k2s-project/k2s/tree/main/test/e2e/cluster/hostprocess/examples"><code>hostprocess/examples</code></a></li>
 </ul>
 <!--
 SPDX-FileCopyrightText: © 2024 The K2s Authors

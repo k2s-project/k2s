@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2025 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -1670,6 +1670,43 @@ Current directory: $deltaRoot
 		}
 	} else {
 		Write-Log '[Update] No Linux image archives found in delta package; skipping Linux image load' -Console:$consoleSwitch
+	}
+
+	# --- 8c. CRI-O offline image retention (issue #3284) ---
+	# Disable CRI-O internal repair and install the pre-start storage check so an unclean
+	# shutdown does not wipe the image store. Applied only when the control plane is reachable.
+	if ($wasRunning) {
+		try {
+			if (-not (Get-Command -Name Set-CrioOfflineImageRetention -ErrorAction SilentlyContinue)) {
+				$commonSetupModule = Join-Path (Get-ClusterInstalledFolder) 'lib\modules\windows\node\k2s.node.module\linuxnode\distros\common-setup.module.psm1'
+				if (Test-Path -LiteralPath $commonSetupModule) { Import-Module $commonSetupModule -Force -ErrorAction Stop }
+			}
+			if ((Get-Command -Name Set-CrioOfflineImageRetention -ErrorAction SilentlyContinue) -and (Get-Command -Name Invoke-CmdOnControlPlaneViaSSHKey -ErrorAction SilentlyContinue)) {
+				$crioRemoteCommand = {
+					param([string] $Command)
+					$result = Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute $Command -Timeout 30 -Retries 2
+					$result.Output | Write-Log
+					if (-not $result.Success) { throw "Remote command failed: $Command" }
+				}
+				Set-CrioOfflineImageRetention -ExecuteRemoteCommand $crioRemoteCommand
+				Write-Log '[Update] CRI-O offline image retention configured (active on next CRI-O start)' -Console:$consoleSwitch
+				if (Get-Command -Name Export-SystemImageArchivesToWindowsHost -ErrorAction SilentlyContinue) {
+					try {
+						# the module-level image directory may still point to the pre-relocation installation
+						Export-SystemImageArchivesToWindowsHost -TargetPath (Join-Path $targetInstallPath 'bin\linuxnode\images')
+						Write-Log '[Update] System image archives refreshed' -Console:$consoleSwitch
+					} catch {
+						Write-Log ("[Update][Warn] Failed to export system image archives: {0}" -f $_.Exception.Message) -Console:$consoleSwitch
+					}
+				}
+			} else {
+				Write-Log '[Update][Warn] CRI-O image retention helpers not available; skipping' -Console:$consoleSwitch
+			}
+		} catch {
+			Write-Log ("[Update][Warn] Failed to configure CRI-O image retention: {0}" -f $_.Exception.Message) -Console:$consoleSwitch
+		}
+	} else {
+		Write-Log '[Update][Warn] Cluster not running; CRI-O image retention not applied (re-run update with cluster running)' -Console:$consoleSwitch
 	}
 
 	# 9. Hooks placeholder

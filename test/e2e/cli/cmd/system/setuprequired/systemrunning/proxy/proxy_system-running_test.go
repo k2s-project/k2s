@@ -175,8 +175,11 @@ var _ = Describe("system proxy", func() {
 		It("reset removes Linux guest proxy files", func() {
 			// file deletion is synchronous — plain assertions are safe
 			Expect(ssh.NewSSH(connOpts).Exec("sudo test ! -f /etc/apt/apt.conf.d/proxy.conf")).To(Succeed())
-			Expect(ssh.NewSSH(connOpts).Exec("sudo test ! -d /etc/systemd/system/crio.service.d")).To(Succeed())
+			Expect(ssh.NewSSH(connOpts).Exec("sudo test ! -f /etc/systemd/system/crio.service.d/http-proxy.conf")).To(Succeed())
 			Expect(ssh.NewSSH(connOpts).Exec("sudo test ! -f /etc/containers/containers.conf")).To(Succeed())
+
+			// the CRI-O image retention drop-in shares the directory and must survive a proxy reset
+			Expect(ssh.NewSSH(connOpts).Exec("sudo test -f /etc/systemd/system/crio.service.d/99-k2s-image-retention.conf")).To(Succeed())
 
 			// use Eventually in case crio restart is briefly lagging
 			Eventually(func(g Gomega) {

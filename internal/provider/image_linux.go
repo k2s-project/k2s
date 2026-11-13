@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier:   MIT
 
 //go:build linux
@@ -483,6 +483,10 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 		cmd.Stderr = os.Stderr
 	}
 	return cmd.Run()
+}
+
+func (p *linuxImageProvider) Repair(cfg ImageRepairConfig) error {
+	return errors.New("image repair is not supported on Linux hosts")
 }
 
 func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {

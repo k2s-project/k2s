@@ -6,14 +6,26 @@
 package provider
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	kjson "github.com/k2s-project/k2s/internal/json"
 	linuxlifecycle "github.com/k2s-project/k2s/internal/linux/lifecycle"
 )
+
+// linuxWindowsWorkerStateFile is written by the native lifecycle when it
+// provisions the managed Windows worker (see lib/modules/linux/node/windows-worker.sh).
+const linuxWindowsWorkerStateFile = "windows-worker.json"
+
+type linuxWindowsWorkerState struct {
+	Name string `json:"name"`
+}
 
 type linuxSystemProvider struct {
 	installDir string
@@ -22,6 +34,14 @@ type linuxSystemProvider struct {
 
 var linuxRunCombinedOutput = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
+}
+
+var linuxExecuteLifecycle = linuxlifecycle.Execute
+
+var linuxConfirm = func(prompt string) bool {
+	fmt.Print(prompt)
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	return strings.TrimSpace(answer) == "y"
 }
 
 func newLinuxSystemProvider(cfg ProviderConfig) *linuxSystemProvider {
@@ -113,9 +133,48 @@ func isLinuxLinkNotFound(output string) bool {
 	return strings.Contains(output, "Cannot find device") || strings.Contains(output, "does not exist")
 }
 
-func (p *linuxSystemProvider) Compact(_ SystemCompactConfig) error {
-	return NotSupportedError("system compact",
-		"VHDX compaction is a Windows/Hyper-V operation; use 'qemu-img convert' to compact QCOW2 images")
+// Compact rewrites the QCOW2 disk of the managed Windows worker, the only VM
+// on a Linux host, so that space freed inside the guest is returned to the host.
+func (p *linuxSystemProvider) Compact(cfg SystemCompactConfig) error {
+	if cfg.LinuxOnly {
+		return NotSupportedError("system compact",
+			"Linux-only setups on a Linux host have no VM disk to compact; the control plane runs natively on the host")
+	}
+
+	worker, err := readLinuxWindowsWorkerState(p.configDir)
+	if err != nil {
+		return err
+	}
+
+	if !cfg.Yes {
+		output, err := linuxRunCombinedOutput("virsh", "domstate", worker.Name)
+		if err == nil && strings.TrimSpace(string(output)) == "running" &&
+			!linuxConfirm("The cluster must be stopped to compact the Windows worker disk. Stop cluster now? (y/n) ") {
+			slog.Info("[System] Compaction cancelled by user")
+			return nil
+		}
+	}
+
+	return linuxExecuteLifecycle("Compact", linuxlifecycle.Operation{
+		InstallDir: p.installDir,
+		ConfigDir:  p.configDir,
+		NoRestart:  cfg.NoRestart,
+	})
+}
+
+func readLinuxWindowsWorkerState(configDir string) (*linuxWindowsWorkerState, error) {
+	state, err := kjson.FromFile[linuxWindowsWorkerState](filepath.Join(configDir, linuxWindowsWorkerStateFile))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, NotSupportedError("system compact",
+				"no managed Windows worker is installed, so there is no VM disk to compact")
+		}
+		return nil, fmt.Errorf("cannot read the Windows worker state: %w", err)
+	}
+	if state == nil || state.Name == "" {
+		return nil, fmt.Errorf("the Windows worker state in '%s' does not name the worker VM", configDir)
+	}
+	return state, nil
 }
 
 func (p *linuxSystemProvider) Backup(cfg SystemBackupConfig) error {

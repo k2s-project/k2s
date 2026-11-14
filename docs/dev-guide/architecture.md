@@ -329,7 +329,7 @@ legacy `lib/scripts/{k2s,linuxonly,buildonly,worker}/` and
 | Host | Script locations | Module locations | Implementation boundary |
 |---|---|---|---|
 | Windows | `lib/scripts/windows/{host,linuxonly,buildonly,worker}/` | `lib/modules/windows/{common,infra,cluster,node}/` | Go providers dispatch to PowerShell entry scripts; PowerShell modules own host operations. |
-| Debian 13 | `lib/scripts/linux/debian/{host,linuxonly,worker}/` | `lib/modules/linux/{common,infra,cluster,node,networking,services}/` | Go providers dispatch lifecycle operations to Bash entry scripts; Bash modules own install, start, stop, and uninstall. `k2s status` remains Go-native to preserve typed status output. |
+| Debian 13 | `lib/scripts/linux/debian/{host,linuxonly,worker}/` | `lib/modules/linux/{common,infra,cluster,node,networking,services}/` | Go providers dispatch lifecycle operations to Bash entry scripts; Bash modules own install, start, stop, uninstall, and compact. `k2s status` remains Go-native to preserve typed status output. |
 
 `cfg/nodeextension/<os>/` contains only operating-system-specific assets used
 to extend a cluster with nodes. It is not a location for host lifecycle

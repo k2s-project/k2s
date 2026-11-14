@@ -741,6 +741,81 @@ k2s_windows_worker_stop() {
     sleep 2
   done
 }
+
+k2s_windows_worker_domain_state() { virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null; }
+
+k2s_windows_worker_disk() {
+  local state disk
+  state=$(k2s_windows_worker_state_file)
+  [[ -f "$state" ]] || { k2s_log ERROR "No managed Windows worker is installed ($state not found)."; return 2; }
+  disk=$(jq -er '.disk' "$state") || { k2s_log ERROR "Cannot read the Windows worker disk from $state."; return 1; }
+  printf '%s\n' "$disk"
+}
+
+# The domain uses discard='unmap', so blocks that Windows trims are released in
+# the QCOW2 overlay before k2s_windows_worker_compact_disk rewrites it.
+k2s_windows_worker_trim() {
+  k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "Optimize-Volume -DriveLetter C -ReTrim"'
+}
+
+k2s_windows_worker_disk_usage() { du -B1 -- "$1" | cut -f1; }
+
+k2s_windows_worker_format_gb() { awk -v bytes="$1" 'BEGIN { printf "%.2f", bytes / 1073741824 }'; }
+
+# Runs before the cluster is stopped. -U reads the image even while the running
+# worker holds its lock.
+k2s_windows_worker_compact_preflight() {
+  local disk="$1" info snapshots usage available
+  [[ -f "$disk" ]] || { k2s_log ERROR "Windows worker disk not found: $disk"; return 1; }
+  info=$(qemu-img info -U --output=json "$disk") || { k2s_log ERROR "Cannot inspect the Windows worker disk: $disk"; return 1; }
+  snapshots=$(virsh snapshot-num "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || printf '0')
+  if (( snapshots > 0 )) || [[ $(jq '.snapshots // [] | length' <<< "$info") != 0 ]]; then
+    k2s_log ERROR "The Windows worker has snapshots that the compaction would discard. Remove them first: virsh snapshot-list $K2S_WINDOWS_WORKER_NAME"
+    return 1
+  fi
+  usage=$(k2s_windows_worker_disk_usage "$disk") || return 1
+  available=$(df --output=avail -B1 -- "$(dirname "$disk")" | tail -n 1) || return 1
+  k2s_log INFO "Disk usage: $(k2s_windows_worker_format_gb "$usage") GB (free on host: $(k2s_windows_worker_format_gb "$available") GB)"
+  if (( available < usage )); then
+    k2s_log ERROR "Insufficient host disk space. Need at least $(k2s_windows_worker_format_gb "$usage") GB free next to $disk."
+    return 1
+  fi
+}
+
+# Rewrites the stopped worker's QCOW2 overlay without unused clusters. The
+# overlay keeps its backing base image: with -B, qemu-img only copies the data
+# that the overlay holds on top of it.
+k2s_windows_worker_compact_disk() {
+  local disk="$1" info backing backing_format size_before size_after usage_before usage_after saved temporary_disk
+  local -a backing_args=()
+  info=$(qemu-img info --output=json "$disk") || { k2s_log ERROR "Cannot open $disk; make sure no other process uses it."; return 1; }
+  backing=$(jq -r '.["full-backing-filename"] // empty' <<< "$info")
+  if [[ -n "$backing" ]]; then
+    backing_format=$(jq -r '.["backing-filename-format"] // "qcow2"' <<< "$info")
+    backing_args=(-B "$backing" -F "$backing_format")
+  fi
+  size_before=$(stat -c %s -- "$disk") || return 1
+  usage_before=$(k2s_windows_worker_disk_usage "$disk") || return 1
+  temporary_disk="$disk.compact"
+  rm -f "$temporary_disk"
+  k2s_log INFO 'Rewriting the Windows worker disk without unused clusters (this may take several minutes).'
+  if ! qemu-img convert -f qcow2 -O qcow2 -o compat=1.1 "${backing_args[@]}" "$disk" "$temporary_disk" || ! qemu-img check -q "$temporary_disk"; then
+    rm -f "$temporary_disk"
+    k2s_log ERROR "Compacting $disk failed; the original disk is unchanged."
+    return 1
+  fi
+  if ! chown --reference="$disk" "$temporary_disk" || ! chmod --reference="$disk" "$temporary_disk" || ! mv -f "$temporary_disk" "$disk"; then
+    rm -f "$temporary_disk"
+    k2s_log ERROR "Replacing $disk with the compacted copy failed; the original disk is unchanged."
+    return 1
+  fi
+  size_after=$(stat -c %s -- "$disk") || return 1
+  usage_after=$(k2s_windows_worker_disk_usage "$disk") || return 1
+  saved=$(( usage_before > usage_after ? usage_before - usage_after : 0 ))
+  k2s_log INFO "File size:  before $(k2s_windows_worker_format_gb "$size_before") GB, after $(k2s_windows_worker_format_gb "$size_after") GB"
+  k2s_log INFO "Disk usage: before $(k2s_windows_worker_format_gb "$usage_before") GB, after $(k2s_windows_worker_format_gb "$usage_after") GB, saved $(k2s_windows_worker_format_gb "$saved") GB"
+}
+
 k2s_windows_worker_remove() {
   local vm_dir
   vm_dir=$(k2s_windows_worker_vm_dir)

@@ -25,6 +25,7 @@ type Operation struct {
 	NoProxy              []string `json:"noProxy"`
 	SkipStart            bool     `json:"skipStart"`
 	SkipPurge            bool     `json:"skipPurge"`
+	NoRestart            bool     `json:"noRestart"`
 	LinuxOnly            bool     `json:"linuxOnly"`
 	WorkerCPUCount       string   `json:"workerCPUCount"`
 	WorkerMemory         string   `json:"workerMemory"`

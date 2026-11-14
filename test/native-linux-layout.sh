@@ -7,11 +7,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 required_files=(
+  "lib/scripts/linux/debian/host/Compact.sh"
   "lib/scripts/linux/debian/host/Install.sh"
   "lib/scripts/linux/debian/host/Start.sh"
   "lib/scripts/linux/debian/host/Stop.sh"
   "lib/scripts/linux/debian/host/Status.sh"
   "lib/scripts/linux/debian/host/Uninstall.sh"
+  "lib/scripts/linux/debian/linuxonly/Compact.sh"
   "lib/scripts/linux/debian/linuxonly/Install.sh"
   "lib/scripts/linux/debian/linuxonly/Start.sh"
   "lib/scripts/linux/debian/linuxonly/Stop.sh"
@@ -40,7 +42,7 @@ for relative_path in "${required_files[@]}"; do
   bash -n "$path"
 done
 
-for operation in Install Start Stop Status Uninstall; do
+for operation in Compact Install Start Stop Status Uninstall; do
   if ! grep -Fq "../linuxonly/${operation}.sh" "$repo_root/lib/scripts/linux/debian/host/${operation}.sh"; then
     printf 'error: host %s entry point does not delegate to Linux-only lifecycle\n' "$operation" >&2
     exit 1

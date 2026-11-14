@@ -9,6 +9,7 @@ import (
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/node/copy"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/node/exec"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/node/remove"
+	"github.com/k2s-project/k2s/cmd/k2s/cmd/node/rename"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +20,7 @@ func NewCmd() *cobra.Command {
 	}
 	cmd.AddCommand(add.NewCmd())
 	cmd.AddCommand(remove.NewCmd())
+	cmd.AddCommand(rename.NewCmd())
 	cmd.AddCommand(copy.NewCmd())
 	cmd.AddCommand(exec.NewCmd())
 	cmd.AddCommand(connect.NewCmd())

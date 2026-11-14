@@ -19,7 +19,7 @@ Command handlers in `cmd/k2s/cmd/` call provider interfaces exclusively, elimina
 | `ImageProvider` | Build, Import, Export, List, Remove | Container image operations |
 | `NodeProvider` | Add, Remove, List | Worker node management |
 | `SystemProvider` | Package, Upgrade, Backup, Restore | System-level operations |
-| `AddonProvider` | Enable, Disable, Status | Addon lifecycle |
+| `AddonProvider` | Enable, Disable, Status, Backup, Restore | Addon lifecycle and addon data backup/restore |
 
 ## File Layout
 
@@ -50,7 +50,7 @@ provider/
 
 ## Experimental Status
 
-> **Linux host support is experimental.** The Linux providers are functional for core cluster lifecycle, image management, node management, and addon enable/disable. System-level operations (offline packaging, backup/restore, upgrade) are not yet implemented and return `ErrNotSupported`. A runtime warning is printed to stderr on every CLI invocation on Linux.
+> **Linux host support is experimental.** The Linux providers are functional for core cluster lifecycle, image management, node management, addon enable/disable, and addon backup/restore for `registry`, `ingress nginx` and `ingress traefik`. System-level operations (offline packaging, backup/restore, upgrade) are not yet implemented and return `ErrNotSupported`. A runtime warning is printed to stderr on every CLI invocation on Linux.
 
 ## How It Works
 

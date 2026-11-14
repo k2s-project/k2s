@@ -21,6 +21,6 @@ const PsCmd = "pwsh"
 func platformGuard() error {
 	return fmt.Errorf("this operation requires Windows PowerShell and is not available on Linux hosts. " +
 		"Supported commands on Linux: install, uninstall, start, stop, status, version, " +
-		"addons enable/disable/ls/status, image build/clean/export/import/list/pull/push/remove/tag, " +
+		"addons enable/disable/ls/status/backup/restore, image build/clean/export/import/list/pull/push/remove/tag, " +
 		"node add/remove, system dump/reset/reset-network/cert-renew")
 }

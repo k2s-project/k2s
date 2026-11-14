@@ -26,7 +26,7 @@ import (
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/internal/core/config"
 	k2sos "github.com/k2s-project/k2s/internal/os"
-	"github.com/k2s-project/k2s/internal/providers/powershell"
+	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -130,31 +130,16 @@ func runRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	enableScriptPath := filepath.Join(impl.Directory, "EnableForRestore.ps1")
-	useEnableForRestore := k2sos.PathExists(enableScriptPath)
-	if !useEnableForRestore {
-		enableScriptPath = filepath.Join(impl.Directory, "Enable.ps1")
-	}
-	if !k2sos.PathExists(enableScriptPath) {
-		return fmt.Errorf("Enable.ps1 not found for addon '%s'", impl.AddonsCmdName)
-	}
-	// Pass the staging directory to EnableForRestore scripts so they can read
-	// backup.json for addon-specific enable parameters (e.g. security addon
-	// flags like --type, --ingress, --omitKeycloak). Only EnableForRestore.ps1
-	// scripts accept -BackupDir; plain Enable.ps1 scripts do not.
-	if useEnableForRestore {
-		enableParams := []string{fmt.Sprintf(" -BackupDir %s", utils.EscapeWithSingleQuotes(stagingDir))}
-		if err := executeScript(enableScriptPath, outputFlag, enableParams...); err != nil {
-			return err
-		}
-	} else {
-		if err := executeScript(enableScriptPath, outputFlag, selectorEnableParams(addon.Metadata.Name, manifest)...); err != nil {
-			return err
-		}
-	}
-
-	restoreParams := []string{fmt.Sprintf(" -BackupDir %s", utils.EscapeWithSingleQuotes(stagingDir))}
-	if err := executeScript(restoreScriptPath, outputFlag, restoreParams...); err != nil {
+	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
+	if err := context.Providers().Addon.Restore(provider.AddonRestoreConfig{
+		AddonName:         addon.Metadata.Name,
+		Implementation:    impl.Name,
+		AddonDirectory:    impl.Directory,
+		BackupDir:         stagingDir,
+		EnableParams:      selectorEnableParams(addon.Metadata.Name, manifest),
+		InfraNodeSelector: strings.TrimSpace(manifest.InfraNodeSelector),
+		ShowOutput:        outputFlag,
+	}); err != nil {
 		return err
 	}
 
@@ -317,24 +302,6 @@ func ensureK8sContext(cmd *cobra.Command) (*cconfig.K2sRuntimeConfig, error) {
 
 func parseOutputFlag(cmd *cobra.Command) (bool, error) {
 	return strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
-}
-
-func executeScript(scriptPath string, outputFlag bool, params ...string) error {
-	psCmd := utils.FormatScriptFilePath(scriptPath)
-	allParams := make([]string, 0, len(params)+1)
-	allParams = append(allParams, params...)
-	if outputFlag {
-		allParams = append(allParams, " -ShowLogs")
-	}
-
-	cmdResult, err := powershell.ExecutePsWithStructuredResult[*common.CmdResult](psCmd, "CmdResult", common.NewPtermWriter(), allParams...)
-	if err != nil {
-		return err
-	}
-	if cmdResult.Failure != nil {
-		return cmdResult.Failure
-	}
-	return nil
 }
 
 func isAddonEnabled(runtimeConfig *cconfig.K2sRuntimeConfig, addonName, implementationName string) bool {

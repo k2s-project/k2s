@@ -11,6 +11,7 @@ import (
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/k2s-project/k2s/internal/core/addonplacement"
+	k2sos "github.com/k2s-project/k2s/internal/os"
 	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
@@ -196,6 +197,48 @@ func (p *windowsAddonProvider) Import(cfg AddonImportConfig) error {
 		return err
 	}
 	return result.checkFailure()
+}
+
+func (p *windowsAddonProvider) Backup(cfg AddonBackupConfig) error {
+	return p.runAddonScript(filepath.Join(cfg.AddonDirectory, "Backup.ps1"), cfg.ShowOutput, backupDirParam(cfg.BackupDir))
+}
+
+func (p *windowsAddonProvider) Restore(cfg AddonRestoreConfig) error {
+	// EnableForRestore.ps1 reads addon-specific enable options (e.g. security
+	// addon flags) from backup.json and therefore receives the staging
+	// directory; plain Enable.ps1 scripts only get the recorded placement.
+	enableScriptPath := filepath.Join(cfg.AddonDirectory, "EnableForRestore.ps1")
+	enableParams := []string{backupDirParam(cfg.BackupDir)}
+	if !k2sos.PathExists(enableScriptPath) {
+		enableScriptPath = filepath.Join(cfg.AddonDirectory, "Enable.ps1")
+		enableParams = cfg.EnableParams
+	}
+	if !k2sos.PathExists(enableScriptPath) {
+		return fmt.Errorf("Enable.ps1 not found for addon '%s'", addonCmdName(cfg.AddonName, cfg.Implementation))
+	}
+	if err := p.runAddonScript(enableScriptPath, cfg.ShowOutput, enableParams...); err != nil {
+		return err
+	}
+
+	return p.runAddonScript(filepath.Join(cfg.AddonDirectory, "Restore.ps1"), cfg.ShowOutput, backupDirParam(cfg.BackupDir))
+}
+
+func (p *windowsAddonProvider) runAddonScript(scriptPath string, showOutput bool, params ...string) error {
+	allParams := make([]string, 0, len(params)+1)
+	allParams = append(allParams, params...)
+	if showOutput {
+		allParams = append(allParams, " -ShowLogs")
+	}
+
+	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](utils.FormatScriptFilePath(scriptPath), "CmdResult", p.stdWriter, allParams...)
+	if err != nil {
+		return err
+	}
+	return result.checkFailure()
+}
+
+func backupDirParam(backupDir string) string {
+	return fmt.Sprintf(" -BackupDir %s", utils.EscapeWithSingleQuotes(backupDir))
 }
 
 func (p *windowsAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {

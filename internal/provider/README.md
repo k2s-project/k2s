@@ -18,7 +18,7 @@ Command handlers in `cmd/k2s/cmd/` call provider interfaces exclusively, elimina
 | `ClusterProvider` | Install, Uninstall, Start, Stop, Status | Cluster lifecycle management |
 | `ImageProvider` | Build, Import, Export, List, Remove | Container image operations |
 | `NodeProvider` | Add, Remove, List | Worker node management |
-| `SystemProvider` | Package, Upgrade, Backup, Restore | System-level operations |
+| `SystemProvider` | Package, Upgrade, Backup, Restore, Check | System-level operations and read-only health checks |
 | `AddonProvider` | Enable, Disable, Status | Addon lifecycle |
 
 ## File Layout

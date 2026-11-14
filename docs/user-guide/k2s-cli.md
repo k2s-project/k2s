@@ -593,6 +593,18 @@ k2s system dump [flags]
 |------|-------|-------------|
 | `--skip-open` | `-S` | Do not open the dump folder afterwards |
 
+### system check
+
+Run read-only health checks for known causes of problems and print `pass`, `warn`, `fail` or `skip` for each, together with a suggested fix. Nothing on the system is changed. The command exits with a non-zero exit code if at least one check fails. See [Running Health Checks](../troubleshooting/diagnostics.md#running-health-checks) for the list of checks.
+
+```console
+k2s system check [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output` | `-o` | Output format: `json` |
+
 ### system certificate renew
 
 Renew Kubernetes certificates.

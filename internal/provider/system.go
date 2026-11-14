@@ -3,6 +3,8 @@
 
 package provider
 
+import "github.com/k2s-project/k2s/internal/healthcheck"
+
 // SystemProvider abstracts system-level operations (dump, upgrade, packaging, etc.).
 // On Windows: delegates to PowerShell scripts.
 // On Linux: uses native commands (kubectl, qemu-img, etc.).
@@ -36,6 +38,9 @@ type SystemProvider interface {
 
 	// CertificateAutoRotation manages kubelet certificate auto-rotation configuration.
 	CertificateAutoRotation(config SystemCertAutoRotationConfig) error
+
+	// Check runs read-only health checks against the host and the cluster.
+	Check(config SystemCheckConfig) (healthcheck.Report, error)
 }
 
 // SystemDumpConfig holds parameters for the dump operation.
@@ -122,4 +127,18 @@ type SystemCertAutoRotationConfig struct {
 	Disable    bool
 	ShowStatus bool
 	ShowOutput bool
+}
+
+// SystemCheckConfig holds parameters for the health check operation.
+type SystemCheckConfig struct {
+	// ClusterName is the name of the K2s cluster in the kubeconfig.
+	ClusterName string
+	// KubeconfigPath is the path to the kubeconfig file of the current user.
+	KubeconfigPath string
+	// SetupName is the name of the installed setup (e.g. 'k2s' or 'BuildOnlyEnv').
+	SetupName string
+	// LinuxOnly indicates that the cluster has no Windows node on the host.
+	LinuxOnly bool
+	// WslEnabled indicates that the control-plane runs in WSL instead of a Hyper-V VM.
+	WslEnabled bool
 }

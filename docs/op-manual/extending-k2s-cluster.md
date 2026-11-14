@@ -109,6 +109,16 @@ The command must report `TcpTestSucceeded : True`.
 
 ---
 
+## Architecture Support (amd64 / arm64)
+
+`k2s node add` auto-detects the target node's CPU architecture over SSH (no `--arch` flag on `node add` itself). **arm64 is supported only for bare-metal/external Debian-family worker nodes** (not Hyper-V guests — Hyper-V on an x86 host cannot run an arm64 guest, so an arm64 control plane or an arm64 Hyper-V worker VM are out of scope). If the detected architecture is arm64 and the distribution is not Debian-family, `k2s node add` fails fast with an "unsupported architecture/distro combination" error before any provisioning starts.
+
+Only **Debian 13 arm64** is tested/validated (see the arm64 CI lanes in `k2s-project/k2s`'s `.github/workflows/`). Debian 12 arm64 runs the same code path but is untested.
+
+Building an **offline node package for arm64** (`k2s system package --node-package --arch arm64`) must run natively on a Linux arm64 host — there is no cross-build or VM path, since the existing Windows/Hyper-V build can only produce amd64 packages. See [Offline Installation of a Linux Worker Node](#offline-installation-of-a-linux-worker-node) below.
+
+---
+
 ## Online vs. Offline Node Add
 
 `k2s node add` supports two installation modes for Linux worker nodes on either physical hosts or virtual machines:
@@ -212,6 +222,17 @@ k2s system package --node-package --os debian13 --target-dir "C:\out" --name "de
 
 !!! note
     The same workflow applies whether the target Linux node is a physical host or an existing VM.
+
+### arm64 node packages
+
+An arm64 node package must be built **on a Linux arm64 host** with `sudo`/root privileges — not on the Windows K2s host, and not cross-compiled. There is no Hyper-V VM involved; the build host's own `apt` is used directly:
+
+```console
+sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
+```
+
+!!! note
+    Unlike the amd64 package built on Windows, the arm64 package built this way does **not** pre-stage container images as offline OCI archives — only the `.deb` packages are bundled offline. `k2s node add` with this package still needs network access to pull Kubernetes/flannel/GPU container images at join time. This is a known, deliberate gap for the initial arm64 support, not an oversight.
 
 ### GPU Support for Offline Nodes
 

@@ -112,6 +112,7 @@ $provisioningContext = Get-LinuxWorkerNodeProvisioningContext -UserName $UserNam
 $NodeName = $provisioningContext.ActualHostname
 $k8sFormattedNodeName = $provisioningContext.KubernetesNodeName
 $installedDistributionOnRemoteComputer = $provisioningContext.InstalledDistribution
+$architecture = $provisioningContext.Architecture
 
 Write-Log "Adding node with hostname '$k8sFormattedNodeName'"
 
@@ -133,6 +134,7 @@ $workerNodeParams = @{
     Proxy = $transparentProxy
     AdditionalHooksDir = $AdditionalHooksDir
     installedDistributionOnRemoteComputer = $installedDistributionOnRemoteComputer
+    Architecture = $architecture
     NodePackagePath = $NodePackagePath
     NodeType = 'VM-EXISTING'
     VmName = $VmName  # Hyper-V VM name (detected earlier via MAC address)

@@ -7,6 +7,26 @@ TARGET_PATH="$1"
 K8S_VERSION="$2"
 PROXY="${3:-}"
 
+if [[ -n "${K2S_APT_CONFIG:-}" || "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+    sudo() {
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            case "${1:-}" in
+                dpkg) return 0 ;;
+                apt)
+                    if [[ "${2:-}" == "--fix-broken" ]]; then
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        if [[ -n "${K2S_APT_CONFIG:-}" ]]; then
+            command sudo env APT_CONFIG="$K2S_APT_CONFIG" "$@"
+        else
+            command sudo "$@"
+        fi
+    }
+fi
+
 # Setup functions
 log_info() {
     echo "[K8sPackages] $1"
@@ -71,7 +91,7 @@ if [ -n "$PROXY" ]; then
 fi
 
 # Copy ZScaler certificate (if exists)
-if [ -f /tmp/ZScalerRootCA.crt ]; then
+if [[ "${K2S_DISABLE_ZSCALER_CERT_IMPORT:-false}" != true ]] && [ -f /tmp/ZScalerRootCA.crt ]; then
     log_info "Adding ZScaler certificate"
     sudo mv /tmp/ZScalerRootCA.crt /usr/local/share/ca-certificates/
     sudo update-ca-certificates
@@ -135,7 +155,7 @@ download_packages() {
             | cut -d ' ' -f 2 \
             | sort -u \
             | grep -v "^${pkg_base}$" \
-            | xargs -r sudo apt-get download --allow-unauthenticated 2>/dev/null || true
+            | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download --allow-unauthenticated "$@"; else sudo apt-get download --allow-unauthenticated "$@"; fi' sh 2>/dev/null || true
 
         return 0
     fi
@@ -270,7 +290,16 @@ install_with_retry() {
     local package="$1"
     local retries="$2"
     local attempt=1
-    
+
+    if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+        if command -v "$package" >/dev/null 2>&1; then
+            log_info "$package is available; skipping host installation for package download"
+            return 0
+        fi
+        log_warning "$package is required as a host tool but is not installed"
+        return 1
+    fi
+
     while [ $attempt -le $retries ]; do
         log_info "Installing $package (attempt $attempt/$retries)"
         
@@ -313,9 +342,10 @@ download_required_kubernetes_package "kubeadm"
 
 # Cleanup extra versions (keep only the requested upstream version)
 log_info "Cleaning up extra package versions"
+NODE_ARCH="$(dpkg --print-architecture)"
 cd "$TARGET_PATH" && sudo find . -maxdepth 1 -type f \
     \( -name 'kubeadm_*.deb' -o -name 'kubectl_*.deb' -o -name 'kubelet_*.deb' \) \
-    ! -name "*_${SHORT_K8S_VERSION}-*_amd64.deb" \
+    ! -name "*_${SHORT_K8S_VERSION}-*_${NODE_ARCH}.deb" \
     -exec sudo rm -f {} + || true
 
 if ! ls "$TARGET_PATH"/cri-tools*.deb >/dev/null 2>&1; then

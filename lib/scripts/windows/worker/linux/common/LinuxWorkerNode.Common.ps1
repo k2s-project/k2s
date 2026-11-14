@@ -115,6 +115,17 @@ function Get-LinuxWorkerNodeProvisioningContext {
     Write-Log $osMessage -Console
     Test-SupportedWorkerOS -OS $installedDistribution
 
+    $architecture = Get-RemoteArchitecture -UserName $UserName -IpAddress $IpAddress
+    $archMessage = "{0} Detected architecture on {1}: {2}" -f $LogPrefix, $TargetDescription, $architecture
+    Write-Log $archMessage -Console
+
+    # arm64 is only supported on Debian-family external nodes today (K2s issue #3052); fail
+    # fast here, before any package download or remote mutation starts, rather than failing
+    # deep into provisioning. Generic to the Debian family, not tied to a single release.
+    if ($architecture -eq 'arm64' -and $installedDistribution -notlike 'debian*') {
+        throw "$LogPrefix Unsupported architecture/distro combination: architecture 'arm64' is only supported on Debian-family distributions, detected OS '$installedDistribution' on $TargetDescription with IP '$IpAddress'."
+    }
+
     # Check only node names (not entire output) to avoid false positives from OS-IMAGE column
     $existingNodeNames = @((Invoke-Kubectl -Params @('get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}')).Output -split '\s+' | Where-Object { $_ })
     if ($existingNodeNames -contains $k8sFormattedNodeName) {
@@ -125,6 +136,7 @@ function Get-LinuxWorkerNodeProvisioningContext {
         ActualHostname         = $actualHostname
         KubernetesNodeName     = $k8sFormattedNodeName
         InstalledDistribution  = $installedDistribution
+        Architecture           = $architecture
     }
 }
 

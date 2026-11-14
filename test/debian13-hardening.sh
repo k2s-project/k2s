@@ -6,6 +6,8 @@
 # Isolated filesystem and command-mocked tests. Never execute main(), sudo or real package operations.
 set -euo pipefail
 exec 2>&1
+# harden-node.sh derives its architecture via dpkg; the fixtures below assume amd64 and Git Bash has no dpkg.
+dpkg() { [[ "$*" == '--print-architecture' ]] && printf 'amd64\n'; }
 source "$(dirname "${BASH_SOURCE[0]}")/../cfg/nodeextension/debian13/scripts/harden-node.sh"
 TEST_DIR="$(mktemp -d)"
 trap 'rm -r -- "$TEST_DIR"' EXIT

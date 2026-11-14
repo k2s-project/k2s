@@ -16,6 +16,26 @@
 BUILDAH_DEB_PACKAGES_PATH="${1:?Argument missing: BuildahDebPackagesPath}"
 PROXY="${2:-}"
 
+if [[ -n "${K2S_APT_CONFIG:-}" || "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+    sudo() {
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            case "${1:-}" in
+                dpkg) return 0 ;;
+                apt)
+                    if [[ "${2:-}" == "--fix-broken" ]]; then
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        if [[ -n "${K2S_APT_CONFIG:-}" ]]; then
+            command sudo env APT_CONFIG="$K2S_APT_CONFIG" "$@"
+        else
+            command sudo "$@"
+        fi
+    }
+fi
+
 log_info() {
     echo "[BuildahPkg] $1"
 }
@@ -68,7 +88,7 @@ download_packages() {
             | grep 'Inst ' \
             | cut -d ' ' -f 2 \
             | sort -u \
-            | xargs -r sudo apt-get download 2>/dev/null || true
+            | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null || true
     fi
 }
 
@@ -104,7 +124,7 @@ sudo DEBIAN_FRONTEND=noninteractive \
     | grep '^Inst ' \
     | cut -d ' ' -f 2 \
     | sort -u \
-    | xargs -r sudo apt-get download 2>/dev/null || true
+    | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null || true
 
 log_info "Downloaded packages:"
 ls -1 "$BUILDAH_DEB_PACKAGES_PATH"

@@ -101,12 +101,43 @@ func (p *windowsSystemProvider) clusterUpgradeCommand(cfg SystemUpgradeConfig) s
 }
 
 func (p *windowsSystemProvider) Package(cfg SystemPackageConfig) error {
+	if cfg.NodePackage {
+		psCmd, params := p.nodePackageCommand(cfg)
+		return p.execPS(psCmd, params...)
+	}
 	psCmd := p.scriptPath("package/New-K2sPackage.ps1")
 	var params []string
 	if cfg.ShowOutput {
 		params = append(params, " -ShowLogs")
 	}
 	return p.execPS(psCmd, params...)
+}
+
+func (p *windowsSystemProvider) nodePackageCommand(cfg SystemPackageConfig) (string, []string) {
+	var params []string
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+	params = append(params, " -TargetDirectory "+utils.EscapeWithSingleQuotes(cfg.OutputDir))
+	params = append(params, " -ZipPackageFileName "+utils.EscapeWithSingleQuotes(cfg.PackageName))
+
+	if cfg.ForDeltaPackage {
+		params = append(params, " -InputPackageOne "+utils.EscapeWithSingleQuotes(cfg.BasePackagePath))
+		params = append(params, " -InputPackageTwo "+utils.EscapeWithSingleQuotes(cfg.TargetPackagePath))
+		if cfg.OS != "" {
+			params = append(params, " -OS "+utils.EscapeWithSingleQuotes(cfg.OS))
+		}
+		return p.scriptPath("package/New-K2sNodeDeltaPackage.ps1"), params
+	}
+
+	params = append(params, " -OS "+utils.EscapeWithSingleQuotes(cfg.OS))
+	if cfg.Proxy != "" {
+		params = append(params, " -Proxy "+utils.EscapeWithSingleQuotes(cfg.Proxy))
+	}
+	if cfg.IncludeGPU {
+		params = append(params, " -IncludeGpu")
+	}
+	return p.scriptPath("package/New-K2sNodePackage.ps1"), params
 }
 
 func (p *windowsSystemProvider) Reset(cfg SystemResetConfig) error {

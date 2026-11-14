@@ -524,6 +524,7 @@ k2s system package [flags]
 | `--k8s-bins` | | Path to locally built Kubernetes binaries |
 | `--node-package` | | Create a Linux worker node package. Requires an installed and running *K2s* cluster. The local cluster proxy is used by default; override with `-p` if needed |
 | `--os` | | Target Linux distribution for `--node-package`, for example `debian12` or `debian13` |
+| `--arch` | | Target CPU architecture for `--node-package`: `amd64` (default) or `arm64`. `arm64` is Debian-family only and must be built natively on a Linux arm64 host (no cross-build/VM path) |
 | `--include-gpu` | | Include NVIDIA Container Toolkit packages for GPU support. When `k2s node add` uses a package built with this flag, GPU support is auto-configured if an NVIDIA GPU is detected |
 
 Example for node package creation:
@@ -536,6 +537,12 @@ Example for node package with GPU support:
 
 ```console
 k2s system package --node-package --os debian13 --include-gpu --target-dir "C:\out" --name "debian13-gpu.zip"
+```
+
+Example for an arm64 node package, run on a Linux arm64 host:
+
+```console
+sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 ```
 
 ### system backup

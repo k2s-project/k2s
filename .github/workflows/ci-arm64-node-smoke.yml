@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Fast arm64 smoke check for the node-extension scripts (k2s-project/k2s#3052).
+#
+# Runs on real ARM silicon (ubuntu-24.04-arm is a GitHub-hosted runner, no QEMU), but
+# this is Ubuntu, not Debian 13: it validates package-manager/script-level correctness
+# on real arm64 hardware, not an exact Debian 13 environment, and it does not exercise
+# an actual kubeadm join - see ci-arm64-node-join.yml for that.
+name: CI - arm64 Node Smoke
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - "main"
+    paths:
+      - "cfg/nodeextension/**"
+      - "lib/modules/windows/node/k2s.node.module/linuxnode/**"
+      - ".github/workflows/ci-arm64-node-smoke.yml"
+
+jobs:
+  arm64-package-scripts:
+    name: Download Kubernetes/buildah packages for arm64
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show detected architecture
+        run: |
+          uname -m
+          dpkg --print-architecture
+
+      - name: Download Kubernetes packages (debian13 scripts, arm64 host)
+        run: |
+          mkdir -p /tmp/k8s-packages
+          sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
+          echo "Downloaded packages:"
+          ls -la /tmp/k8s-packages
+          for f in /tmp/k8s-packages/*.deb; do
+            dpkg --info "$f" | grep -i architecture
+          done
+
+      - name: Download buildah packages (debian13 scripts, arm64 host)
+        run: |
+          mkdir -p /tmp/buildah-packages
+          sudo bash cfg/nodeextension/debian13/scripts/download-buildah-packages.sh /tmp/buildah-packages ""
+          echo "Downloaded packages:"
+          ls -la /tmp/buildah-packages
+
+      - name: Assert every downloaded .deb is arm64
+        run: |
+          fail=0
+          for f in /tmp/k8s-packages/*.deb /tmp/buildah-packages/*.deb; do
+            [ -e "$f" ] || continue
+            arch="$(dpkg --info "$f" | awk -F': ' '/Architecture/ {print $2; exit}')"
+            if [[ "$arch" != "arm64" && "$arch" != "all" ]]; then
+              echo "::error::$f has unexpected architecture '$arch'"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Exercise harden-node.sh's package-inventory logic (prepare/cleanup)
+        # harden-node.sh's main() gates on '. /etc/os-release' reporting Debian 13,
+        # which this Ubuntu-based runner is not. Source the script and call its
+        # internal functions directly so the arch-aware dpkg/awk logic (the part
+        # this lane exists to regression-test) still runs on real arm64 hardware.
+        run: |
+          sudo bash -c '
+            set -euo pipefail
+            source cfg/nodeextension/debian13/scripts/harden-node.sh
+            prepare_node
+            cleanup_node
+          '

@@ -42,3 +42,33 @@ func TestClusterUpgradeCommandEscapesUserSuppliedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestNodePackageCommandUsesTypedOptions(t *testing.T) {
+	provider := &windowsSystemProvider{installDir: `C:\K2s Package`}
+	command, params := provider.nodePackageCommand(SystemPackageConfig{
+		OutputDir:    `C:\output folder`,
+		PackageName:  "node.zip",
+		OS:           "debian13",
+		Architecture: "amd64",
+		Proxy:        `http://proxy'; invalid`,
+		IncludeGPU:   true,
+		ShowOutput:   true,
+	})
+
+	if !strings.Contains(command, "New-K2sNodePackage.ps1") {
+		t.Fatalf("unexpected node package script path: %s", command)
+	}
+	expectedParams := []string{
+		" -TargetDirectory 'C:\\output folder'",
+		" -ZipPackageFileName 'node.zip'",
+		" -OS 'debian13'",
+		" -Proxy 'http://proxy''; invalid'",
+		" -IncludeGpu",
+		" -ShowLogs",
+	}
+	for _, expected := range expectedParams {
+		if !strings.Contains(strings.Join(params, ""), expected) {
+			t.Fatalf("node package parameters do not contain %q: %v", expected, params)
+		}
+	}
+}

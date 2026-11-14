@@ -245,18 +245,30 @@ Function Add-KubernetesArtifactsToRemoteComputer {
         [string] $Proxy = '',
         [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
         [string] $TargetPath = $(throw 'Argument missing: TargetPath'),
-        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution')
+        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
     #binPath\linuxnode\packages\debian12\ kubernetes
     $debPackagesSourcePath = "$SourcePath\$kubernetesDebPackagesDirectory"
     
-    if (Test-Path -Path $debPackagesSourcePath) {
+    $packageCacheExists = Test-Path -Path $debPackagesSourcePath
+    if ($packageCacheExists -and (Test-DebPackageArchitecture -SourcePath $debPackagesSourcePath -Architecture $Architecture)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
+        return
     }
-    else {
-        Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+    if ($UseNodePackageArtifacts) {
+        throw "[NodeAdd] Node package Kubernetes artifacts are missing or do not match worker architecture '$Architecture'"
     }
+    if ($packageCacheExists) {
+        Write-Log "[NodeAdd] Ignoring Kubernetes package cache that does not match worker architecture '$Architecture'."
+    }
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading Kubernetes packages for the worker."
+    }
+    Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
 }
 
 Function Add-BuildahArtifactsToRemoteComputer {
@@ -265,17 +277,48 @@ Function Add-BuildahArtifactsToRemoteComputer {
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
         [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
         [string] $TargetPath = $(throw 'Argument missing: TargetPath'),
-        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution')
+        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
     $debPackagesSourcePath = "$SourcePath\$buildahDebPackagesDirectory"
     
-    if (Test-Path -Path $debPackagesSourcePath) {
+    $packageCacheExists = Test-Path -Path $debPackagesSourcePath
+    if ($packageCacheExists -and (Test-DebPackageArchitecture -SourcePath $debPackagesSourcePath -Architecture $Architecture)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
+        return
     }
-    else {
-        Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+    if ($UseNodePackageArtifacts) {
+        throw "[NodeAdd] Node package Buildah artifacts are missing or do not match worker architecture '$Architecture'"
     }
+    if ($packageCacheExists) {
+        Write-Log "[NodeAdd] Ignoring Buildah package cache that does not match worker architecture '$Architecture'."
+    }
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading buildah packages for the worker."
+    }
+    Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+}
+
+Function Test-DebPackageArchitecture {
+    param (
+        [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
+        [string] $Architecture = $(throw 'Argument missing: Architecture')
+    )
+    $debPackages = @(Get-ChildItem -LiteralPath $SourcePath -Filter '*.deb' -File -ErrorAction SilentlyContinue)
+    if ($debPackages.Count -eq 0) {
+        return $false
+    }
+
+    $architecturePattern = "_(all|$([regex]::Escape($Architecture)))\.deb$"
+    $incompatiblePackages = @($debPackages | Where-Object { $_.Name -notmatch $architecturePattern })
+    if ($incompatiblePackages.Count -gt 0) {
+        Write-Log "[NodeAdd] Package cache '$SourcePath' contains packages incompatible with '$Architecture': $($incompatiblePackages.Name -join ', ')"
+        return $false
+    }
+    return $true
 }
 
 Function Get-OfflineK2sDebPackagesPath {
@@ -340,8 +383,39 @@ Function Get-InstalledDistribution {
     }
     
     $installedDistribution = "$distributionName$distributionReleaseNumber".ToLower()
-    
+
     return $installedDistribution
+}
+
+Function Get-RemoteArchitecture {
+    <#
+    .SYNOPSIS
+        Detects the CPU architecture of a remote Linux computer via SSH, normalized to
+        Go-style names (amd64/arm64), matching the normalization already used for the
+        control-plane in install-cli-tools.sh.
+    #>
+    param (
+        [ValidateScript({ !([string]::IsNullOrWhiteSpace($_)) })]
+        [string]$UserName = $(throw 'Argument missing: UserName'),
+        [ValidateScript({ Get-IsValidIPv4Address($_) })]
+        [string]$IpAddress = $(throw 'Argument missing: IpAddress')
+    )
+
+    $unameResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute 'uname -m' -UserName $UserName -IpAddress $IpAddress
+    if (!$unameResult.Success) {
+        throw "Cannot get the CPU architecture from the computer with IP '$IpAddress': $($unameResult.Output)"
+    }
+    $unameOutput = $unameResult.Output
+    if ([string]::IsNullOrWhiteSpace($unameOutput)) {
+        throw "Cannot get the CPU architecture from the computer with IP '$IpAddress'"
+    }
+    $arch = ([string]$unameOutput).Trim()
+
+    switch ($arch) {
+        'x86_64' { return 'amd64' }
+        'aarch64' { return 'arm64' }
+        default { return $arch }
+    }
 }
 
 
@@ -502,8 +576,22 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
         [ValidateScript({ !([string]::IsNullOrWhiteSpace($_)) })]
         [string] $UserName = $(throw 'Argument missing: UserName'),
         [ValidateScript({ Get-IsValidIPv4Address($_) })]
-        [string] $IpAddress = $(throw 'Argument missing: IpAddress')
+        [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64'
     )
+
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        $remoteUser = "$UserName@$IpAddress"
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; pulling compatible Kubernetes and flannel images on the worker."
+        $kubernetesImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo kubeadm config images pull --cri-socket unix:///run/crio/crio.sock --kubernetes-version $kubernetesVersion" -UserName $UserName -IpAddress $IpAddress
+        Assert-ProvisioningCommandResult -Result $kubernetesImageResult -RemoteUser $remoteUser
+        foreach ($image in @('docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3', 'docker.io/flannel/flannel:v0.28.10')) {
+            $flannelImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo crictl --runtime-endpoint unix:///run/crio/crio.sock pull $image" -UserName $UserName -IpAddress $IpAddress
+            Assert-ProvisioningCommandResult -Result $flannelImageResult -RemoteUser $remoteUser
+        }
+        return
+    }
 
     $executeRemoteCommandOnRemoteComputer = { 
         param(
@@ -2592,6 +2680,7 @@ Install-BuildahDebPackages,
 Set-UpComputerBeforeProvisioning,
 Copy-DebPackagesFromControlPlaneToWindowsHost,
 Get-InstalledDistribution,
+Get-RemoteArchitecture,
 Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost,
 Get-DirectoryOfKubenodeImagesOnWindowsHost,
 Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost,

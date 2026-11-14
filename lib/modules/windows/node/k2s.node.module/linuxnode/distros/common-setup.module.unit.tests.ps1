@@ -7,6 +7,88 @@ BeforeAll {
     $moduleName = (Import-Module $modulePath -PassThru -Force).Name
 }
 
+Describe 'Linux worker artifacts by architecture' -Tag 'unit', 'ci' {
+    BeforeEach {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Copy-DebPackagesFromWindowsHostToRemoteComputer {}
+            Mock Get-KubernetesArtifactsFromInternet {}
+            Mock Get-BuildahDebPackagesFromInternet {}
+            Mock Test-DebPackageArchitecture { $false }
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $true; Output = '' } }
+            Mock Assert-ProvisioningCommandResult {}
+            Mock Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost {}
+        }
+    }
+
+    It 'downloads Kubernetes and buildah packages for an architecture that differs from the control plane' {
+        InModuleScope $moduleName {
+            Add-KubernetesArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/kubernetes' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64
+            Add-BuildahArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/buildah' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64
+
+            Should -Invoke Copy-DebPackagesFromWindowsHostToRemoteComputer -Times 0 -Exactly
+            Should -Invoke Get-KubernetesArtifactsFromInternet -Times 1 -Exactly
+            Should -Invoke Get-BuildahDebPackagesFromInternet -Times 1 -Exactly
+        }
+    }
+
+    It 'uses the explicitly supplied node package for its worker architecture' {
+        InModuleScope $moduleName {
+            Mock Test-Path { $true }
+            Mock Test-DebPackageArchitecture { $true }
+            Add-KubernetesArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/kubernetes' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+            Add-BuildahArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/buildah' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+
+            Should -Invoke Copy-DebPackagesFromWindowsHostToRemoteComputer -Times 2 -Exactly
+            Should -Invoke Get-KubernetesArtifactsFromInternet -Times 0 -Exactly
+            Should -Invoke Get-BuildahDebPackagesFromInternet -Times 0 -Exactly
+        }
+    }
+
+    It 'pulls Kubernetes and flannel images on a worker with a different architecture' {
+        InModuleScope $moduleName {
+            Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 3 -Exactly
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*--cri-socket unix:///run/crio/crio.sock*'
+            }
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 2 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*--runtime-endpoint unix:///run/crio/crio.sock*'
+            }
+            Should -Invoke Assert-ProvisioningCommandResult -Times 3 -Exactly
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+}
+
+Describe 'Get-RemoteArchitecture' -Tag 'unit', 'ci' {
+    It 'reports failed SSH architecture lookups instead of treating output as an architecture' {
+        InModuleScope $moduleName {
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = 'SSH unavailable' } }
+            {
+                Get-RemoteArchitecture -UserName worker -IpAddress '172.19.1.101'
+            } | Should -Throw '*SSH unavailable*'
+        }
+    }
+}
+
+Describe 'Deb package cache architecture validation' -Tag 'unit', 'ci' {
+    It 'rejects incompatible packages but accepts architecture-independent packages' {
+        $packageCache = Join-Path $TestDrive 'deb-cache'
+        New-Item -Path $packageCache -ItemType Directory -Force | Out-Null
+        New-Item -Path (Join-Path $packageCache 'kubelet_1.37.2_amd64.deb') -ItemType File -Force | Out-Null
+        New-Item -Path (Join-Path $packageCache 'ca-certificates_2025.1_all.deb') -ItemType File -Force | Out-Null
+
+        InModuleScope $moduleName -Parameters @{ PackageCache = $packageCache } {
+            param($PackageCache)
+            Test-DebPackageArchitecture -SourcePath $PackageCache -Architecture arm64 | Should -BeFalse
+            Remove-Item -Path (Join-Path $PackageCache 'kubelet_1.37.2_amd64.deb') -Force
+            Test-DebPackageArchitecture -SourcePath $PackageCache -Architecture arm64 | Should -BeTrue
+        }
+    }
+}
+
 Describe 'Invoke-Debian13NodeHardening' -Tag 'unit', 'ci' {
     BeforeEach {
         InModuleScope $moduleName {

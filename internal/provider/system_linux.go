@@ -45,7 +45,14 @@ func (p *linuxSystemProvider) Upgrade(_ SystemUpgradeConfig) error {
 		"cluster upgrade on Linux hosts is not yet implemented; use package-based reinstall instead")
 }
 
-func (p *linuxSystemProvider) Package(_ SystemPackageConfig) error {
+func (p *linuxSystemProvider) Package(cfg SystemPackageConfig) error {
+	if cfg.NodePackage {
+		if cfg.ForDeltaPackage {
+			return NotSupportedError("node package delta",
+				"node package delta creation on Linux hosts is not yet implemented")
+		}
+		return p.buildNodePackage(cfg)
+	}
 	return NotSupportedError("system package",
 		"offline packaging on Linux hosts is not yet implemented")
 }

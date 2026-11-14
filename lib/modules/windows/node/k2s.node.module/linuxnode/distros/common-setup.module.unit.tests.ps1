@@ -50,8 +50,25 @@ Describe 'Linux worker artifacts by architecture' -Tag 'unit', 'ci' {
             Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64
 
             Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 3 -Exactly
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*--cri-socket unix:///run/crio/crio.sock*'
+            }
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 2 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*--runtime-endpoint unix:///run/crio/crio.sock*'
+            }
             Should -Invoke Assert-ProvisioningCommandResult -Times 3 -Exactly
             Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+}
+
+Describe 'Get-RemoteArchitecture' -Tag 'unit', 'ci' {
+    It 'reports failed SSH architecture lookups instead of treating output as an architecture' {
+        InModuleScope $moduleName {
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = 'SSH unavailable' } }
+            {
+                Get-RemoteArchitecture -UserName worker -IpAddress '172.19.1.101'
+            } | Should -Throw '*SSH unavailable*'
         }
     }
 }

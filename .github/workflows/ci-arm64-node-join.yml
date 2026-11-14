@@ -74,7 +74,7 @@ jobs:
 
           echo "Waiting for control-plane public key artifact..."
           for i in $(seq 1 60); do
-            if gh run download "${{ github.run_id }}" -n cp-pubkey --dir /tmp/cp-pubkey 2>/dev/null; then
+            if gh run download "${{ github.run_id }}" -n cp-pubkey-${{ github.run_attempt }} --dir /tmp/cp-pubkey 2>/dev/null; then
               break
             fi
             sleep 10
@@ -95,7 +95,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: worker-ready
+          name: worker-ready-${{ github.run_attempt }}
           path: /tmp/worker-ready
           retention-days: 1
 
@@ -103,7 +103,7 @@ jobs:
         run: |
           deadline=$(( $(date +%s) + JOIN_TIMEOUT_SECONDS ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
-            if gh run download "${{ github.run_id }}" -n join-done --dir /tmp/join-done 2>/dev/null; then
+            if gh run download "${{ github.run_id }}" -n join-done-${{ github.run_attempt }} --dir /tmp/join-done 2>/dev/null; then
               echo "Join signaled complete: $(cat /tmp/join-done/status 2>/dev/null || true)"
               exit 0
             fi
@@ -148,20 +148,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache-dependency-path: "**/*.sum"
 
       - name: Build the Linux k2s CLI
         run: |
-          cd cmd/k2s
-          GOOS=linux GOARCH=amd64 go build -o "${{ github.workspace }}/k2s" .
-          cd "${{ github.workspace }}"
-          GOOS=linux GOARCH=amd64 go build -o bin/httpproxy ./cmd/httpproxy
-          dnsproxy_dir="$(mktemp -d)"
-          curl -fsSL https://github.com/AdguardTeam/dnsproxy/releases/download/v0.86.0/dnsproxy-linux-amd64-v0.86.0.tar.gz \
-            | tar -xz -C "$dnsproxy_dir" --strip-components=1 linux-amd64/dnsproxy
-          install -m 755 "$dnsproxy_dir/dnsproxy" bin/dnsproxy
-          rm -rf "$dnsproxy_dir"
+          ./build.sh
 
       - name: Generate an SSH keypair and publish the public half to the worker
         run: |
@@ -179,14 +171,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cp-pubkey
+          name: cp-pubkey-${{ github.run_attempt }}
           path: /tmp/cp-pubkey
           retention-days: 1
 
       - name: Wait for the worker's mesh IP
         run: |
           for i in $(seq 1 60); do
-            if gh run download "${{ github.run_id }}" -n worker-ready --dir /tmp/worker-ready 2>/dev/null; then
+            if gh run download "${{ github.run_id }}" -n worker-ready-${{ github.run_attempt }} --dir /tmp/worker-ready 2>/dev/null; then
               break
             fi
             sleep 10
@@ -252,7 +244,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: join-done
+          name: join-done-${{ github.run_attempt }}
           path: /tmp/join-done
           retention-days: 1
 

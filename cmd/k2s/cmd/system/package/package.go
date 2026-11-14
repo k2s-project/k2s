@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	nodepackage "github.com/k2s-project/k2s/cmd/k2s/cmd/system/package/node"
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
+	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -194,18 +194,13 @@ func init() {
 func systemPackage(cmd *cobra.Command, args []string) error {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
 
-	// Node-package building on Linux runs entirely natively (no PowerShell, no VM):
-	// it's required for arm64, since Hyper-V cannot provision an arm64 guest on an
-	// x86 host, so the package has to be built directly on an arm64 Linux host.
-	// --delta-package has no native-Linux implementation; fall through to the
-	// PowerShell path below so it fails with the existing, explicit platform-guard
-	// error rather than this branch silently building a full package instead.
-	deltaRequested, _ := strconv.ParseBool(cmd.Flags().Lookup(DeltaPackageFlagName).Value.String())
-	if nodepackage.IsSet(cmd.Flags()) && runtime.GOOS == "linux" && !deltaRequested {
-		targetDir := cmd.Flags().Lookup(TargetDirectoryFlagName).Value.String()
-		zipName := cmd.Flags().Lookup(ZipPackageFileNameFlagName).Value.String()
-		proxy := cmd.Flags().Lookup(ProxyFlagName).Value.String()
-		if err := nodepackage.BuildLinux(cmd.Flags(), targetDir, zipName, proxy); err != nil {
+	if nodepackage.IsSet(cmd.Flags()) {
+		packageConfig, err := buildNodePackageConfig(cmd.Flags())
+		if err != nil {
+			return err
+		}
+		context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
+		if err := context.Providers().System.Package(packageConfig); err != nil {
 			return err
 		}
 		cmdSession.Finish()
@@ -249,6 +244,40 @@ func systemPackage(cmd *cobra.Command, args []string) error {
 	cmdSession.Finish()
 
 	return nil
+}
+
+func buildNodePackageConfig(flags *pflag.FlagSet) (provider.SystemPackageConfig, error) {
+	targetDir := flags.Lookup(TargetDirectoryFlagName).Value.String()
+	if targetDir == "" {
+		return provider.SystemPackageConfig{}, fmt.Errorf("required flag(s) \"%s\" not set", TargetDirectoryFlagName)
+	}
+	zipName := flags.Lookup(ZipPackageFileNameFlagName).Value.String()
+	if zipName == "" {
+		return provider.SystemPackageConfig{}, fmt.Errorf("required flag(s) \"%s\" not set", ZipPackageFileNameFlagName)
+	}
+
+	delta, _ := flags.GetBool(DeltaPackageFlagName)
+	from, _ := flags.GetString(PackageVersionFromFlagName)
+	to, _ := flags.GetString(PackageVersionToFlagName)
+	showOutput, _ := flags.GetBool(common.OutputFlagName)
+	includeGPU, _ := flags.GetBool(nodepackage.IncludeGpuFlagName)
+	osName, _ := flags.GetString(nodepackage.OSFlagName)
+	architecture, _ := flags.GetString(nodepackage.ArchFlagName)
+	proxy, _ := flags.GetString(ProxyFlagName)
+
+	return provider.SystemPackageConfig{
+		OutputDir:         targetDir,
+		PackageName:       zipName,
+		ForDeltaPackage:   delta,
+		BasePackagePath:   from,
+		TargetPackagePath: to,
+		NodePackage:       true,
+		OS:                osName,
+		Architecture:      architecture,
+		Proxy:             proxy,
+		IncludeGPU:        includeGPU,
+		ShowOutput:        showOutput,
+	}, nil
 }
 
 func buildSystemPackageCmd(flags *pflag.FlagSet) (string, []string, error) {

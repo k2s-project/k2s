@@ -75,6 +75,31 @@ fi
 
 cd "$BUILDAH_DEB_PACKAGES_PATH"
 
+download_dependency_packages() {
+    local excluded_package="$1"
+    shift
+
+    local dependency_simulation
+    if ! dependency_simulation=$(cd "$BUILDAH_DEB_PACKAGES_PATH" && sudo DEBIAN_FRONTEND=noninteractive apt-get "$@" 2>/dev/null); then
+        log_info "WARNING: dependency simulation failed"
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            return 1
+        fi
+        return 0
+    fi
+
+    local dependencies
+    dependencies=$(printf '%s\n' "$dependency_simulation" | awk -v exclude="$excluded_package" '$1 == "Inst" && $2 != exclude { print $2 }' | sort -u)
+    if [[ -n "$dependencies" ]] && ! (cd "$BUILDAH_DEB_PACKAGES_PATH" && printf '%s\n' "$dependencies" | \
+        xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null); then
+        log_info "WARNING: dependency download failed"
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
 download_packages() {
     local package_name="$1"
     local deb_pattern="${package_name%%=*}*.deb"
@@ -84,22 +109,22 @@ download_packages() {
     cd "$BUILDAH_DEB_PACKAGES_PATH" && sudo apt-get download "$package_name" 2>/dev/null || true
 
     if ls "$BUILDAH_DEB_PACKAGES_PATH"/${deb_pattern} >/dev/null 2>&1; then
-        cd "$BUILDAH_DEB_PACKAGES_PATH" && \
-        sudo DEBIAN_FRONTEND=noninteractive \
-            apt-get --reinstall install -y \
+        local deb_files=("$BUILDAH_DEB_PACKAGES_PATH"/${deb_pattern})
+        if ! download_dependency_packages "$package_name" --reinstall install -y \
             -o DPkg::Options::="--force-confnew" \
             --no-install-recommends --no-install-suggests \
-            --simulate ./${deb_pattern} 2>/dev/null \
-            | grep 'Inst ' \
-            | cut -d ' ' -f 2 \
-            | sort -u \
-            | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null || true
+            --simulate "${deb_files[@]}"; then
+            return 1
+        fi
     fi
 }
 
 log_info "=== Downloading buildah and dependencies ==="
 
-download_packages 'buildah'
+if ! download_packages 'buildah'; then
+    log_info "ERROR: buildah dependency download failed"
+    exit 1
+fi
 
 # Explicitly download the recommended package crun (with retry + repair)
 log_info "Downloading recommended package: crun"
@@ -121,15 +146,12 @@ done
 # and therefore missed by the simulate-reinstall approach above.
 # Discover them dynamically via a fresh repo simulation and download what is missing.
 log_info "Downloading missing dependencies of crun"
-cd "$BUILDAH_DEB_PACKAGES_PATH" && \
-sudo DEBIAN_FRONTEND=noninteractive \
-    apt-get --simulate install \
+if ! download_dependency_packages "" --simulate install \
     --no-install-recommends --no-install-suggests \
-    crun 2>/dev/null \
-    | grep '^Inst ' \
-    | cut -d ' ' -f 2 \
-    | sort -u \
-    | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null || true
+    crun; then
+    log_info "ERROR: crun dependency download failed"
+    exit 1
+fi
 
 # Explicitly download Debian 13 networking stack packages for buildah.
 # netavark is the default network backend for buildah 1.35+ (replaces CNI);
@@ -150,6 +172,9 @@ for pkg in netavark aardvark-dns nftables; do
 
         if [ "$attempt" -eq 2 ]; then
             log_info "WARNING: failed to download $pkg after 2 attempts"
+            if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+                exit 1
+            fi
         fi
     done
 done

@@ -3,28 +3,74 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package nodepackage
+package provider
 
 import (
 	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Guards the regex-based extraction against refactors of Get-DefaultK8sVersion.
 func TestResolveDefaultK8sVersion_ReadsRepositoryConfigModule(t *testing.T) {
-	installDir, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "..", ".."))
+	installDir, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	version, err := resolveDefaultK8sVersion(installDir)
 	if err != nil {
 		t.Fatalf("could not resolve default K8s version: %v", err)
 	}
 	if len(version) < 2 || version[0] != 'v' {
 		t.Fatalf("unexpected version '%s'", version)
+	}
+}
+
+func TestLockAPTConfigurationSerializesBuilds(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "apt.lock")
+	first, err := lockAPTConfiguration(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	acquired := make(chan *os.File, 1)
+	errs := make(chan error, 1)
+	go func() {
+		lock, err := lockAPTConfiguration(lockPath)
+		if err != nil {
+			errs <- err
+			return
+		}
+		acquired <- lock
+	}()
+
+	select {
+	case lock := <-acquired:
+		lock.Close()
+		t.Fatal("second build acquired the APT lock before the first released it")
+	case err := <-errs:
+		t.Fatalf("second lock failed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := syscall.Flock(int(first.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case second := <-acquired:
+		if err := second.Close(); err != nil {
+			t.Fatal(err)
+		}
+	case err := <-errs:
+		t.Fatalf("second lock failed after release: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second build did not acquire the APT lock after release")
 	}
 }
 

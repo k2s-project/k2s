@@ -3,7 +3,7 @@
 
 //go:build linux
 
-package nodepackage
+package provider
 
 import (
 	"archive/zip"
@@ -19,9 +19,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
-	"github.com/spf13/pflag"
 )
 
 // gpuDebPackages mirrors the list downloaded by Get-NvidiaGpuDebPackagesFromInternet
@@ -32,6 +29,18 @@ var gpuDebPackages = []string{
 	"nvidia-container-toolkit-base",
 	"nvidia-container-runtime",
 	"nvidia-container-toolkit",
+}
+
+func lockAPTConfiguration(path string) (*os.File, error) {
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	return lock, nil
 }
 
 func validateRequiredDebPackages(dir string, required []string) error {
@@ -177,7 +186,7 @@ func validateBuildHostOS(targetOS, osReleasePath string) error {
 
 	hostOS := id + versionID
 	if id == "" || versionID == "" || hostOS != targetOS {
-		return fmt.Errorf("--%s '%s' does not match this host's distribution and release '%s'; run this command on a matching host instead", OSFlagName, targetOS, hostOS)
+		return fmt.Errorf("--os '%s' does not match this host's distribution and release '%s'; run this command on a matching host instead", targetOS, hostOS)
 	}
 	return nil
 }
@@ -205,11 +214,13 @@ func downloadNvidiaGpuPackages(ctx context.Context, targetPath, proxy, aptConfig
 	}
 
 	repoSetup := `
-		curlProxy=""
-		[ -n "$K2S_GPU_PROXY" ] && curlProxy="-x $K2S_GPU_PROXY"
-		curl --retry 3 --retry-all-errors -fsSL https://nvidia.github.io/libnvidia-container/gpgkey $curlProxy \
+		curlProxyArgs=()
+		if [ -n "$K2S_GPU_PROXY" ]; then
+			curlProxyArgs=(-x "$K2S_GPU_PROXY")
+		fi
+		curl --retry 3 --retry-all-errors -fsSL https://nvidia.github.io/libnvidia-container/gpgkey "${curlProxyArgs[@]}" \
 			| gpg --dearmor --batch --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg &&
-		curl --retry 3 --retry-all-errors -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list $curlProxy \
+		curl --retry 3 --retry-all-errors -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list "${curlProxyArgs[@]}" \
 			| sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
 			| tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 	`
@@ -249,7 +260,7 @@ func downloadNvidiaGpuPackages(ctx context.Context, targetPath, proxy, aptConfig
 
 // buildZip writes srcRoot (recursively, under a "packages" prefix) into a new zip file
 // at destZipPath. Callers are responsible for only exposing destZipPath to the rest of
-// the system once this returns successfully - see its caller in BuildLinux.
+// the system once this returns successfully.
 func buildZip(ctx context.Context, destZipPath, srcRoot string) error {
 	zf, err := os.CreateTemp(filepath.Dir(destZipPath), "."+filepath.Base(destZipPath)+".tmp-*")
 	if err != nil {
@@ -497,7 +508,10 @@ func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
 // pull Kubernetes/flannel/GPU images at join time. Only the .deb packages are bundled
 // for offline use. This is a deliberate, documented gap for the initial arm64 support
 // (see docs/op-manual/creating-offline-package.md), not an oversight.
-func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildErr error) {
+func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildErr error) {
+	targetDir := cfg.OutputDir
+	zipName := cfg.PackageName
+	proxy := cfg.Proxy
 	if targetDir == "" {
 		return fmt.Errorf("required flag(s) \"target-dir\" not set")
 	}
@@ -505,9 +519,9 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 		return fmt.Errorf("required flag(s) \"name\" not set")
 	}
 
-	osName := flags.Lookup(OSFlagName).Value.String()
-	arch := flags.Lookup(ArchFlagName).Value.String()
-	includeGpu, _ := flags.GetBool(IncludeGpuFlagName)
+	osName := cfg.OS
+	arch := cfg.Architecture
+	includeGpu := cfg.IncludeGPU
 
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("building a node package natively requires root privileges (sudo)")
@@ -519,17 +533,17 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 	}
 	actualArch := strings.TrimSpace(string(actualArchRaw))
 	if actualArch != arch {
-		return fmt.Errorf("--%s '%s' does not match this host's architecture '%s'; there is no cross-build path for node packages, run this command on a %s host instead", ArchFlagName, arch, actualArch, arch)
+		return fmt.Errorf("--arch '%s' does not match this host's architecture '%s'; there is no cross-build path for node packages, run this command on a %s host instead", arch, actualArch, arch)
 	}
 
 	if err := validateBuildHostOS(osName, "/etc/os-release"); err != nil {
 		return err
 	}
 
-	installDir := utils.InstallDir()
+	installDir := p.installDir
 	scriptsDir := filepath.Join(installDir, "cfg", "nodeextension", osName, "scripts")
 	if _, err := os.Stat(scriptsDir); err != nil {
-		return fmt.Errorf("no node-extension scripts found for --%s %s (%s): %w", OSFlagName, osName, scriptsDir, err)
+		return fmt.Errorf("no node-extension scripts found for --os %s (%s): %w", osName, scriptsDir, err)
 	}
 
 	k8sVersion, err := resolveDefaultK8sVersion(installDir)
@@ -584,6 +598,19 @@ func BuildLinux(flags *pflag.FlagSet, targetDir, zipName, proxy string) (buildEr
 	if err := os.WriteFile(aptConfigPath, []byte(aptConfig), 0o600); err != nil {
 		return fmt.Errorf("could not create isolated APT configuration: %w", err)
 	}
+
+	aptLock, err := lockAPTConfiguration("/run/lock/k2s-node-package.lock")
+	if err != nil {
+		return fmt.Errorf("could not lock host APT configuration: %w", err)
+	}
+	defer func() {
+		if err := syscall.Flock(int(aptLock.Fd()), syscall.LOCK_UN); err != nil {
+			buildErr = errors.Join(buildErr, fmt.Errorf("could not unlock host APT configuration: %w", err))
+		}
+		if err := aptLock.Close(); err != nil {
+			buildErr = errors.Join(buildErr, fmt.Errorf("could not close host APT lock: %w", err))
+		}
+	}()
 
 	aptSnapshots, err := snapshotFiles(hostAptFiles)
 	if err != nil {

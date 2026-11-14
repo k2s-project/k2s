@@ -401,7 +401,11 @@ Function Get-RemoteArchitecture {
         [string]$IpAddress = $(throw 'Argument missing: IpAddress')
     )
 
-    $unameOutput = (Invoke-CmdOnVmViaSSHKey -CmdToExecute 'uname -m' -UserName $UserName -IpAddress $IpAddress).Output
+    $unameResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute 'uname -m' -UserName $UserName -IpAddress $IpAddress
+    if (!$unameResult.Success) {
+        throw "Cannot get the CPU architecture from the computer with IP '$IpAddress': $($unameResult.Output)"
+    }
+    $unameOutput = $unameResult.Output
     if ([string]::IsNullOrWhiteSpace($unameOutput)) {
         throw "Cannot get the CPU architecture from the computer with IP '$IpAddress'"
     }
@@ -580,10 +584,10 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
     if ($Architecture -ne $ControlPlaneArchitecture) {
         $remoteUser = "$UserName@$IpAddress"
         Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; pulling compatible Kubernetes and flannel images on the worker."
-        $kubernetesImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo kubeadm config images pull --kubernetes-version $kubernetesVersion" -UserName $UserName -IpAddress $IpAddress
+        $kubernetesImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo kubeadm config images pull --cri-socket unix:///run/crio/crio.sock --kubernetes-version $kubernetesVersion" -UserName $UserName -IpAddress $IpAddress
         Assert-ProvisioningCommandResult -Result $kubernetesImageResult -RemoteUser $remoteUser
         foreach ($image in @('docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3', 'docker.io/flannel/flannel:v0.28.10')) {
-            $flannelImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo crictl pull $image" -UserName $UserName -IpAddress $IpAddress
+            $flannelImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo crictl --runtime-endpoint unix:///run/crio/crio.sock pull $image" -UserName $UserName -IpAddress $IpAddress
             Assert-ProvisioningCommandResult -Result $flannelImageResult -RemoteUser $remoteUser
         }
         return

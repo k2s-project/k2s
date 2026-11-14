@@ -182,15 +182,26 @@ download_packages() {
 
     if ls "$TARGET_PATH"/${deb_pattern} >/dev/null 2>&1; then
         log_info "Resolving and downloading dependencies for: $package_name"
-        cd "$TARGET_PATH" && sudo DEBIAN_FRONTEND=noninteractive \
+        local dependency_simulation
+        if ! dependency_simulation=$(cd "$TARGET_PATH" && sudo DEBIAN_FRONTEND=noninteractive \
             apt-get --reinstall install -y \
             --no-install-recommends --no-install-suggests \
-            --simulate ./${deb_pattern} 2>/dev/null \
-            | grep 'Inst ' \
-            | cut -d ' ' -f 2 \
-            | sort -u \
-            | grep -v "^${pkg_base}$" \
-            | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null || true
+            --simulate ./${deb_pattern} 2>/dev/null); then
+            log_warning "Dependency simulation failed for: $package_name"
+            if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+                return 1
+            fi
+        else
+            local dependencies
+            dependencies=$(printf '%s\n' "$dependency_simulation" | awk -v exclude="$pkg_base" '$1 == "Inst" && $2 != exclude { print $2 }' | sort -u)
+            if [[ -n "$dependencies" ]] && ! (cd "$TARGET_PATH" && printf '%s\n' "$dependencies" | \
+                xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null); then
+                log_warning "Dependency download failed for: $package_name"
+                if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+                    return 1
+                fi
+            fi
+        fi
 
         log_info "Completed package set: $package_name"
 
@@ -256,7 +267,10 @@ if ! download_packages 'gpg' || ! ls "$TARGET_PATH"/gpg*.deb >/dev/null 2>&1; th
 fi
 # apt-transport-https was removed from Debian 13 (Trixie): HTTPS support is
 # built into apt natively and the package no longer exists in the archive.
-download_packages 'ca-certificates'
+if ! download_packages 'ca-certificates'; then
+    log_warning "ca-certificates dependency download failed"
+    exit 1
+fi
 
 set_kubernetes_apt_repository() {
     local K8S_VERSION="$1"
@@ -393,10 +407,16 @@ install_with_retry() {
 set_kubernetes_apt_repository "$K8S_VERSION_REPO" "$PROXY"
 
 log_info "=== Downloading CRI-O ==="
-download_packages 'cri-o'
+if ! download_packages 'cri-o'; then
+    log_warning "CRI-O dependency download failed"
+    exit 1
+fi
 
 log_info "=== Downloading cri-tools (crictl) ==="
-download_packages 'cri-tools'
+if ! download_packages 'cri-tools'; then
+    log_warning "cri-tools dependency download failed"
+    exit 1
+fi
 
 log_info "=== Downloading Kubernetes Tools ==="
 SHORT_K8S_VERSION="${K8S_VERSION#v}"

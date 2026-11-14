@@ -40,12 +40,12 @@ spec:
     spec:
       containers:
         - name: kube-prometheus-stack
-          image: "quay.io/prometheus-operator/prometheus-operator:v0.95.1"
+          image: "quay.io/prometheus-operator/prometheus-operator:v0.95.2"
           imagePullPolicy: "IfNotPresent"
           args:
             - --kubelet-service=kube-system/kube-prometheus-stack-kubelet
             - --localhost=127.0.0.1
-            - --prometheus-config-reloader=quay.io/prometheus-operator/prometheus-config-reloader:v0.95.1
+            - --prometheus-config-reloader=quay.io/prometheus-operator/prometheus-config-reloader:v0.95.2
             - --config-reloader-cpu-request=200m
             - --config-reloader-cpu-limit=200m
             - --config-reloader-memory-request=50Mi

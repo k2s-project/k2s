@@ -23,6 +23,137 @@ query is reported as an SSH failure; hostname validation runs only after a
 successful query. The regression cases are in
 `common-setup.module.unit.tests.ps1` under the Windows Linux-node distro module.
 
+### Linux Worker Rename Acceptance Tests
+
+The shared [node-rename suite](../../../test/e2e/cluster/noderename/node_rename_test.go)
+selects the Linux worker named `node-deb13` or `k2s-nodepkg-debian13` from `cluster.json`
+(the first of the two that is present), using the same
+cluster configuration reader as the other node suites. Argo or another fixture
+provisioner must add this worker with `k2s node add` before the suite runs.
+It can be either a bare-metal (`HOST`) or existing Hyper-V VM (`VM-EXISTING`)
+worker; other workers are not renamed.
+The first migration renames that worker to the fixed name `node-db13-renamed`,
+without an IP suffix, hostname argument or environment-variable opt-in.
+It combines metadata, reboot, workload, SMB persistence and partial-registration
+recovery checks rather than resetting the hostname between separate migrations.
+A second spec then renames the worker back to its original name without `--force`.
+This covers the plain rename and restores the fixture, so a repeat run needs no
+new worker. It runs only if the first migration passed.
+The suite is skipped when `cluster.json` is missing or lists no worker. Otherwise,
+missing, duplicate or unsupported fixture entries fail the test before SMB
+setup, as does an existing `node-db13-renamed` Kubernetes Node. If either rename
+fails, the worker is left as it is and the fixture provisioner must supply the
+fixture worker again.
+Windows-host rename E2E is deliberately excluded: changing that hostname requires
+a reboot of the machine running the suite.
+
+Run from an elevated PowerShell on a **disposable Windows K2s installation** with
+a freshly built CLI and Ready Linux workers. The stored SSH users must support
+noninteractive `sudo`, `hostnamectl`, `systemd-run`, `systemctl`, and the tools
+required by `k2s node rename`. Both the worker and control-plane Node must be Ready
+and schedulable. An initially cordoned worker fails the precondition before SMB
+setup: reads only from kubemaster do not establish storage access from the renamed
+worker. Each of the two migrations changes the remote OS hostname, **reboots the
+Linux worker once**, then drains it.
+After the first rename and initial storage checks, the suite also runs **`k2s stop`
+and `k2s start` for the whole cluster**, not just the renamed worker.
+Reboot verification requires a changed kernel boot ID, recovered SSH and the
+expected hostname; an SSH disconnect alone is not considered proof of reboot.
+Draining can delete pod-local `emptyDir` data. Do not run against production workloads.
+
+```powershell
+go run github.com/onsi/ginkgo/v2/ginkgo --label-filter=node-rename --timeout=180m -v .\test\e2e\cluster\noderename
+```
+
+Argo can select the suite using the existing `node-rename` label. The suite is
+also labeled `disruptive`: selecting it performs real hostname changes and reboots, including
+when run without a label filter. Do not run it concurrently with other lifecycle
+suites or processes modifying `cluster.json`.
+The suite enables `k2s addons enable storage smb -t linux` when SMB is disabled.
+SMB status is retried for up to two minutes while CSI readiness stabilizes; a
+persistent failure still fails the test and requires inspecting Pod events.
+An existing Linux-hosted SMB addon is reused; an existing Windows-hosted addon or
+conflicting storage implementation is not silently replaced. The suite needs an
+SMB StorageClass that dynamically provisions separate PV subdirectories.
+The reader/writer image is `docker.io/curlimages/curl:8.5.0` with `IfNotPresent`;
+pre-cache this image and addon assets for offline execution. The suite is labeled
+`internet-required` because uncached images/addon assets may require downloads.
+Only the separate synthetic partial-registration Pod uses `imagePullPolicy: Never`.
+
+Coverage includes original PodCIDR/PodCIDRs, custom labels,
+annotations and taints, preservation of the initially schedulable state,
+lowercase normalization, a valid
+new kubelet certificate, and retained identities of unrelated Nodes. Partial
+registration checks reject a bound user Pod without mutation, then verify
+explicit `--force` recovery and recreation with a different Node UID. The rename
+back covers a normal migration without `--force`: it checks the original PodCIDRs,
+scheduling state, custom labels and taints, the kubelet certificate, the hostname,
+the original `cluster.json` content and the identities of unrelated Nodes.
+It does not repeat the SMB or stop/start checks.
+Negative cases cover missing
+flags, equal names, hostname mismatch, missing old Node, control-plane Node,
+unmanaged Node and unsupported managed Node type. The unsupported-type case
+temporarily appends a synthetic descriptor entry and restores the original file;
+it never changes a real worker's type.
+Deleting that synthetic Node also waits for its targeted DaemonSet Pods to
+disappear, explicitly deleting only DaemonSet-owned Pods bound or exclusively
+affined to that fixture name. This prevents a pending CSI Pod for a nonexistent
+Node from breaking the next migration's SMB status check. Existing orphaned Pods
+from older runs are not deleted automatically.
+
+Before the reboot, a writer on the old worker creates a unique marker on an
+isolated RWX SMB PVC. A three-replica Deployment mounts it read-only and verifies
+the marker through readiness probes, initially spreading across the worker and
+control plane. After migration, the suite requires replacement Pod UIDs, three
+Running/Ready replicas on the renamed Node/control plane, and exact reads of the
+original marker from every reader. PVC/PV UIDs, the PV name and CSI volume handle
+must remain unchanged. At least one newly created reader must run on the renamed
+worker and successfully read the original file from inside its container.
+The test cannot pass with all readers on kubemaster.
+
+Logs display writer and reader Pod names, UIDs, Node names and phases before and
+after migration, together with PVC/PV names and UIDs. For each post-rename
+`kubectl exec ... cat` read, the test verifies the exact Pod UID, Node placement
+and original PVC reference, then prints `READ OK` with the Node, Pod, PVC, file
+and actual content. A final `VERIFIED` message counts successful reads from newly
+created Pods on the renamed Node and confirms unchanged PVC/PV identities.
+
+Before cleanup, the stop/start check verifies that K2s actually stops and returns
+to a running state. It then waits for all Nodes to be Ready with their existing
+UIDs, PodCIDRs, scheduling states and custom metadata intact. The old Node must
+not reappear, and `cluster.json` must still contain the renamed identity.
+The existing three-reader workload and original PVC are kept through this cycle;
+the suite repeats its in-container SMB reads, including a reader on the renamed
+worker, without rewriting the marker. If stop/start fails while K2s is down, a
+deferred cleanup attempts to start it before API-dependent resource cleanup;
+recovery failures remain test failures.
+
+The suite watches actual Node API events for cordoning, the completed-drain
+marker, replacement readiness and old-Node deletion, in that order. It also checks
+the command's cordon/drain log ordering. Reboot-created partial registrations are
+reused as fixtures when present; otherwise the recovery check creates one.
+
+Cleanup deletes test workloads, PVCs, their dynamically provisioned PVs and
+test-only StorageClasses, and removes test labels, annotations and taints.
+If the suite enabled SMB, it disables the addon with `-k` to retain pre-existing
+share-folder data; an already-enabled Linux SMB addon is left enabled.
+After the first migration it restores the scheduling state from before the
+test. The rename back then **reverts the OS hostname, Kubernetes Node name and
+`cluster.json` entry**, so after a fully successful run the worker has its
+original name again. On migration failure, cleanup leaves rename recovery
+markers and cordoning state intact for inspection
+and does not automatically retry the rename. Cleanup failures fail the test and
+require inspecting the reported Node/service state; they are not hidden.
+The framework's keep-resources option does not disable test-resource cleanup.
+The per-worker test steps report the actual Node type and name exercised.
+Passing on one worker type does not establish integration coverage for the other.
+
+The fixture helpers can be tested without a cluster or hostname changes:
+
+```console
+go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestSMBReaderPlacement|TestSyntheticNodeDaemonPod|TestRestartedNodes|TestRenameObserverLifecycle'
+```
+
 ### Windows Workload Readiness Diagnostics
 
 If the core acceptance suite exhausts its Windows HTTP readiness retries, it

@@ -116,6 +116,21 @@ Describe 'Invoke-SSHOnce' -Tag 'unit', 'ci', 'vm' {
             }
         }
     }
+
+    Context 'Execution timeout' {
+        It 'returns the real exit code <ExpectedExitCode> and output of the started process' -ForEach @(
+            @{ ExpectedExitCode = 0 },
+            @{ ExpectedExitCode = 3 }
+        ) {
+            InModuleScope $moduleName -Parameters @{ ExpectedExitCode = $ExpectedExitCode } {
+                $result = Invoke-SSHOnce -SshExePath $env:ComSpec -Params @('/c', "echo timeout-path& exit $ExpectedExitCode") -ExecutionTimeoutSeconds 30
+
+                $result.ExitCode | Should -BeOfType [int]
+                $result.ExitCode | Should -Be $ExpectedExitCode
+                $result.OutputLines | Should -Contain 'timeout-path'
+            }
+        }
+    }
 }
 
 Describe 'Invoke-SSHWithKey socket warning retry' -Tag 'unit', 'ci', 'vm' {
@@ -461,6 +476,64 @@ Describe 'SSH private-key permissions' -Tag 'unit', 'ci', 'vm' {
         InModuleScope $moduleName {
             Mock Set-Acl { throw 'Access denied' }
             { Set-SshPrivateKeyPermissions -Path 'C:\id_rsa' } | Should -Throw '*Cannot secure private key*Access denied*'
+        }
+    }
+}
+
+Describe 'SSH and SCP execution timeouts' -Tag 'unit', 'ci', 'vm' {
+    BeforeEach {
+        Mock Set-SshPrivateKeyPermissions {} -ModuleName $moduleName
+        Mock Write-Log {} -ModuleName $moduleName
+        Mock Start-Sleep {} -ModuleName $moduleName
+    }
+
+    It 'passes the execution timeout of a control plane command on' {
+        InModuleScope $moduleName {
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $true; Output = 'ok'; ExitCode = 0 } }
+            (Invoke-CmdOnControlPlaneViaSSHKey -CmdToExecute 'true' -ExecutionTimeoutSeconds 42).Success | Should -BeTrue
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -eq 'true' -and $ExecutionTimeoutSeconds -eq 42 -and $IpAddress -eq $ipControlPlane
+            }
+        }
+    }
+
+    It 'passes the execution timeout of a file copy on to SCP' {
+        InModuleScope $moduleName {
+            Mock Invoke-SCPWithKey { $global:LASTEXITCODE = 0 }
+            Copy-ToRemoteComputerViaSshKey -Source 'C:\does-not-exist\join.json' -Target '/tmp/join.json' -UserName 'admin' -IpAddress '192.0.2.2' -ExecutionTimeoutSeconds 42
+            Should -Invoke Invoke-SCPWithKey -Times 1 -Exactly -ParameterFilter {
+                $Target -eq 'admin@192.0.2.2:/tmp/join.json' -and $ExecutionTimeoutSeconds -eq 42
+            }
+        }
+    }
+
+    It 'stops an SCP transfer that exceeds the timeout and does not retry it' {
+        InModuleScope $moduleName {
+            $script:scpKilled = 0
+            Mock scp.exe {}
+            Mock Start-Process {
+                [pscustomobject]@{ Handle = 1; ExitCode = $null } |
+                    Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($Milliseconds) $false } -PassThru |
+                    Add-Member -MemberType ScriptMethod -Name Kill -Value { $script:scpKilled++ } -PassThru
+            }
+            { Invoke-SCPWithKey -Source 'C:\file' -Target 'remote@host:/tmp/file' -ExecutionTimeoutSeconds 5 } |
+                Should -Throw "*Copying 'C:\file' to 'remote@host:/tmp/file' timed out after 5 sec*"
+            $script:scpKilled | Should -Be 1
+            Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'scp.exe' }
+            Should -Invoke scp.exe -Times 0 -Exactly
+        }
+    }
+
+    It 'returns the output and exit code of an SCP transfer that finishes in time and quotes paths with spaces' {
+        InModuleScope $moduleName {
+            Mock Start-Process {
+                Set-Content -Path $RedirectStandardOutput -Value 'copied'
+                [pscustomobject]@{ Handle = 1; ExitCode = 0 } |
+                    Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($Milliseconds) $true } -PassThru
+            }
+            Invoke-SCPWithKey -Source 'C:\Users\Jane Doe\file' -Target 'remote@host:/tmp/file' -ExecutionTimeoutSeconds 5 | Should -Be 'copied'
+            $LASTEXITCODE | Should -Be 0
+            Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $ArgumentList -contains '"C:\Users\Jane Doe\file"' }
         }
     }
 }

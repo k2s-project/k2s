@@ -54,6 +54,7 @@ func TestAssertSupportedNodeArchitecture(t *testing.T) {
 	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	tests := []struct {
@@ -77,5 +78,15 @@ func TestAssertSupportedNodeArchitecture(t *testing.T) {
 				t.Fatalf("assertSupportedNodeArchitecture() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestKubeadmJoinCommandUsesCrioSocket(t *testing.T) {
+	command := kubeadmJoinCommand("  kubeadm join 192.0.2.1:6443 --token test  \n")
+	if !strings.HasPrefix(command, "kubeadm join 192.0.2.1:6443 --token test") {
+		t.Fatalf("join command was not trimmed: %q", command)
+	}
+	if !strings.HasSuffix(command, "--cri-socket unix:///run/crio/crio.sock") {
+		t.Fatalf("join command does not select the CRI-O socket: %q", command)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -187,6 +188,26 @@ func validateBuildHostOS(targetOS, osReleasePath string) error {
 	hostOS := id + versionID
 	if id == "" || versionID == "" || hostOS != targetOS {
 		return fmt.Errorf("--os '%s' does not match this host's distribution and release '%s'; run this command on a matching host instead", targetOS, hostOS)
+	}
+	return nil
+}
+
+func validateNodePackageProxy(proxy string) error {
+	if proxy == "" {
+		return nil
+	}
+	const safeProxyURLCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/@%+[]"
+	if strings.IndexFunc(proxy, func(r rune) bool {
+		return !strings.ContainsRune(safeProxyURLCharacters, r)
+	}) >= 0 {
+		return fmt.Errorf("invalid --proxy URL: shell and APT configuration metacharacters are not allowed")
+	}
+
+	parsed, err := url.Parse(proxy)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.Hostname() == "" || parsed.Opaque != "" ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("invalid --proxy URL: expected an HTTP(S) proxy URL")
 	}
 	return nil
 }
@@ -522,6 +543,9 @@ func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildEr
 	osName := cfg.OS
 	arch := cfg.Architecture
 	includeGpu := cfg.IncludeGPU
+	if err := validateNodePackageProxy(proxy); err != nil {
+		return err
+	}
 
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("building a node package natively requires root privileges (sudo)")

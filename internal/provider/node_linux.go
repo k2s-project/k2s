@@ -60,6 +60,10 @@ func normalizeArch(unameM string) string {
 	}
 }
 
+func kubeadmJoinCommand(tokenCommand string) string {
+	return strings.TrimSpace(tokenCommand) + " --cri-socket unix:///run/crio/crio.sock"
+}
+
 // assertSupportedNodeArchitecture fails fast if the target node's architecture/distro
 // combination is not supported, before any provisioning is attempted. Only arm64 Debian
 // external nodes are supported in addition to amd64.
@@ -107,7 +111,7 @@ func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to create join token: %w", err)
 	}
-	joinCmd := strings.TrimSpace(string(output))
+	joinCmd := kubeadmJoinCommand(string(output))
 
 	// kubeadm join must run as root (it writes /etc/kubernetes, starts kubelet, etc.);
 	// the SSH user is assumed to have passwordless sudo, matching every other

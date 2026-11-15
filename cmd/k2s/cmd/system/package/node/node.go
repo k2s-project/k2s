@@ -9,7 +9,6 @@ package nodepackage
 import (
 	"fmt"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -98,9 +97,6 @@ func Validate(flags *pflag.FlagSet, supportedOS []string) error {
 	case "arm64":
 		if !strings.HasPrefix(os, "debian") {
 			return fmt.Errorf("--%s arm64 is only supported for Debian-family targets, got --%s '%s'", ArchFlagName, OSFlagName, os)
-		}
-		if runtime.GOOS != "linux" {
-			return fmt.Errorf("--%s arm64 requires building natively on a Linux arm64 host; there is no Hyper-V/cross-build path for arm64 node packages. Run this command on a Linux arm64 host instead", ArchFlagName)
 		}
 	default:
 		return fmt.Errorf("--%s value '%s' is not supported. Supported: amd64, arm64", ArchFlagName, arch)

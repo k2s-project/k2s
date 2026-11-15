@@ -5,7 +5,6 @@ package nodepackage
 
 import (
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -129,17 +128,13 @@ var _ = Describe("nodepackage", func() {
 			Expect(err.Error()).To(ContainSubstring("Debian-family"))
 		})
 
-		It("fails fast for --arch arm64 when not running on Linux", func() {
-			if runtime.GOOS == "linux" {
-				Skip("this assertion only applies to non-Linux builds")
-			}
+		It("accepts --arch arm64 for Debian targets independent of the command platform", func() {
 			cmd := newTestCmd()
 			cmd.Flags().Set(OSFlagName, "debian13")
 			cmd.Flags().Set(ArchFlagName, "arm64")
 
 			err := Validate(cmd.Flags(), supportedOS)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("Linux arm64 host"))
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 

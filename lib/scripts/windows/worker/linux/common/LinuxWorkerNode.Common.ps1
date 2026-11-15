@@ -119,6 +119,10 @@ function Get-LinuxWorkerNodeProvisioningContext {
     $archMessage = "{0} Detected architecture on {1}: {2}" -f $LogPrefix, $TargetDescription, $architecture
     Write-Log $archMessage -Console
 
+    if ($architecture -notin @('amd64', 'arm64')) {
+        throw "$LogPrefix Unsupported worker architecture '$architecture'; supported architectures are amd64 and arm64."
+    }
+
     # arm64 is only supported on Debian-family external nodes today (K2s issue #3052); fail
     # fast here, before any package download or remote mutation starts, rather than failing
     # deep into provisioning. Generic to the Debian family, not tied to a single release.

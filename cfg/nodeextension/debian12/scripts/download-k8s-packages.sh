@@ -240,9 +240,9 @@ set_kubernetes_apt_repository() {
     log_info "Step 3: Download and configure Kubernetes and CRI-O repositories"
 
     # Setup proxy flag if provided
-    PROXY_FLAG=""
+    local proxy_args=()
     if [ -n "$PROXY" ]; then
-        PROXY_FLAG="--proxy $PROXY"
+        proxy_args=(--proxy "$PROXY")
     fi
 
     KUBERNETES_APT_KEYRING='/usr/share/keyrings/kubernetes-apt-keyring.gpg'
@@ -252,7 +252,7 @@ set_kubernetes_apt_repository() {
     
     # Download and convert Kubernetes GPG key in one pipeline (soft failure - continues if 403)
     log_info "Downloading and converting Kubernetes GPG key"
-    if sudo curl -fsSL $PROXY_FLAG "https://pkgs.k8s.io/core:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$KUBERNETES_APT_KEYRING" 2>/dev/null; then
+    if sudo curl -fsSL "${proxy_args[@]}" "https://pkgs.k8s.io/core:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$KUBERNETES_APT_KEYRING" 2>/dev/null; then
         echo "deb [signed-by=$KUBERNETES_APT_KEYRING] https://pkgs.k8s.io/core:/stable:/$K8S_VERSION_REPO/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list > /dev/null
         log_info "✓ Kubernetes repository configured successfully"
     else
@@ -271,7 +271,7 @@ set_kubernetes_apt_repository() {
     
     # Download and convert CRI-O GPG key in one pipeline (soft failure - continues if 404/403)
     log_info "Downloading and converting CRI-O GPG key from OpenSUSE"
-    if sudo curl -fsSL $PROXY_FLAG "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$CRIO_APT_KEYRING" 2>/dev/null; then
+    if sudo curl -fsSL "${proxy_args[@]}" "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$CRIO_APT_KEYRING" 2>/dev/null; then
         echo "deb [signed-by=$CRIO_APT_KEYRING] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$K8S_VERSION_REPO/deb/ /" | sudo tee /etc/apt/sources.list.d/cri-o.list > /dev/null
         log_info "✓ CRI-O repository configured successfully"
     else

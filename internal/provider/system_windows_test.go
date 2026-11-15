@@ -58,6 +58,7 @@ func TestNodePackageCommandUsesTypedOptions(t *testing.T) {
 	if !strings.Contains(command, "New-K2sNodePackage.ps1") {
 		t.Fatalf("unexpected node package script path: %s", command)
 	}
+
 	expectedParams := []string{
 		" -TargetDirectory 'C:\\output folder'",
 		" -ZipPackageFileName 'node.zip'",
@@ -70,5 +71,17 @@ func TestNodePackageCommandUsesTypedOptions(t *testing.T) {
 		if !strings.Contains(strings.Join(params, ""), expected) {
 			t.Fatalf("node package parameters do not contain %q: %v", expected, params)
 		}
+	}
+
+}
+
+func TestWindowsProviderRejectsNonAMD64NodePackageBuilds(t *testing.T) {
+	provider := &windowsSystemProvider{installDir: `C:\K2s`}
+	err := provider.Package(SystemPackageConfig{
+		NodePackage:  true,
+		Architecture: "arm64",
+	})
+	if err == nil || !strings.Contains(err.Error(), "only support amd64") {
+		t.Fatalf("Package() error = %v, want non-amd64 rejection", err)
 	}
 }

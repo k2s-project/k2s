@@ -736,9 +736,6 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
     $baseDirectoryOfKubenodeDebPackagesOnWindowsHost = Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost
     $distributionPackagesPath = Join-Path $baseDirectoryOfKubenodeDebPackagesOnWindowsHost $installedDistributionOnRemoteComputer
     $windowsHostDebPackagesSourcePath = Join-Path $distributionPackagesPath $Architecture
-    if (!(Test-Path $windowsHostDebPackagesSourcePath) -and $Architecture -eq $controlPlaneArchitecture) {
-        $windowsHostDebPackagesSourcePath = $distributionPackagesPath
-    }
 
     $linuxNodeArtifactsPackagePath = Get-PathOfLinuxNodeArtifactsPackageOnWindowsHost
     $linuxNodeArtifactsPath = Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost
@@ -755,6 +752,10 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
         Write-Log "Extracting content of file '$linuxNodeArtifactsPackagePath' into '$linuxNodeArtifactsPath'"
         Expand-Archive -LiteralPath $linuxNodeArtifactsPackagePath -DestinationPath $linuxNodeArtifactsPath
     } 
+
+    if (!(Test-Path $windowsHostDebPackagesSourcePath) -and $Architecture -eq $controlPlaneArchitecture) {
+        $windowsHostDebPackagesSourcePath = $distributionPackagesPath
+    }
 
     $distributionDebPackagesSourcePathExists = $(Test-Path -Path $windowsHostDebPackagesSourcePath)
     Write-Log "Folder with deb packages '$windowsHostDebPackagesSourcePath' exists?: $distributionDebPackagesSourcePathExists"

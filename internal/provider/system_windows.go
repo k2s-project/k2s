@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"fmt"
 	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -102,6 +103,9 @@ func (p *windowsSystemProvider) clusterUpgradeCommand(cfg SystemUpgradeConfig) s
 
 func (p *windowsSystemProvider) Package(cfg SystemPackageConfig) error {
 	if cfg.NodePackage {
+		if !cfg.ForDeltaPackage && cfg.Architecture != "" && cfg.Architecture != "amd64" {
+			return fmt.Errorf("Windows node package builds only support amd64; build '%s' node packages natively on Linux", cfg.Architecture)
+		}
 		psCmd, params := p.nodePackageCommand(cfg)
 		return p.execPS(psCmd, params...)
 	}

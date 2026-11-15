@@ -20,9 +20,27 @@ on:
     paths:
       - "cfg/nodeextension/**"
       - "lib/modules/windows/node/k2s.node.module/linuxnode/**"
+      - "lib/scripts/windows/worker/linux/common/**"
+      - "internal/provider/**"
+      - "cmd/k2s/cmd/system/package/**"
       - ".github/workflows/ci-arm64-node-smoke.yml"
 
 jobs:
+  linux-provider-tests:
+    name: Linux provider and packaging tests
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: "**/*.sum"
+
+      - name: Test Linux providers and package commands
+        run: go test ./internal/provider ./cmd/k2s/cmd/system/package/...
+
   arm64-package-scripts:
     name: Download Kubernetes/buildah packages for arm64
     timeout-minutes: 20

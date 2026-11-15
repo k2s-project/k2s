@@ -121,6 +121,33 @@ func TestValidateBuildHostOS(t *testing.T) {
 	}
 }
 
+func TestValidateNodePackageProxy(t *testing.T) {
+	tests := []struct {
+		name    string
+		proxy   string
+		wantErr bool
+	}{
+		{name: "empty", proxy: ""},
+		{name: "http proxy", proxy: "http://proxy.example:8080"},
+		{name: "https proxy", proxy: "https://proxy.example:8443"},
+		{name: "ipv6 proxy", proxy: "http://[2001:db8::1]:8080"},
+		{name: "apt quote injection", proxy: `http://proxy"; DPkg::Pre-Invoke { "id"; }; "`, wantErr: true},
+		{name: "curl option injection", proxy: "http://proxy.example:8080 --output=/tmp/file", wantErr: true},
+		{name: "shell expansion", proxy: "http://proxy.example:8080$(id)", wantErr: true},
+		{name: "unsupported scheme", proxy: "ftp://proxy.example:8080", wantErr: true},
+		{name: "path", proxy: "http://proxy.example/path", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateNodePackageProxy(tt.proxy)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateNodePackageProxy(%q) error = %v, wantErr %v", tt.proxy, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestEnvironmentWithOverridesReplacesExistingValues(t *testing.T) {
 	const key = "K2S_TEST_APT_CONFIG"
 	t.Setenv(key, "original")

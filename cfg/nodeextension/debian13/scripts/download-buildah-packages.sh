@@ -116,6 +116,9 @@ download_packages() {
             --simulate "${deb_files[@]}"; then
             return 1
         fi
+    else
+        log_info "ERROR: requested package archive is missing: $package_name"
+        return 1
     fi
 }
 

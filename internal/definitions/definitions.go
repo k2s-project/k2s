@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package definitions
 
@@ -7,8 +7,6 @@ import "time"
 
 const (
 	// TODO: configure centrally in config.json eventually
-	SSHPrivateKeyName        = "id_rsa"
-	SSHSubDirName            = "k2s"
 	SSHRemoteUser            = "remote"
 	SSHDefaultPort    uint16 = 22
 	SSHDefaultTimeout        = 30 * time.Second

@@ -74,6 +74,9 @@ k2s_require_host() {
   for tool in jq flock systemctl apt-get dpkg modprobe sysctl chattr lsattr ip ss; do
     command -v "$tool" >/dev/null 2>&1 || { k2s_log_prereq_failure "Required command is not available: $tool"; return 4; }
   done
+  for tool in ssh ssh-keygen; do
+    command -v "$tool" >/dev/null 2>&1 || { k2s_log_prereq_failure "Required command $tool is not available. Install the package openssh-client."; return 4; }
+  done
   [[ $(wc -l < /proc/swaps) -le 1 ]] || { k2s_log_prereq_failure 'Swap must be disabled on the host.'; return 3; }
 }
 
@@ -144,6 +147,8 @@ k2s_install_cluster() {
   fi
   k2s_log INFO 'Configuring K2s proxy compatibility network.'
   k2s_proxy_network_install || return $?
+  k2s_log INFO 'Ensuring the K2s SSH key pair.'
+  k2s_ssh_ensure_key || return $?
   k2s_enable_host_ssh || return $?
   k2s_log INFO 'Configuring K2s HTTP proxy service.'
   k2s_proxy_install || return $?
@@ -268,6 +273,7 @@ k2s_uninstall_cluster() {
   ip link delete flannel.1 2>/dev/null || true
   rm -f /etc/systemd/system/k2s-dnsproxy.service /etc/k2s/dnsproxy.yaml /etc/systemd/system/kubelet.service.d/20-k2s-logging.conf
   k2s_proxy_cleanup || return $?
+  [[ "$K2S_SKIP_PURGE" == true ]] || k2s_ssh_remove_key || true
   rm -rf "$K2S_CONFIG_DIR"
 }
 

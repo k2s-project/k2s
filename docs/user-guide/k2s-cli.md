@@ -690,6 +690,8 @@ k2s node add [flags]
 
 Use `--node-package` together with a node package created through `k2s system package --node-package --os ...` on an installed *K2s* cluster when adding a Linux worker node without internet access.
 
+The public *K2s* SSH key (`sshKey` section and `configDir.ssh` of `cfg/config.json`, e.g. `%USERPROFILE%\.ssh\k2s\id_rsa.pub` on *Windows* or `~/.ssh/k2s/id_ed25519.pub` on a *Linux* host) must already be authorized on the node (`~/.ssh/authorized_keys` of the SSH user); `k2s node add` does not install it. See [Extending a K2s Cluster](../op-manual/extending-k2s-cluster.md).
+
 ### node remove
 
 Remove a node from the cluster.

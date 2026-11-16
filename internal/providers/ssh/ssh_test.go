@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package ssh_test
 
@@ -144,14 +144,14 @@ var _ = Describe("ssh pkg", func() {
 
 	Describe("DeterminePrivateKeyPath", Label("unit"), func() {
 		It("returns the correct path for the private key", func() {
-			config := config.NewSshConfig("", "~/relative/dir", "")
+			config := config.NewSshConfig("", "~/relative/dir", "", "~/relative/dir/k2s/some_key")
 			user := users.NewOSUser("", "", "/home/dir")
 
 			sut := ssh.NewKeyPathResolver(config)
 
 			actual := sut.ResolvePrivateKeyPath(user)
 
-			Expect(actual).To(Equal(filepath.Clean("/home/dir/relative/dir/k2s/id_rsa")))
+			Expect(actual).To(Equal(filepath.Clean("/home/dir/relative/dir/k2s/some_key")))
 		})
 	})
 })

@@ -17,6 +17,9 @@ Complete the following preparation on the K2s host and on the Debian 13 target b
 - Run the command from an elevated PowerShell or command prompt on the K2s Windows host.
 - The K2s SSH key pair exists. The public key is `%USERPROFILE%\.ssh\k2s\id_rsa.pub`.
 
+!!! note "Linux host (experimental)"
+    On a Linux host the public key is `~/.ssh/k2s/id_ed25519.pub` of the user running `k2s` (`/root/.ssh/k2s/id_ed25519.pub` when using `sudo`). The location and file names are configured in the `sshKey` section and `configDir.ssh` of `cfg/config.json`, see the [configuration reference](configuration-reference.md).
+
 ### Debian 13 target
 
 - Install Debian 13 (Trixie) on a physical machine or an existing VM. The target must not already be a member of a Kubernetes cluster.
@@ -140,6 +143,9 @@ scp -o StrictHostKeyChecking=no "$env:USERPROFILE\.ssh\k2s\id_rsa.pub" <username
 
 !!! hint "scp"
     The target user's password may be requested for this initial copy. The password is not needed by K2s after the public key is installed.
+
+!!! note "Linux host (experimental)"
+    Copy `~/.ssh/k2s/id_ed25519.pub` (`/root/.ssh/k2s/id_ed25519.pub` when using `sudo`) instead, e.g. `scp -o StrictHostKeyChecking=no ~/.ssh/k2s/id_ed25519.pub <usernameOfNode>@<IpAddressOfNode>:/tmp/temp_k2s.pub`. K2s does not install the key on the node for you; it has to be authorized before `k2s node add`.
 
 On the Debian 13 target, append the key and verify it:
 

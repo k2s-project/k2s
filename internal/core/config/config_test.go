@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package config_test
 
@@ -75,6 +75,10 @@ var _ = Describe("config pkg", func() {
 						"kube": "~/.kube",
 						"k2s":  "C:\\ProgramData\\K2s",
 					},
+					"sshKey": map[string]any{
+						"subDir":   "k2s",
+						"fileName": map[string]any{"windows": "windows_key", "linux": "linux_key"},
+					},
 				}
 
 				blob, err := json.Marshal(inputConfig)
@@ -107,6 +111,13 @@ var _ = Describe("config pkg", func() {
 
 				Expect(filepath.IsAbs(actual.Host().SshConfig().CurrentDir())).To(BeTrue())
 				Expect(actual.Host().SshConfig().CurrentDir()).ToNot(ContainSubstring("~"))
+			})
+
+			It("SSH private key path is absolute and uses the configured file name", func() {
+				GinkgoWriter.Println("ssh key path: <", actual.Host().SshConfig().CurrentPrivateKeyPath(), ">")
+
+				Expect(filepath.IsAbs(actual.Host().SshConfig().CurrentPrivateKeyPath())).To(BeTrue())
+				Expect(actual.Host().SshConfig().CurrentPrivateKeyPath()).To(MatchRegexp(`(windows|linux)_key$`))
 			})
 		})
 	})

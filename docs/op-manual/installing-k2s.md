@@ -256,6 +256,12 @@ sudo ./k2s install --linux-only --proxy http://proxy.example:8080 --no-proxy loc
 sudo ./k2s install --worker-cpus 4 --worker-memory 8GB --worker-disk 64GB --windows-qcow2-path /path/to/WindowsWorker-Base.qcow2
 ```
 
+The installer requires `ssh` and `ssh-keygen` (Debian package `openssh-client`) and fails
+the prerequisite check before changing the host if it is missing. It creates the
+K2s SSH key pair `~/.ssh/k2s/id_ed25519` (`.pub`) of the user running `k2s`
+(`/root/.ssh/k2s` when using `sudo`) and removes it again on uninstall. The
+public key has to be authorized on machines that are added later as nodes.
+
 The equivalent platform-first lifecycle entry point is
 `lib/scripts/linux/debian/linuxonly/Install.sh`. It validates root access,
 records the dispatch in `/var/log/k2s.log`, and invokes the same `k2s` CLI

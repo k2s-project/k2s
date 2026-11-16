@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package config
 
@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strconv"
 
-	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
+	cConfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
 	"github.com/k2s-project/k2s/internal/json"
@@ -29,7 +29,13 @@ type supportedWorkerOSEntry struct {
 type configJson struct {
 	SmallSetup        smallSetup               `json:"smallsetup"`
 	ConfigDir         configDir                `json:"configDir"`
+	SshKey            sshKey                   `json:"sshKey"`
 	SupportedWorkerOS []supportedWorkerOSEntry `json:"supportedWorkerOS"`
+}
+
+type sshKey struct {
+	SubDir   string            `json:"subDir"`
+	FileName map[string]string `json:"fileName"`
 }
 
 type smallSetup struct {
@@ -71,7 +77,7 @@ const (
 	configFileName   = "config.json"
 )
 
-func ReadK2sConfig(k2sInstallDir string) (*cconfig.K2sConfig, error) {
+func ReadK2sConfig(k2sInstallDir string) (*cConfig.K2sConfig, error) {
 	configFilePath := filepath.Join(k2sInstallDir, configFileRelDir, configFileName)
 
 	configJson, err := json.FromFile[configJson](configFilePath)
@@ -89,18 +95,28 @@ func ReadK2sConfig(k2sInstallDir string) (*cconfig.K2sConfig, error) {
 		return nil, fmt.Errorf("error occurred while resolving tilde in file path '%s': %w", configJson.ConfigDir.Ssh, err)
 	}
 
-	kubeConfig := cconfig.NewKubeConfig(kubeConfigDir, configJson.ConfigDir.Kube, filepath.Join(kubeConfigDir, definitions.KubeconfigName))
-	sshConfig := cconfig.NewSshConfig(sshDir, configJson.ConfigDir.Ssh, filepath.Join(sshDir, definitions.SSHSubDirName, definitions.SSHPrivateKeyName))
+	keyFileName := configJson.SshKey.FileName[sshKeyHostOS]
+	if configJson.SshKey.SubDir == "" || keyFileName == "" {
+		return nil, fmt.Errorf("SSH key sub dir or file name for '%s' is not configured in '%s'", sshKeyHostOS, configFilePath)
+	}
+
+	kubeConfig := cConfig.NewKubeConfig(kubeConfigDir,
+		configJson.ConfigDir.Kube,
+		filepath.Join(kubeConfigDir, definitions.KubeconfigName))
+	sshConfig := cConfig.NewSshConfig(sshDir,
+		configJson.ConfigDir.Ssh,
+		filepath.Join(sshDir, configJson.SshKey.SubDir, keyFileName),
+		filepath.Join(configJson.ConfigDir.Ssh, configJson.SshKey.SubDir, keyFileName))
 	k2sConfigDir := configJson.ConfigDir.K2s
 	logsDir := configJson.ConfigDir.Logs
 	if runtime.GOOS == "linux" {
 		k2sConfigDir = "/var/lib/k2s"
 		logsDir = "/var/log/k2s"
 	}
-	hostConfig := cconfig.NewHostConfig(kubeConfig, sshConfig, k2sConfigDir, k2sInstallDir, logsDir)
-	controlPlaneConfig := cconfig.NewControlPlaneConfig(configJson.SmallSetup.ControlPlanIpAddress)
+	hostConfig := cConfig.NewHostConfig(kubeConfig, sshConfig, k2sConfigDir, k2sInstallDir, logsDir)
+	controlPlaneConfig := cConfig.NewControlPlaneConfig(configJson.SmallSetup.ControlPlanIpAddress)
 
-	return cconfig.NewK2sConfig(hostConfig, controlPlaneConfig), nil
+	return cConfig.NewK2sConfig(hostConfig, controlPlaneConfig), nil
 }
 
 // ReadSupportedWorkerOS returns the list of supported worker OS keys (e.g. "debian12", "debian13")

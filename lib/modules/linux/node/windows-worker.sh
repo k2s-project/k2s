@@ -227,23 +227,13 @@ k2s_windows_worker_detect_boot_mode() {
   esac
 }
 
-k2s_windows_worker_ssh_dir() { printf '%s/ssh' "$K2S_CONFIG_DIR"; }
-k2s_windows_worker_private_key() { printf '%s/windows-worker' "$(k2s_windows_worker_ssh_dir)"; }
-k2s_windows_worker_known_hosts() { printf '%s/windows-worker.known_hosts' "$(k2s_windows_worker_ssh_dir)"; }
-
-k2s_windows_worker_create_ssh_key() {
-  local key_dir key
-  key_dir=$(k2s_windows_worker_ssh_dir); key=$(k2s_windows_worker_private_key)
-  mkdir -p "$key_dir"; chmod 700 "$key_dir"
-  [[ -f "$key" && -f "$key.pub" ]] || ssh-keygen -q -t ed25519 -N '' -f "$key" -C k2s-windows-worker
-  chmod 600 "$key"; chmod 644 "$key.pub"
-}
+k2s_windows_worker_known_hosts() { printf '%s/ssh/windows-worker.known_hosts' "$K2S_CONFIG_DIR"; }
 
 # ServerAlive* bounds how long a session hangs after the worker's networking drops out
 # from under it, which happens whenever HNS rebinds the NIC. Without it ssh waits for
 # the TCP timeout, roughly 20 minutes.
 k2s_windows_worker_ssh() {
-  ssh -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip)" "$@"
+  ssh -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip)" "$@"
 }
 
 k2s_windows_worker_password() { printf '%s' "${K2S_WINDOWS_WORKER_PASSWORD:-admin}"; }
@@ -257,7 +247,7 @@ k2s_windows_worker_password_ssh() {
 }
 
 k2s_windows_worker_password_scp() {
-  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$(k2s_windows_worker_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
+  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$(k2s_ssh_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
 }
 
 # sshd reads administrators_authorized_keys on every authentication, so the key takes
@@ -271,10 +261,10 @@ k2s_windows_worker_bootstrap_ssh_key() {
 
 k2s_windows_worker_wait_for_ssh() {
   local known_hosts worker_ip deadline attempt=0
-  k2s_windows_worker_create_ssh_key || return 1
+  k2s_ssh_require_key || return 1
   known_hosts=$(k2s_windows_worker_known_hosts)
   worker_ip=$(k2s_windows_worker_ip) || return 1
-  install -d -m 0700 "$(k2s_windows_worker_ssh_dir)" || return 1
+  install -d -m 0700 "$(dirname "$known_hosts")" || return 1
   : > "$known_hosts"; chmod 600 "$known_hosts"
   k2s_log INFO "Waiting for the Windows worker to answer SSH on $worker_ip."
   deadline=$((SECONDS + 900))
@@ -372,7 +362,7 @@ k2s_windows_worker_copy_runtime() {
     --exclude='bin/*.vhdx' \
     -cf "$archive" "${runtime_paths[@]}" || { rm -f "$archive"; return 1; }
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\ProgramData\K2s -Force | Out-Null"' || { rm -f "$archive"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
   result=$?
   rm -f "$archive"
   (( result == 0 )) || return "$result"
@@ -388,7 +378,7 @@ k2s_windows_worker_copy_kubeconfig() {
   k2s_log INFO 'Copying the cluster kubeconfig to the Windows worker.'
   kubeconfig=$(mktemp) || return 1
   cp /etc/kubernetes/admin.conf "$kubeconfig" || { rm -f "$kubeconfig"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
   result=$?
   rm -f "$kubeconfig"
   return "$result"
@@ -409,7 +399,7 @@ k2s_windows_worker_collect_logs() {
   log_dir=${log_dir//\\//}
   log=$(mktemp) || return 0
   k2s_log ERROR "Retrieving the Windows worker K2s log from $log_dir/k2s.log"
-  if scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
+  if scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
     printf '===== Windows worker K2s log (last 300 lines) =====\n'
     tail -n 300 "$log" | tr -d '\r'
     printf '===== end of Windows worker K2s log =====\n'
@@ -542,7 +532,7 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
   # The worker disk may be reused after a failed provisioning attempt. Do not launch the
   # join unless the previous result marker is confirmed absent.
@@ -635,7 +625,7 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
   # The worker disk persists across stop/start, so remove any previous result before launching.
   k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return 1
@@ -722,7 +712,6 @@ k2s_windows_worker_provision() {
   k2s_windows_worker_network_create || return 1
   local disk
   disk=$(k2s_windows_worker_prepare_image) || return $?
-  k2s_windows_worker_create_ssh_key || return 1
   k2s_log INFO "Defining libvirt domain '$K2S_WINDOWS_WORKER_NAME' with ${K2S_WORKER_CPU_COUNT} vCPUs."
   k2s_windows_worker_define "$disk" || return 1
   k2s_windows_worker_write_state "$disk" || return 1

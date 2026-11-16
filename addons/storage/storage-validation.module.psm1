@@ -9,6 +9,10 @@ Storage addon validation module
 Provides validation functions to ensure only one storage implementation is enabled at a time.
 #>
 
+$addonsModule = "$PSScriptRoot\..\addons.module.psm1"
+
+Import-Module $addonsModule
+
 function Test-StorageImplementationEnabled {
     <#
     .SYNOPSIS
@@ -25,42 +29,7 @@ function Test-StorageImplementationEnabled {
         [string]$Implementation
     )
 
-    $regPath = 'HKLM:\Software\K2s\Addons\storage'
-    $valueName = "$($Implementation)Enabled"
-
-    if (Test-Path $regPath) {
-        $enabled = Get-ItemProperty -Path $regPath -Name $valueName -ErrorAction SilentlyContinue
-        if ($null -ne $enabled) {
-            return ($enabled.$valueName -eq $true)
-        }
-    }
-
-    switch ($Implementation) {
-        'smb' {
-            return $false
-        }
-        'ceph' {
-            # Fall back to cluster markers when the registry state is absent.
-            try {
-                $ns = kubectl get namespace ceph-csi-operator-system -o json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-                if ($ns -and $ns.metadata.name -eq 'ceph-csi-operator-system') {
-                    return $true
-                }
-
-                $sc = kubectl get storageclass ceph-cephfs -o json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-                if ($sc -and $sc.metadata.name -eq 'ceph-cephfs') {
-                    return $true
-                }
-            }
-            catch {
-                return $false
-            }
-            return $false
-        }
-        default {
-            return $false
-        }
-    }
+    return (Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'storage'; Implementation = $Implementation }))
 }
 
 function Test-ConflictingStorageImplementation {
@@ -91,36 +60,7 @@ function Test-ConflictingStorageImplementation {
     return $null
 }
 
-function Update-StorageImplementationRegistry {
-    <#
-    .SYNOPSIS
-    Update registry to track enabled storage implementation
-
-    .PARAMETER Implementation
-    Implementation name ('smb' or 'ceph')
-
-    .PARAMETER Enabled
-    $true to mark as enabled, $false to mark as disabled
-    #>
-    param(
-        [ValidateSet('smb', 'ceph')]
-        [string]$Implementation,
-        [bool]$Enabled
-    )
-
-    $regPath = 'HKLM:\Software\K2s\Addons\storage'
-    
-    # Create registry path if it doesn't exist
-    if (-not (Test-Path $regPath)) {
-        $null = New-Item -Path $regPath -Force
-    }
-
-    $valueName = "$($Implementation)Enabled"
-    Set-ItemProperty -Path $regPath -Name $valueName -Value $Enabled -Type DWord
-}
-
 Export-ModuleMember -Function @(
     'Test-StorageImplementationEnabled',
-    'Test-ConflictingStorageImplementation',
-    'Update-StorageImplementationRegistry'
+    'Test-ConflictingStorageImplementation'
 )

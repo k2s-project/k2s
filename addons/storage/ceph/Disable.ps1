@@ -32,9 +32,8 @@ Param(
 $infraModule = "$PSScriptRoot/../../../lib/modules/windows/infra/k2s.infra.module/k2s.infra.module.psm1"
 $clusterModule = "$PSScriptRoot/../../../lib/modules/windows/cluster/k2s.cluster.module/k2s.cluster.module.psm1"
 $addonsModule = "$PSScriptRoot\..\..\addons.module.psm1"
-$validationModule = "$PSScriptRoot\..\storage-validation.module.psm1"
 
-Import-Module $infraModule, $clusterModule, $addonsModule, $validationModule
+Import-Module $infraModule, $clusterModule, $addonsModule
 Initialize-Logging -ShowLogs:$ShowLogs
 
 function Get-CephSmbManifestSourceDir {
@@ -721,9 +720,6 @@ Remove-CephDashboardHostEntry -Config $Config
 
 # Remove the Ceph CSI container images that were pulled onto the K2s cluster node(s).
 Remove-CephCsiNodeImages -StorageManifestPath (Join-Path -Path $PSScriptRoot -ChildPath '..\addon.manifest.yaml')
-
-# Mark Ceph as disabled in registry
-Update-StorageImplementationRegistry -Implementation 'ceph' -Enabled $false
 
 # Remove the addon (with its implementation) from setup.json so that 'k2s addons ls' no longer
 # reports it as enabled and Test-IsAddonEnabled returns false.

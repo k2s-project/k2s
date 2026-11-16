@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build windows
 
@@ -40,5 +40,48 @@ func TestClusterUpgradeCommandEscapesUserSuppliedValues(t *testing.T) {
 		if !strings.Contains(command, expected) {
 			t.Fatalf("cluster upgrade command does not contain %q: %s", expected, command)
 		}
+	}
+}
+
+func TestNodePackageCommandUsesTypedOptions(t *testing.T) {
+	provider := &windowsSystemProvider{installDir: `C:\K2s Package`}
+	command, params := provider.nodePackageCommand(SystemPackageConfig{
+		OutputDir:    `C:\output folder`,
+		PackageName:  "node.zip",
+		OS:           "debian13",
+		Architecture: "amd64",
+		Proxy:        `http://proxy'; invalid`,
+		IncludeGPU:   true,
+		ShowOutput:   true,
+	})
+
+	if !strings.Contains(command, "New-K2sNodePackage.ps1") {
+		t.Fatalf("unexpected node package script path: %s", command)
+	}
+
+	expectedParams := []string{
+		" -TargetDirectory 'C:\\output folder'",
+		" -ZipPackageFileName 'node.zip'",
+		" -OS 'debian13'",
+		" -Proxy 'http://proxy''; invalid'",
+		" -IncludeGpu",
+		" -ShowLogs",
+	}
+	for _, expected := range expectedParams {
+		if !strings.Contains(strings.Join(params, ""), expected) {
+			t.Fatalf("node package parameters do not contain %q: %v", expected, params)
+		}
+	}
+
+}
+
+func TestWindowsProviderRejectsNonAMD64NodePackageBuilds(t *testing.T) {
+	provider := &windowsSystemProvider{installDir: `C:\K2s`}
+	err := provider.Package(SystemPackageConfig{
+		NodePackage:  true,
+		Architecture: "arm64",
+	})
+	if err == nil || !strings.Contains(err.Error(), "only support amd64") {
+		t.Fatalf("Package() error = %v, want non-amd64 rejection", err)
 	}
 }

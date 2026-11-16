@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-name: Delete old branches (6 months) - Alternative
+name: Repo - Delete old branches (6 months)
 
 # This workflow is scheduled to run every Sunday at midnight.
 # You can customize the cron schedule to your needs.

@@ -213,7 +213,6 @@ var _ = Describe("config pkg", func() {
 			})
 
 			It("returns config data and system-in-corrupted-state error", func() {
-
 				config, err := config.ReadRuntimeConfig(dir)
 
 				Expect(err).To(Equal(contracts.ErrSystemInCorruptedState))

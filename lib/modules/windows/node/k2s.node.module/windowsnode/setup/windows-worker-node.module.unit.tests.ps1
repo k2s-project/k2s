@@ -153,6 +153,96 @@ Describe 'Set-RoutesToKubemaster' -Tag 'unit', 'ci', 'network' {
 
         Should -Invoke Remove-NetRoute -Times 0 -Exactly
     }
+
+    It 'accepts a concurrently created route for duplicate error <ErrorId>' -TestCases @(
+        @{ ErrorId = 'CimAlreadyExists'; Category = 'ResourceExists' }
+        @{ ErrorId = 'Windows System Error 183,New-NetRoute'; Category = 'NotSpecified' }
+        @{ ErrorId = 'Windows System Error 5010,New-NetRoute'; Category = 'NotSpecified' }
+    ) {
+        param($ErrorId, $Category)
+        $script:routeCreated = $false
+        Mock New-NetRoute {
+            $script:routeCreated = $true
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.Exception]::new('Instance MSFT_NetRoute already exists'),
+                $ErrorId, [System.Management.Automation.ErrorCategory]$Category, $null)
+        }
+        Mock Get-NetRoute {
+            if ($script:routeCreated -and $PolicyStore -eq 'ActiveStore') {
+                [pscustomobject]@{ DestinationPrefix = '172.19.1.0/24'; InterfaceIndex = 27; NextHop = '0.0.0.0' }
+            }
+        }
+
+        Set-RoutesToKubemaster
+
+        Should -Invoke New-NetRoute -Times 1 -Exactly
+        Should -Invoke Get-NetRoute -Times 3 -Exactly -ParameterFilter { $PolicyStore -eq 'ActiveStore' }
+        Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Message -like '*created concurrently*' }
+    }
+
+    It 'rejects a duplicate error without the expected active route: <Reason>' -TestCases @(
+        @{ Reason = 'missing'; Prefix = $null; Index = 27; NextHop = '0.0.0.0'; Store = 'ActiveStore' }
+        @{ Reason = 'wrong prefix'; Prefix = '172.22.0.0/16'; Index = 27; NextHop = '0.0.0.0'; Store = 'ActiveStore' }
+        @{ Reason = 'wrong interface'; Prefix = '172.19.1.0/24'; Index = 42; NextHop = '0.0.0.0'; Store = 'ActiveStore' }
+        @{ Reason = 'gateway route'; Prefix = '172.19.1.0/24'; Index = 27; NextHop = '172.22.7.1'; Store = 'ActiveStore' }
+        @{ Reason = 'persistent only'; Prefix = '172.19.1.0/24'; Index = 27; NextHop = '0.0.0.0'; Store = 'PersistentStore' }
+    ) {
+        param($Reason, $Prefix, $Index, $NextHop, $Store)
+        $script:routeCreated = $false
+        Mock New-NetRoute {
+            $script:routeCreated = $true
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.Exception]::new('Instance MSFT_NetRoute already exists'),
+                'CimAlreadyExists', [System.Management.Automation.ErrorCategory]::ResourceExists, $null)
+        }
+        Mock Get-NetRoute {
+            if ($script:routeCreated -and $Prefix -and $PolicyStore -eq $Store) {
+                [pscustomobject]@{ DestinationPrefix = $Prefix; InterfaceIndex = $Index; NextHop = $NextHop }
+            }
+        }
+
+        { Set-RoutesToKubemaster } | Should -Throw '*MSFT_NetRoute already exists*'
+
+        Should -Invoke Remove-NetRoute -Times 0 -Exactly
+        Should -Invoke Write-Log -Times 0 -Exactly -ParameterFilter { $Message -like '*created concurrently*' }
+    }
+
+    It 'propagates non-duplicate creation errors even if a matching route appears' {
+        $script:routeCreated = $false
+        Mock New-NetRoute {
+            $script:routeCreated = $true
+            throw 'Access denied creating route'
+        }
+        Mock Get-NetRoute {
+            if ($script:routeCreated) {
+                [pscustomobject]@{ DestinationPrefix = '172.19.1.0/24'; InterfaceIndex = 27; NextHop = '0.0.0.0' }
+            }
+        }
+
+        { Set-RoutesToKubemaster } | Should -Throw '*Access denied creating route*'
+
+        Should -Invoke Get-NetRoute -Times 1 -Exactly
+        Should -Invoke Remove-NetRoute -Times 0 -Exactly
+    }
+
+    It 'propagates route-store query failures after a duplicate creation error' {
+        $script:routeCreated = $false
+        Mock New-NetRoute {
+            $script:routeCreated = $true
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.Exception]::new('Instance MSFT_NetRoute already exists'),
+                'CimAlreadyExists', [System.Management.Automation.ErrorCategory]::ResourceExists, $null)
+        }
+        Mock Get-NetRoute {
+            if ($script:routeCreated) {
+                throw 'Access denied re-reading route store'
+            }
+        }
+
+        { Set-RoutesToKubemaster } | Should -Throw '*Access denied re-reading route store*'
+
+        Should -Invoke Remove-NetRoute -Times 0 -Exactly
+    }
 }
 
 Describe 'Test-NetworkL2BridgeReady' -Tag 'unit', 'ci', 'network' {

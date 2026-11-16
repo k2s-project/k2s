@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 site_name: K2s - Kubernetes distribution for Windows & Linux workloads
-site_url: https://k2s-project.github.io/K2s
+site_url: https://k2s-project.github.io/k2s
 copyright: >-
   Copyright k2s a Series of LF Projects, LLC<br><br>
   For website terms of use, trademark policy and other project policies please see

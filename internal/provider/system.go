@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package provider
+
+import "github.com/k2s-project/k2s/internal/healthcheck"
 
 // SystemProvider abstracts system-level operations (dump, upgrade, packaging, etc.).
 // On Windows: delegates to PowerShell scripts.
@@ -36,6 +38,9 @@ type SystemProvider interface {
 
 	// CertificateAutoRotation manages kubelet certificate auto-rotation configuration.
 	CertificateAutoRotation(config SystemCertAutoRotationConfig) error
+
+	// Check runs read-only health checks against the host and the cluster.
+	Check(config SystemCheckConfig) (healthcheck.Report, error)
 }
 
 // SystemDumpConfig holds parameters for the dump operation.
@@ -68,9 +73,15 @@ type SystemUpgradeConfig struct {
 // SystemPackageConfig holds parameters for the package operation.
 type SystemPackageConfig struct {
 	OutputDir         string
+	PackageName       string
 	ForDeltaPackage   bool
 	BasePackagePath   string
 	TargetPackagePath string
+	NodePackage       bool
+	OS                string
+	Architecture      string
+	Proxy             string
+	IncludeGPU        bool
 	ShowOutput        bool
 }
 
@@ -122,4 +133,18 @@ type SystemCertAutoRotationConfig struct {
 	Disable    bool
 	ShowStatus bool
 	ShowOutput bool
+}
+
+// SystemCheckConfig holds parameters for the health check operation.
+type SystemCheckConfig struct {
+	// ClusterName is the name of the K2s cluster in the kubeconfig.
+	ClusterName string
+	// KubeconfigPath is the path to the kubeconfig file of the current user.
+	KubeconfigPath string
+	// SetupName is the name of the installed setup (e.g. 'k2s' or 'BuildOnlyEnv').
+	SetupName string
+	// LinuxOnly indicates that the cluster has no Windows node on the host.
+	LinuxOnly bool
+	// WslEnabled indicates that the control-plane runs in WSL instead of a Hyper-V VM.
+	WslEnabled bool
 }

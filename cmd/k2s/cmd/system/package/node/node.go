@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 // Package nodepackage implements the --node-package flag logic for
 // 'k2s system package'. It owns all constants, validation and PS command
@@ -23,6 +23,9 @@ const (
 	OSFlagName  = "os"
 	OSFlagUsage = "Target Linux distribution and version combined (e.g. debian12, debian13)"
 
+	ArchFlagName  = "arch"
+	ArchFlagUsage = "Target CPU architecture: amd64 (default) or arm64. arm64 is only supported for Debian-family targets and must be built natively on a Linux arm64 host (no cross-build/VM path exists)."
+
 	IncludeGpuFlagName  = "include-gpu"
 	IncludeGpuFlagUsage = "Include NVIDIA Container Toolkit packages for GPU support. When 'k2s node add' uses a package built with this flag, it automatically detects if the target node has an NVIDIA GPU and configures GPU support (installs container toolkit, configures CRI-O, labels the node)."
 
@@ -35,6 +38,7 @@ const (
 func RegisterFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool(NodePackageFlagName, false, NodePackageFlagUsage)
 	cmd.Flags().String(OSFlagName, "", OSFlagUsage)
+	cmd.Flags().String(ArchFlagName, "amd64", ArchFlagUsage)
 	cmd.Flags().Bool(IncludeGpuFlagName, false, IncludeGpuFlagUsage)
 }
 
@@ -75,12 +79,30 @@ func Validate(flags *pflag.FlagSet, supportedOS []string) error {
 	if os == "" {
 		return fmt.Errorf("--%s is required when --%s is set", OSFlagName, NodePackageFlagName)
 	}
+	osSupported := false
 	for _, s := range supportedOS {
 		if s == os {
-			return nil
+			osSupported = true
+			break
 		}
 	}
-	return fmt.Errorf("--%s value '%s' is not supported. Supported: %s", OSFlagName, os, strings.Join(supportedOS, ", "))
+	if !osSupported {
+		return fmt.Errorf("--%s value '%s' is not supported. Supported: %s", OSFlagName, os, strings.Join(supportedOS, ", "))
+	}
+
+	arch, _ := flags.GetString(ArchFlagName)
+	switch arch {
+	case "amd64":
+		// nothing further to check
+	case "arm64":
+		if !strings.HasPrefix(os, "debian") {
+			return fmt.Errorf("--%s arm64 is only supported for Debian-family targets, got --%s '%s'", ArchFlagName, OSFlagName, os)
+		}
+	default:
+		return fmt.Errorf("--%s value '%s' is not supported. Supported: amd64, arm64", ArchFlagName, arch)
+	}
+
+	return nil
 }
 
 // BuildCmd constructs the PowerShell script path and parameters for node package creation.

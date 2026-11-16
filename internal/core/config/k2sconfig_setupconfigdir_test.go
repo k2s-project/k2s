@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/k2s-project/k2s/internal/core/config"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/k2s-project/k2s/internal/core/config"
 )
 
 // realistic excerpt of 'cfg/config.json' containing entries that are unknown to the typed
@@ -128,4 +128,3 @@ var _ = Describe("K2s config file", func() {
 		})
 	})
 })
-

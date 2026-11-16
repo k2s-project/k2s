@@ -1,6 +1,6 @@
 <!--
-SPDX-FileCopyrightText: © 2024 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: © 2026 The K2s Authors
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Updating Documentation
@@ -16,10 +16,10 @@ To update the current documentation based on the `main` branch:
    ```console
    mkdocs serve
    ```
-3. Open [http://127.0.0.1:8000/K2s/](http://127.0.0.1:8000/K2s/){target="_blank"} in your web browser to see your local changes being applied on-the-fly
+3. Open [http://127.0.0.1:8000/k2s/](http://127.0.0.1:8000/k2s/){target="_blank"} in your web browser to see your local changes being applied on-the-fly
 4. [Submit your changes](submitting-changes.md)
 5. Wait for the automatically triggered workflow [![Build - Documentation (next)](https://github.com/k2s-project/k2s/actions/workflows/build-docs-next.yml/badge.svg)](https://github.com/k2s-project/k2s/actions/workflows/build-docs-next.yml){target="_blank"} to finish
-6. :rocket: Your changes are now published to [https://k2s-project.github.io/K2s/next](https://k2s-project.github.io/K2s/next){target="_blank"}
+6. :rocket: Your changes are now published to [https://k2s-project.github.io/k2s/next](https://k2s-project.github.io/k2s/next){target="_blank"}
 
 !!! note
       Since `mkdocs serve` does not take versioning into account, the following warning will appear in the console output:

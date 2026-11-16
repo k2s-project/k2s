@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
+	"github.com/k2s-project/k2s/internal/healthcheck"
 	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/stretchr/testify/mock"
 
@@ -71,6 +72,11 @@ func (m *mockSystemProvider) CertificateRenew(config provider.SystemCertRenewCon
 func (m *mockSystemProvider) CertificateAutoRotation(config provider.SystemCertAutoRotationConfig) error {
 	args := m.Called(config)
 	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Check(config provider.SystemCheckConfig) (healthcheck.Report, error) {
+	args := m.Called(config)
+	return args.Get(0).(healthcheck.Report), args.Error(1)
 }
 
 func TestBackup(t *testing.T) {

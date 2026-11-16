@@ -8,7 +8,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: autoscaling
 ---
 apiVersion: apiextensions.k8s.io/v1
@@ -18,7 +18,7 @@ metadata:
     controller-gen.kubebuilder.io/version: v0.15.0
   labels:
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: cloudeventsources.eventing.keda.sh
 spec:
   group: eventing.keda.sh
@@ -161,7 +161,7 @@ metadata:
     controller-gen.kubebuilder.io/version: v0.15.0
   labels:
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: clustercloudeventsources.eventing.keda.sh
 spec:
   group: eventing.keda.sh
@@ -292,7 +292,7 @@ metadata:
     controller-gen.kubebuilder.io/version: v0.15.0
   labels:
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: clustertriggerauthentications.keda.sh
 spec:
   group: keda.sh
@@ -860,7 +860,7 @@ metadata:
     controller-gen.kubebuilder.io/version: v0.15.0
   labels:
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: scaledjobs.keda.sh
 spec:
   group: keda.sh
@@ -8925,7 +8925,7 @@ metadata:
     controller-gen.kubebuilder.io/version: v0.15.0
   labels:
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: scaledobjects.keda.sh
 spec:
   group: keda.sh
@@ -9329,7 +9329,7 @@ metadata:
     controller-gen.kubebuilder.io/version: v0.15.0
   labels:
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: triggerauthentications.keda.sh
 spec:
   group: keda.sh
@@ -9895,7 +9895,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
   namespace: autoscaling
 ---
@@ -9905,7 +9905,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
   namespace: autoscaling
 rules:
@@ -9934,7 +9934,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-external-metrics-reader
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-external-metrics-reader
 rules:
 - apiGroups:
@@ -9950,7 +9950,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
 rules:
 - apiGroups:
@@ -10095,7 +10095,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
   namespace: autoscaling
 roleRef:
@@ -10113,7 +10113,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-auth-reader
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-auth-reader
   namespace: autoscaling
 roleRef:
@@ -10131,7 +10131,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-hpa-controller-external-metrics
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-hpa-controller-external-metrics
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -10148,7 +10148,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -10165,7 +10165,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-system-auth-delegator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-system-auth-delegator
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -10185,7 +10185,7 @@ metadata:
     app.kubernetes.io/instance: admission-webhooks
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-admission-webhooks
   namespace: autoscaling
 spec:
@@ -10207,7 +10207,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-metrics-apiserver
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-metrics-apiserver
   namespace: autoscaling
 spec:
@@ -10227,7 +10227,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
   namespace: autoscaling
 spec:
@@ -10249,7 +10249,7 @@ metadata:
     app.kubernetes.io/component: admission-webhooks
     app.kubernetes.io/name: admission-webhooks
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-admission
   namespace: autoscaling
 spec:
@@ -10280,7 +10280,7 @@ spec:
           value: ""
         - name: KEDA_HTTP_DEFAULT_TIMEOUT
           value: ""
-        image: ghcr.io/kedacore/keda-admission-webhooks:2.21.0
+        image: ghcr.io/kedacore/keda-admission-webhooks:2.21.1
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:
@@ -10339,7 +10339,7 @@ metadata:
     app: keda-metrics-apiserver
     app.kubernetes.io/name: keda-metrics-apiserver
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-metrics-apiserver
   namespace: autoscaling
 spec:
@@ -10373,7 +10373,7 @@ spec:
               fieldPath: metadata.namespace
         - name: KEDA_HTTP_DEFAULT_TIMEOUT
           value: ""
-        image: ghcr.io/kedacore/keda-metrics-apiserver:2.21.0
+        image: ghcr.io/kedacore/keda-metrics-apiserver:2.21.1
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:
@@ -10436,7 +10436,7 @@ metadata:
     app.kubernetes.io/component: operator
     app.kubernetes.io/name: keda-operator
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-operator
   namespace: autoscaling
 spec:
@@ -10469,7 +10469,7 @@ spec:
           value: ""
         - name: KEDA_HTTP_DEFAULT_TIMEOUT
           value: ""
-        image: ghcr.io/kedacore/keda:2.21.0
+        image: ghcr.io/kedacore/keda:2.21.1
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:
@@ -10525,7 +10525,7 @@ metadata:
   labels:
     app.kubernetes.io/name: v1beta1.external.metrics.k8s.io
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: v1beta1.external.metrics.k8s.io
 spec:
   group: external.metrics.k8s.io
@@ -10545,7 +10545,7 @@ metadata:
     app.kubernetes.io/instance: admission-webhooks
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: keda-operator
-    app.kubernetes.io/version: 2.21.0
+    app.kubernetes.io/version: 2.21.1
   name: keda-admission
 webhooks:
 - admissionReviewVersions:

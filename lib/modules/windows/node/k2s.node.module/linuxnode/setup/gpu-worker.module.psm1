@@ -93,7 +93,9 @@ function Install-NvidiaContainerToolkit {
         [Parameter(Mandatory = $false)]
         [switch] $Offline = $false,
         [Parameter(Mandatory = $false)]
-        [string] $OsName = ''
+        [string] $OsName = '',
+        [Parameter(Mandatory = $false)]
+        [string] $Architecture = 'amd64'
     )
 
     $requiredPackages = @(
@@ -119,7 +121,7 @@ function Install-NvidiaContainerToolkit {
     }
 
     if ($Offline) {
-        Install-NvidiaContainerToolkitOffline -UserName $UserName -IpAddress $IpAddress -OsName $OsName
+        Install-NvidiaContainerToolkitOffline -UserName $UserName -IpAddress $IpAddress -OsName $OsName -Architecture $Architecture
     } else {
         Install-NvidiaContainerToolkitOnline -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy
     }
@@ -144,14 +146,19 @@ function Install-NvidiaContainerToolkitOffline {
         [Parameter(Mandatory = $true)]
         [string] $IpAddress,
         [Parameter(Mandatory = $false)]
-        [string] $OsName = ''
+        [string] $OsName = '',
+        [Parameter(Mandatory = $false)]
+        [string] $Architecture = 'amd64'
     )
 
     Write-Log "[GPU] Installing NVIDIA Container Toolkit (offline) on $IpAddress" -Console
 
-    # GPU packages are at: linuxnode/packages/<os>/nvidia-gpu/
+    # GPU packages are keyed by worker architecture to prevent cross-architecture reuse.
     $linuxNodeDir = Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost
-    $gpuPackagesDir = Join-Path (Join-Path (Join-Path $linuxNodeDir 'packages') $OsName) 'nvidia-gpu'
+    $gpuPackagesDir = Join-Path (Join-Path (Join-Path (Join-Path $linuxNodeDir 'packages') $OsName) $Architecture) 'nvidia-gpu'
+    if (!(Test-Path $gpuPackagesDir) -and $Architecture -eq 'amd64') {
+        $gpuPackagesDir = Join-Path (Join-Path (Join-Path $linuxNodeDir 'packages') $OsName) 'nvidia-gpu'
+    }
 
     if ([string]::IsNullOrWhiteSpace($OsName) -or !(Test-Path $gpuPackagesDir)) {
         throw @"
@@ -506,7 +513,9 @@ function Initialize-GpuWorkerNode {
         [Parameter(Mandatory = $false)]
         [switch] $Offline = $false,
         [Parameter(Mandatory = $false)]
-        [string] $OsName = ''
+        [string] $OsName = '',
+        [Parameter(Mandatory = $false)]
+        [string] $Architecture = 'amd64'
     )
 
     Write-Log '[GPU] ======================================' -Console
@@ -515,7 +524,7 @@ function Initialize-GpuWorkerNode {
     Write-Log '[GPU] ======================================' -Console
 
     # Step 1: Install NVIDIA Container Toolkit (offline: from .deb files, online: from apt)
-    Install-NvidiaContainerToolkit -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -Offline:$Offline -OsName $OsName
+    Install-NvidiaContainerToolkit -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -Offline:$Offline -OsName $OsName -Architecture $Architecture
 
     # Step 2: Configure CRI-O
     Set-CrioGpuConfiguration -UserName $UserName -IpAddress $IpAddress

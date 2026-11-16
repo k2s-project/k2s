@@ -11,6 +11,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/spf13/pflag"
 )
 
 func TestUpgrade(t *testing.T) {
@@ -56,7 +57,7 @@ var _ = Describe("package", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(Equal("password is required when using a certificate"))
 			})
-			
+
 			It("returns error when password provided without certificate", func() {
 				flags := PackageCmd.Flags()
 				flags.Set(TargetDirectoryFlagName, "dir")
@@ -117,7 +118,7 @@ var _ = Describe("package", func() {
 				cmd, params, err := buildSystemPackageCmd(PackageCmd.Flags())
 				Expect(err).ToNot(HaveOccurred())
 				Expect(cmd).To(ContainSubstring(filepath.Join("lib", "scripts", "windows", "host", "system", "package", "New-K2sPackage.ps1")))
-				
+
 				// Verify all expected parameters are present
 				Expect(params).To(ContainElement(" -TargetDirectory 'output'"))
 				Expect(params).To(ContainElement(" -ZipPackageFileName 'signed-offline-package.zip'"))
@@ -130,7 +131,7 @@ var _ = Describe("package", func() {
 				flags := PackageCmd.Flags()
 				flags.Set(TargetDirectoryFlagName, "dir")
 				flags.Set(ZipPackageFileNameFlagName, "file.zip")
-				
+
 				// Explicitly ensure certificate and password flags are not set
 				flags.Set(CertificateFlagName, "")
 				flags.Set(PasswordFlagName, "")
@@ -138,12 +139,44 @@ var _ = Describe("package", func() {
 				cmd, params, err := buildSystemPackageCmd(flags)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(cmd).To(ContainSubstring(filepath.Join("lib", "scripts", "windows", "host", "system", "package", "New-K2sPackage.ps1")))
-				
+
 				// Verify no code signing parameters are included
 				for _, param := range params {
 					Expect(param).ToNot(ContainSubstring("CertificatePath"))
 				}
 			})
+		})
+	})
+
+	Describe("buildNodePackageConfig", func() {
+		It("passes node package options through the system provider configuration", func() {
+			flags := pflag.NewFlagSet("node-package", pflag.ContinueOnError)
+			flags.String(TargetDirectoryFlagName, "", "")
+			flags.String(ZipPackageFileNameFlagName, "", "")
+			flags.Bool(DeltaPackageFlagName, false, "")
+			flags.String(PackageVersionFromFlagName, "", "")
+			flags.String(PackageVersionToFlagName, "", "")
+			flags.Bool(common.OutputFlagName, false, "")
+			flags.Bool("include-gpu", false, "")
+			flags.String("os", "", "")
+			flags.String("arch", "amd64", "")
+			flags.String(ProxyFlagName, "", "")
+			_ = flags.Set(TargetDirectoryFlagName, "output")
+			_ = flags.Set(ZipPackageFileNameFlagName, "node.zip")
+			_ = flags.Set("os", "debian13")
+			_ = flags.Set("arch", "arm64")
+			_ = flags.Set("include-gpu", "true")
+			_ = flags.Set(ProxyFlagName, "http://proxy:3128")
+
+			cfg, err := buildNodePackageConfig(flags)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cfg.NodePackage).To(BeTrue())
+			Expect(cfg.OutputDir).To(Equal("output"))
+			Expect(cfg.PackageName).To(Equal("node.zip"))
+			Expect(cfg.OS).To(Equal("debian13"))
+			Expect(cfg.Architecture).To(Equal("arm64"))
+			Expect(cfg.IncludeGPU).To(BeTrue())
+			Expect(cfg.Proxy).To(Equal("http://proxy:3128"))
 		})
 	})
 

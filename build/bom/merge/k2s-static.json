@@ -350,9 +350,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/flannel-io/cni-plugin/releases/download/v1.9.1-flannel3/flannel-amd64.exe",
+      "group": "https://github.com/flannel-io/cni-plugin/releases/download/v1.10.0-flannel3/flannel-amd64.exe",
       "name": "flannel",
-      "version": "v1.9.1-flannel3",
+      "version": "v1.10.0-flannel3",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -369,13 +369,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/flannel-io/cni-plugin@v1.9.1-flannel3",
+      "purl": "pkg:github/flannel-io/cni-plugin@v1.10.0-flannel3",
       "type": "application"
     },
     {
-      "group": "https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-windows-amd64-v1.9.1.tgz",
+      "group": "https://github.com/containernetworking/plugins/releases/download/v1.10.0/cni-plugins-windows-amd64-v1.10.0.tgz",
       "name": "host-local",
-      "version": "v1.9.1",
+      "version": "v1.10.0",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -392,13 +392,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containernetworking/plugins@v1.9.1",
+      "purl": "pkg:github/containernetworking/plugins@v1.10.0",
       "type": "application"
     },
     {
-      "group": "https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-windows-amd64-v1.9.1.tgz",
+      "group": "https://github.com/containernetworking/plugins/releases/download/v1.10.0/cni-plugins-windows-amd64-v1.10.0.tgz",
       "name": "win-bridge",
-      "version": "v1.9.1",
+      "version": "v1.10.0",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -415,13 +415,13 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containernetworking/plugins@v1.9.1",
+      "purl": "pkg:github/containernetworking/plugins@v1.10.0",
       "type": "application"
     },
     {
-      "group": "https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-windows-amd64-v1.9.1.tgz",
+      "group": "https://github.com/containernetworking/plugins/releases/download/v1.10.0/cni-plugins-windows-amd64-v1.10.0.tgz",
       "name": "win-overlay",
-      "version": "v1.9.1",
+      "version": "v1.10.0",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -438,7 +438,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/containernetworking/plugins@v1.9.1",
+      "purl": "pkg:github/containernetworking/plugins@v1.10.0",
       "type": "application"
     },
     {

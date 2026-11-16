@@ -1773,7 +1773,7 @@ Describe 'Enable-AddonFromConfig' -Tag 'unit', 'ci', 'addon' {
 
         It 'warns with the missing path and how to import the addon instead of failing' {
             InModuleScope -ModuleName $moduleName {
-                Should -Invoke Write-Warning -Times 1 -Scope Context -ParameterFilter { $Message -like "*'a1 impl1'*missing*a1\impl1\Enable.ps1*k2s addons import*" }
+                Should -Invoke Write-Warning -Times 1 -Scope Context -ParameterFilter { $Message -like "*'a1 impl1'*missing*a1\impl1\Enable.ps1*'k2s addons import a1 impl1 -f <path-to-artifact.tar>'*'k2s addons enable a1 impl1'*" }
             }
         }
     }

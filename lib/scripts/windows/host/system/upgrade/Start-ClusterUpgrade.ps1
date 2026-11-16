@@ -170,6 +170,9 @@ function Start-ClusterUpgrade {
 			Write-Log 'An ERROR occurred:' -Console
 			Write-Log $_.ScriptStackTrace -Console
 			Write-Log $_ -Console
+			# recorded so that the finally block keeps the backup needed for manual recovery
+			$errUpgrade = $_
+			Write-Log 'Rollback to the previous K2s version failed after the system upgrade failed' -Console
 			Write-Error 'System upgrade failed, please check the logs for more information !'
 			return $false
 		}
@@ -178,7 +181,10 @@ function Start-ClusterUpgrade {
 		if ($ShowProgress -eq $true) {
 			Write-Progress -Activity 'Remove exported resources..' -Id 1 -Status '5/8' -PercentComplete 50 -CurrentOperation 'Remove exported resources, please wait..'
 		}
-		if (-not $errUpgrade) {
+		if ($errUpgrade) {
+			Write-Log "Keeping backup directory '$BackupDir' for manual recovery because the rollback failed" -Console
+		}
+		else {
 			if (@($resourceRestoreErrors.Value).Count -gt 0) {
 				Write-Log "Keeping backup directory '$BackupDir' because some backed-up resources could not be restored" -Console
 			}

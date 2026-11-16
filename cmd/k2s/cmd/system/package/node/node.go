@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 // Package nodepackage implements the --node-package flag logic for
 // 'k2s system package'. It owns all constants, validation and PS command

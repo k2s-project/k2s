@@ -5,7 +5,7 @@
 # Go-built binaries are no longer committed to git, so there are no
 # auto-commit binary PRs to merge. Kept for reference only.
 
-name: "[DEPRECATED] Automerge from PR for binary build"
+name: "Repo - [DEPRECATED] Automerge from PR for binary build"
 
 on:
   workflow_dispatch:

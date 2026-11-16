@@ -7,6 +7,73 @@ BeforeAll {
     $moduleName = (Import-Module "$PSScriptRoot\addons.module.psm1" -PassThru -Force).Name
 }
 
+Describe 'Storage implementation conflict validation' -Tag 'unit', 'ci', 'addon' {
+    BeforeAll {
+        Import-Module "$PSScriptRoot\storage\storage-validation.module.psm1" -Force
+    }
+
+    Context 'no storage implementation enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return $null }
+        }
+
+        It 'allows <RequestedImplementation>' -TestCases @(
+            @{ RequestedImplementation = 'smb' }
+            @{ RequestedImplementation = 'ceph' }
+        ) {
+            param($RequestedImplementation)
+
+            Test-ConflictingStorageImplementation -RequestedImplementation $RequestedImplementation | Should -BeNullOrEmpty
+            Test-StorageImplementationEnabled -Implementation $RequestedImplementation | Should -BeFalse
+        }
+    }
+
+    Context 'only an unrelated addon enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return @([pscustomobject] @{Name = 'monitoring' }) }
+        }
+
+        It 'allows <RequestedImplementation>' -TestCases @(
+            @{ RequestedImplementation = 'smb' }
+            @{ RequestedImplementation = 'ceph' }
+        ) {
+            param($RequestedImplementation)
+
+            Test-ConflictingStorageImplementation -RequestedImplementation $RequestedImplementation | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'SMB enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return @([pscustomobject] @{Name = 'storage'; Implementation = 'smb' }) }
+        }
+
+        It 'blocks Ceph with disable guidance' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'ceph' | Should -Be 'Cannot enable storage ceph: smb storage is already enabled. Please disable smb storage first using: k2s addons disable storage smb'
+        }
+
+        It 'does not conflict with SMB itself' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'smb' | Should -BeNullOrEmpty
+            Test-StorageImplementationEnabled -Implementation 'smb' | Should -BeTrue
+        }
+    }
+
+    Context 'Ceph enabled' {
+        BeforeAll {
+            Mock -ModuleName $moduleName Get-AddonsConfig { return @([pscustomobject] @{Name = 'storage'; Implementation = 'ceph' }) }
+        }
+
+        It 'blocks SMB with disable guidance' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'smb' | Should -Be 'Cannot enable storage smb: ceph storage is already enabled. Please disable ceph storage first using: k2s addons disable storage ceph'
+        }
+
+        It 'does not conflict with Ceph itself' {
+            Test-ConflictingStorageImplementation -RequestedImplementation 'ceph' | Should -BeNullOrEmpty
+            Test-StorageImplementationEnabled -Implementation 'ceph' | Should -BeTrue
+        }
+    }
+}
+
 Describe 'Find-AddonManifests' -Tag 'unit', 'ci', 'addon' {
     Context 'Directory not specified' {
         It 'throws' {
@@ -2124,7 +2191,7 @@ Describe 'Install-CmctlCli' -Tag 'unit', 'ci', 'addon' {
                                 windows = [pscustomobject]@{
                                     curl = @(
                                         [pscustomobject]@{ destination = 'bin\\cmctl.exe'; url = 'http://example/cmctl.exe' }
-                                        [pscustomobject]@{ destination = 'bin\\kyverno.exe'; url = 'http://example/kyverno-cli_v1.19.2_windows_x86_64.zip' }
+                                        [pscustomobject]@{ destination = 'bin\\kyverno.exe'; url = 'http://example/kyverno-cli_v1.20.0_windows_x86_64.zip' }
                                     )
                                 }
                             }
@@ -2153,7 +2220,7 @@ Describe 'Install-CmctlCli' -Tag 'unit', 'ci', 'addon' {
 
             # Only cmctl.exe should be downloaded; the kyverno ZIP is handled by Install-KyvernoCli
             $script:downloadedUrls | Should -Contain 'http://example/cmctl.exe'
-            $script:downloadedUrls | Should -Not -Contain 'http://example/kyverno-cli_v1.19.2_windows_x86_64.zip'
+            $script:downloadedUrls | Should -Not -Contain 'http://example/kyverno-cli_v1.20.0_windows_x86_64.zip'
             Should -Invoke -ModuleName $moduleName Invoke-DownloadFile -Times 1 -Scope It
             Should -Invoke -ModuleName $moduleName Invoke-DownloadFile -Times 1 -Scope It -ParameterFilter {
                 $destination -match 'cmctl\.exe$' -and $source -eq 'http://example/cmctl.exe'

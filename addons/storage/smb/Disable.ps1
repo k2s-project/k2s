@@ -27,9 +27,8 @@ Param(
 $infraModule = "$PSScriptRoot/../../../lib/modules/windows/infra/k2s.infra.module/k2s.infra.module.psm1"
 $smbShareModule = "$PSScriptRoot\module\Smb-share.module.psm1"
 $addonsModule = "$PSScriptRoot\..\..\addons.module.psm1"
-$validationModule = "$PSScriptRoot\..\storage-validation.module.psm1"
 
-Import-Module $infraModule, $smbShareModule, $addonsModule, $validationModule
+Import-Module $infraModule, $smbShareModule, $addonsModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
 
@@ -86,9 +85,6 @@ if ($err) {
 if ($EncodeStructuredOutput -eq $true) {
     Send-ToCli -MessageType $MessageType -Message @{Error = $null }
 }
-
-# Mark SMB as disabled in registry
-Update-StorageImplementationRegistry -Implementation 'smb' -Enabled $false
 
 # adapt other addons when storage addon is called
 Update-Addons -AddonName $addonName

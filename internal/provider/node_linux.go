@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -18,6 +18,13 @@ type linuxNodeProvider struct {
 
 func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
 	return &linuxNodeProvider{installDir: cfg.InstallDir}
+}
+
+func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
+	if _, err := cfg.Validated(); err != nil {
+		return err
+	}
+	return NotSupportedError("node rename", "worker identity repair is currently available only from a Windows K2s host")
 }
 
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {

@@ -22,7 +22,7 @@ function DownloadYamlArtifacts($baseDirectory) {
     Write-Log "Download jq executable"
 
     $downloadedFile1 = "$baseDirectory\jq.exe"
-    DownloadFile "$downloadedFile1" https://github.com/stedolan/jq/releases/download/jq-1.6/jq-win64.exe $true $Proxy
+    DownloadFile "$downloadedFile1" https://github.com/stedolan/jq/releases/download/jq-1.8.2/jq-win64.exe $true $Proxy
     Move-Item -Path "$downloadedFile1" -Destination $baseDirectory
     Write-Log "Move $downloadedFile1 to $baseDirectory done"
 

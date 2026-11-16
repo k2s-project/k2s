@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Workflow to delete caches created by feature branch or pull requests when the feature branch is deleted or when the pull request is completed.
-name: Delete caches on completion
+name: Repo - Delete caches on completion
 
 on:
   delete:

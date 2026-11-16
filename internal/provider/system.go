@@ -68,9 +68,15 @@ type SystemUpgradeConfig struct {
 // SystemPackageConfig holds parameters for the package operation.
 type SystemPackageConfig struct {
 	OutputDir         string
+	PackageName       string
 	ForDeltaPackage   bool
 	BasePackagePath   string
 	TargetPackagePath string
+	NodePackage       bool
+	OS                string
+	Architecture      string
+	Proxy             string
+	IncludeGPU        bool
 	ShowOutput        bool
 }
 

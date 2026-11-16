@@ -99,6 +99,43 @@ var _ = Describe("nodepackage", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring(PackageVersionToFlagName))
 		})
+
+		It("returns nil when --arch defaults to amd64", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "debian12")
+
+			Expect(Validate(cmd.Flags(), supportedOS)).To(Succeed())
+		})
+
+		It("returns error for an unsupported --arch value", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "debian13")
+			cmd.Flags().Set(ArchFlagName, "mips")
+
+			err := Validate(cmd.Flags(), supportedOS)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("mips"))
+		})
+
+		It("returns error for --arch arm64 on a non-Debian --os", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "ubuntu22")
+			cmd.Flags().Set(ArchFlagName, "arm64")
+			supportedWithUbuntu := append([]string{"ubuntu22"}, supportedOS...)
+
+			err := Validate(cmd.Flags(), supportedWithUbuntu)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("Debian-family"))
+		})
+
+		It("accepts --arch arm64 for Debian targets independent of the command platform", func() {
+			cmd := newTestCmd()
+			cmd.Flags().Set(OSFlagName, "debian13")
+			cmd.Flags().Set(ArchFlagName, "arm64")
+
+			err := Validate(cmd.Flags(), supportedOS)
+			Expect(err).ToNot(HaveOccurred())
+		})
 	})
 
 	Describe("BuildCmd", func() {

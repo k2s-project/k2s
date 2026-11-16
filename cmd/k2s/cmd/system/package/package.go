@@ -15,6 +15,7 @@ import (
 	nodepackage "github.com/k2s-project/k2s/cmd/k2s/cmd/system/package/node"
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
+	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
@@ -49,6 +50,9 @@ var (
 
 	# Creates a node package with GPU support (includes NVIDIA Container Toolkit packages)
 	k2s system package --node-package --os debian12 --include-gpu --target-dir "C:\output" --name "debian12-node-gpu.zip" --proxy http://172.19.1.1:8181
+
+	# Creates an arm64 node package - must run on a Linux arm64 host (no cross-build/VM path exists)
+	sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 
 	# Creates a node-only delta package (between two node package zips)
 	k2s system package --node-package --delta-package --package-version-from "C:\tmp\debian13-node-v1.7.0.zip" --package-version-to "C:\tmp\debian13-node-v1.8.0.zip" --target-dir "C:\output" --name "debian13-node-delta-v1.7.0-to-v1.8.0.zip"
@@ -189,6 +193,20 @@ func init() {
 
 func systemPackage(cmd *cobra.Command, args []string) error {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
+
+	if nodepackage.IsSet(cmd.Flags()) {
+		packageConfig, err := buildNodePackageConfig(cmd.Flags())
+		if err != nil {
+			return err
+		}
+		context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
+		if err := context.Providers().System.Package(packageConfig); err != nil {
+			return err
+		}
+		cmdSession.Finish()
+		return nil
+	}
+
 	systemPackageCommand, params, err := buildSystemPackageCmd(cmd.Flags())
 	if err != nil {
 		return err
@@ -226,6 +244,40 @@ func systemPackage(cmd *cobra.Command, args []string) error {
 	cmdSession.Finish()
 
 	return nil
+}
+
+func buildNodePackageConfig(flags *pflag.FlagSet) (provider.SystemPackageConfig, error) {
+	targetDir := flags.Lookup(TargetDirectoryFlagName).Value.String()
+	if targetDir == "" {
+		return provider.SystemPackageConfig{}, fmt.Errorf("required flag(s) \"%s\" not set", TargetDirectoryFlagName)
+	}
+	zipName := flags.Lookup(ZipPackageFileNameFlagName).Value.String()
+	if zipName == "" {
+		return provider.SystemPackageConfig{}, fmt.Errorf("required flag(s) \"%s\" not set", ZipPackageFileNameFlagName)
+	}
+
+	delta, _ := flags.GetBool(DeltaPackageFlagName)
+	from, _ := flags.GetString(PackageVersionFromFlagName)
+	to, _ := flags.GetString(PackageVersionToFlagName)
+	showOutput, _ := flags.GetBool(common.OutputFlagName)
+	includeGPU, _ := flags.GetBool(nodepackage.IncludeGpuFlagName)
+	osName, _ := flags.GetString(nodepackage.OSFlagName)
+	architecture, _ := flags.GetString(nodepackage.ArchFlagName)
+	proxy, _ := flags.GetString(ProxyFlagName)
+
+	return provider.SystemPackageConfig{
+		OutputDir:         targetDir,
+		PackageName:       zipName,
+		ForDeltaPackage:   delta,
+		BasePackagePath:   from,
+		TargetPackagePath: to,
+		NodePackage:       true,
+		OS:                osName,
+		Architecture:      architecture,
+		Proxy:             proxy,
+		IncludeGPU:        includeGPU,
+		ShowOutput:        showOutput,
+	}, nil
 }
 
 func buildSystemPackageCmd(flags *pflag.FlagSet) (string, []string, error) {

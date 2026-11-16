@@ -114,7 +114,7 @@ $apiReady = $false
 $savedErrorActionPreference = $ErrorActionPreference
 for ($i = 0; $i -lt 60 -and -not $apiReady; $i++) {
     $ErrorActionPreference = 'Continue'
-    $apiReady = (& $kubectlExe get --raw /readyz 2>$null) -eq 'ok'
+    $apiReady = (& $kubectlExe get --raw /readyz --request-timeout=10s 2>$null) -eq 'ok'
     $ErrorActionPreference = $savedErrorActionPreference
     if (-not $apiReady) { Start-Sleep -Seconds 5 }
 }

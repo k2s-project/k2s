@@ -803,7 +803,7 @@ function Select-NewestImageRefs {
     )
     $versionKey = {
         param([string] $tag)
-        $numbers = if ($tag -match '^v?(\d+(?:\.\d+)*)') { @($Matches[1].Split('.') | ForEach-Object { [long]$_ }) } else { @() }
+        $numbers = @(if ($tag -match '^v?(\d+(?:\.\d+)*)') { @($Matches[1].Split('.') | ForEach-Object { [long]$_ }) } else { @() })
         while ($numbers.Count -lt 4) { $numbers += 0 }
         ($numbers[0..3] | ForEach-Object { $_.ToString('D10') }) -join '.'
     }
@@ -816,9 +816,9 @@ function Select-NewestImageRefs {
 .SYNOPSIS
 Exports the K2s system images (control plane, flannel, clusterip-webhook) present on the control plane node as OCI archives to the Windows host.
 .DESCRIPTION
-Image references are read from the node (crictl images), not hardcoded. Only the newest tag of each image is kept,
-because older versions stay on the node after a Kubernetes update. Only archives that are missing are written;
-other system archives are removed so the folder matches the running versions.
+Image references are read from the node (crictl images), not hardcoded. All cached tags are kept so images referenced
+by the active cluster configuration remain recoverable. Only archives that are missing are written; other system
+archives are removed so the folder matches the images present on the node.
 .PARAMETER TargetPath
 The folder on the Windows host receiving the archives (normally bin\linuxnode\images).
 #>
@@ -834,7 +834,6 @@ function Export-SystemImageArchivesToWindowsHost {
         throw '[ImageArchive] Could not list system images on the control plane node'
     }
     $imageRefs = @($listResult.Output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^[^\s]+/[^\s]+:[^\s]+$' } | Select-Object -Unique)
-    $imageRefs = @(Select-NewestImageRefs -ImageRefs $imageRefs)
     if ($imageRefs.Count -eq 0) {
         throw '[ImageArchive] No system images found on the control plane node'
     }

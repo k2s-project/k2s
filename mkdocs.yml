@@ -90,6 +90,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Quick Start: quickstart/index.md
+      - Quick Start (Linux Host): quickstart/linux-host.md
   - User Guide:
       - Hosting Variants: user-guide/hosting-variants.md
       - k2s CLI: user-guide/k2s-cli.md

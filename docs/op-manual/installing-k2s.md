@@ -77,7 +77,7 @@ To inspect the different install options, run:
     ```console
     git checkout tags/v1.4.0
     ```
-    Also make sure you have built the Go binaries (`.\bin\bgow` on *Windows*, `./bin/bgol` on *Linux*) as described in the [cloning instructions](getting-k2s.md#option-1-cloning-git-repository).
+    Also make sure you have built the Go binaries (`.\bin\bgow` on *Windows*, `bash ./build.sh` on *Linux*) as described in the [cloning instructions](getting-k2s.md#option-1-cloning-git-repository).
 
 !!! note
     *K2s* will start automatically after the installation has finished.

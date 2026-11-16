@@ -41,7 +41,7 @@ Go-built binaries (including `k2s.exe`) are **not committed** to the git reposit
 
 === "Linux"
     ```console
-    ./bin/bgol
+    bash ./build.sh
     ```
 
 !!! warning

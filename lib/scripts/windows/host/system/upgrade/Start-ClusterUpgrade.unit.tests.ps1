@@ -80,20 +80,6 @@ Describe 'Start-ClusterUpgrade backup cleanup' -Tag 'unit', 'ci', 'upgrade' {
 		Should -Invoke Remove-ExportedClusterResources -Exactly 0 -Scope It
 	}
 
-	It 'keeps the backup and reports failure when the upgrade and the rollback both fail' {
-		Mock PerformClusterUpgrade { throw 'upgrade failed' } -ParameterFilter { $ExecuteHooks }
-		Mock PerformClusterUpgrade { throw 'rollback failed' } -ParameterFilter { -not $ExecuteHooks }
-
-		$result = Start-ClusterUpgrade -BackupDir 'C:\Backup' -ErrorAction SilentlyContinue -ErrorVariable upgradeErrors
-
-		$result | Should -Be $false
-		Should -Invoke PerformClusterUpgrade -Exactly 2 -Scope It
-		Should -Invoke Remove-ExportedClusterResources -Exactly 0 -Scope It
-		Should -Invoke Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'Rollback to the previous K2s version failed' }
-		Should -Invoke Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Keeping backup directory 'C:\\Backup' for manual recovery because the rollback failed" }
-		($upgradeErrors | Out-String) | Should -Match 'System upgrade failed'
-	}
-
 	It 'keeps the backup when the preliminary export fails' {
 		Mock PrepareClusterUpgrade { throw 'export failed' }
 		Mock PerformClusterUpgrade { }

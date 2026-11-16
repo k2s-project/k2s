@@ -331,7 +331,6 @@ Describe "PerformClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 		Mock -ModuleName $moduleName Get-KubeBinPathGivenKubePath -MockWith { return "C:\KubeBinPath" }
 		Mock -ModuleName $moduleName Enable-AddonFromConfig
 		Mock -ModuleName $moduleName Restore-DeferredClusterIssuers { return @() }
-		Mock -ModuleName $moduleName Restore-DeferredNamespacedResources { return @() }
 	}
 
 	It "should perform cluster upgrade with execute hooks successfully" {
@@ -491,14 +490,13 @@ Describe "PerformClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 
 			Mock Invoke-ClusterUninstall
 			Mock Import-NotNamespacedResources { $events.Add('import-cluster') | Out-Null }
-			Mock Import-NamespacedResources { $events.Add('import-namespaced') | Out-Null; return @{ Errors = @(); Warnings = @(); WebhookFailures = @(); FailedResources = @() } }
+			Mock Import-NamespacedResources { $events.Add('import-namespaced') | Out-Null }
 			Mock Enable-AddonFromConfig { $events.Add('enable-addon') | Out-Null }
 			Mock Restore-DeferredClusterIssuers { $events.Add('restore-clusterissuers') | Out-Null; return @() }
-			Mock Restore-DeferredNamespacedResources { $events.Add('restore-namespaced') | Out-Null; return @() }
 
 			PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList $enabledAddonsList -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -resourceRestoreErrors $restoreErrors
 
-			$events | Should -Be @('import-cluster', 'import-namespaced', 'enable-addon', 'restore-clusterissuers', 'restore-namespaced')
+			$events | Should -Be @('import-cluster', 'import-namespaced', 'enable-addon', 'restore-clusterissuers')
 			Should -Invoke Import-NotNamespacedResources -Exactly 1 -Scope It -ParameterFilter { $DeferredResourceTypes -contains 'clusterissuers' }
 			Should -Invoke Restore-DeferredClusterIssuers -Exactly 1 -Scope It -ParameterFilter { $folderResources -eq 'C:\Backup\NotNamespaced' -and $ExePath -eq 'C:\KubeBinPath' }
 			@($restoreErrors.Value).Count | Should -Be 0
@@ -548,58 +546,6 @@ Describe "PerformClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 			$restoreErrors.Value[0] | Should -Match 'unexpected kubectl failure'
 			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'RESOURCE RESTORE ERRORS' -and $Console }
 			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'Upgraded successfully' }
-		}
-	}
-
-	It 'retries namespaced cert-manager resources that failed during import and keeps their failures as restore errors' {
-		InModuleScope $moduleName {
-			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
-			$restoreErrors = [ref]@()
-			$failed = @(
-				@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\Backup\Namespaced\app\issuers.yaml' },
-				@{ Namespace = 'app'; ResourceType = 'certificates'; File = 'C:\Backup\Namespaced\app\certificates.yaml' }
-			)
-			Mock Invoke-ClusterUninstall
-			Mock Import-NamespacedResources { return @{ Errors = @(); Warnings = @('webhook'); WebhookFailures = $failed; FailedResources = $failed } }
-			Mock Restore-DeferredNamespacedResources { return @('Backed-up certificates in namespace app could not be restored: denied') }
-
-			{ PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -resourceRestoreErrors $restoreErrors } | Should -Not -Throw
-
-			Should -Invoke Restore-DeferredNamespacedResources -Exactly 1 -Scope It -ParameterFilter { @($FailedResources).Count -eq 2 -and $ExePath -eq 'C:\KubeBinPath' -and $CertManagerState -is [hashtable] }
-			Should -Invoke Restore-DeferredClusterIssuers -Exactly 1 -Scope It -ParameterFilter { $CertManagerState -is [hashtable] }
-			@($restoreErrors.Value).Count | Should -Be 1
-			$restoreErrors.Value[0] | Should -Match 'certificates in namespace app'
-			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'RESOURCE RESTORE ERRORS' -and $Console }
-			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'backup directory is kept: C:\\Backup' }
-			Should -Invoke Write-Log -Times 0 -Scope It -ParameterFilter { $Messages -match 'kubectl create -f .*clusterissuers\.yaml' }
-			Should -Invoke Write-Log -Times 1 -Scope It -ParameterFilter { $Messages -match 'Upgraded successfully' }
-		}
-	}
-
-	It 'combines ClusterIssuer and namespaced restore errors' {
-		InModuleScope $moduleName {
-			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
-			$restoreErrors = [ref]@()
-			Mock Invoke-ClusterUninstall
-			Mock Restore-DeferredClusterIssuers { return @('Backed-up ClusterIssuers were not restored: the cert-manager API/webhook did not become ready') }
-			Mock Restore-DeferredNamespacedResources { throw 'unexpected kubectl failure' }
-
-			{ PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -resourceRestoreErrors $restoreErrors } | Should -Not -Throw
-
-			@($restoreErrors.Value).Count | Should -Be 2
-			$restoreErrors.Value[0] | Should -Match 'ClusterIssuers'
-			$restoreErrors.Value[1] | Should -Match 'namespaced resources were not restored: unexpected kubectl failure'
-		}
-	}
-
-	It 'does not retry namespaced resources when resource import is skipped' {
-		InModuleScope $moduleName {
-			$memoryVM = @{ Startup = '4GB'; DynamicMemoryEnabled = $false }
-			Mock Invoke-ClusterUninstall
-
-			PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir 'C:\Backup' -memoryVM $memoryVM -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath 'C:\Backup\Hooks' -logFilePathBeforeUninstall 'C:\Backup\logfile.log' -skipResources
-
-			Should -Invoke Restore-DeferredNamespacedResources -Exactly 0 -Scope It
 		}
 	}
 }
@@ -895,7 +841,6 @@ Describe 'Invoke-RestoreKubectl' -Tag 'unit', 'ci', 'upgrade' {
 using System;
 public static class FakeKubectl {
 	public static int Main(string[] args) {
-		if (args.Length >= 2 && args[0] == "get" && args[1] == "namespace") { return 0; }
 		string stdout = Environment.GetEnvironmentVariable("FAKE_KUBECTL_STDOUT");
 		string stderr = Environment.GetEnvironmentVariable("FAKE_KUBECTL_STDERR");
 		string exitCode = Environment.GetEnvironmentVariable("FAKE_KUBECTL_EXIT");
@@ -947,185 +892,6 @@ public static class FakeKubectl {
 			{ Invoke-RestoreKubectl -ExePath $Missing -Arguments @('get', 'clusterissuers') } | Should -Throw
 
 			$ErrorActionPreference | Should -Be 'Stop'
-		}
-	}
-
-	It 'records failed namespaced resource files of Import-NamespacedResources for a later retry even when the caller uses ErrorActionPreference Stop' {
-		$env:FAKE_KUBECTL_STDERR = 'Error from server (InternalError): failed calling webhook "webhook.cert-manager.io": service "cert-manager-webhook" not found'
-		$env:FAKE_KUBECTL_EXIT = '1'
-		$namespaced = Join-Path $TestDrive 'Namespaced'
-		New-Item -ItemType Directory -Path (Join-Path $namespaced 'app') -Force | Out-Null
-		Set-Content -Path (Join-Path $namespaced 'app\issuers.yaml') -Value 'kind: List'
-		Set-Content -Path (Join-Path $namespaced 'app\certificates.yaml') -Value 'kind: List'
-		Set-Content -Path (Join-Path $namespaced 'app\ingresses.yaml') -Value 'kind: List'
-		Set-Content -Path (Join-Path $namespaced 'app\ingressroutes.yaml') -Value 'kind: List'
-		InModuleScope $moduleName -Parameters @{ Bin = $fakeBin; Folder = $namespaced } {
-			Mock Write-Log { }
-			$ErrorActionPreference = 'Stop'
-
-			$result = Import-NamespacedResources -folderNamespaces $Folder -ExePath $Bin
-
-			@($result.FailedResources).Count | Should -Be 4
-			@($result.FailedResources | ForEach-Object { $_.ResourceType }) | Should -Be @('ingresses', 'certificates', 'issuers', 'ingressroutes')
-			@($result.FailedResources)[1].Namespace | Should -Be 'app'
-			@($result.FailedResources)[1].File | Should -Be (Join-Path $Folder 'app\certificates.yaml')
-			@($result.WebhookFailures).Count | Should -Be 3
-			$ErrorActionPreference | Should -Be 'Stop'
-		}
-	}
-}
-
-Describe 'Restore-DeferredNamespacedResources' -Tag 'unit', 'ci', 'upgrade' {
-	BeforeEach {
-		InModuleScope $moduleName {
-			$script:retryEvents = [System.Collections.ArrayList]@()
-			Mock Write-Log { }
-			Mock Wait-ForCertManagerAvailable { $script:retryEvents.Add('wait') | Out-Null; return $true }
-			Mock Invoke-RestoreKubectl {
-				$script:retryEvents.Add(($Arguments -join ' ')) | Out-Null
-				if ($Arguments[0] -eq 'get') { return [pscustomobject]@{ Output = 'deployment.apps/cert-manager-webhook'; ExitCode = 0 } }
-				return [pscustomobject]@{ Output = 'applied'; ExitCode = 0 }
-			}
-		}
-	}
-
-	It 'does nothing when nothing or only certificaterequests failed' {
-		InModuleScope $moduleName {
-			$failed = @(@{ Namespace = 'app'; ResourceType = 'certificaterequests'; File = 'C:\b\app\certificaterequests.yaml' })
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-			$none = @(Restore-DeferredNamespacedResources -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 0
-			$none.Count | Should -Be 0
-			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It
-			Should -Invoke Wait-ForCertManagerAvailable -Exactly 0 -Scope It
-		}
-	}
-
-	It 'retries failed non-cert-manager resources such as ingresses without waiting for cert-manager' {
-		InModuleScope $moduleName {
-			$failed = @(
-				@{ Namespace = 'web'; ResourceType = 'ingressroutes'; File = 'C:\b\web\ingressroutes.yaml' },
-				@{ Namespace = 'web'; ResourceType = 'ingresses'; File = 'C:\b\web\ingresses.yaml' }
-			)
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 0
-			$script:retryEvents | Should -Be @(
-				'apply --server-side --force-conflicts -f C:\b\web\ingresses.yaml -n web',
-				'apply --server-side --force-conflicts -f C:\b\web\ingressroutes.yaml -n web'
-			)
-		}
-	}
-
-	It 'reports a still failing ingress with a manual recovery command so the backup is kept' {
-		InModuleScope $moduleName {
-			Mock Invoke-RestoreKubectl { return [pscustomobject]@{ Output = 'Error from server (InternalError): failed calling webhook "validate.nginx.ingress.kubernetes.io"'; ExitCode = 1 } }
-			$failed = @(@{ Namespace = 'web'; ResourceType = 'ingresses'; File = 'C:\b\web\ingresses.yaml' })
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 1
-			$errors[0] | Should -Match 'ingresses in namespace web could not be restored'
-			$errors[0] | Should -Match ([regex]::Escape('Restore them manually: kubectl apply --server-side --force-conflicts -f "C:\b\web\ingresses.yaml" -n web'))
-			Should -Invoke Wait-ForCertManagerAvailable -Exactly 0 -Scope It
-		}
-	}
-
-	It 'retries failed resources in import order with issuers before certificates, after cert-manager is ready' {
-		InModuleScope $moduleName {
-			$failed = @(
-				@{ Namespace = 'app'; ResourceType = 'certificates'; File = 'C:\b\app\certificates.yaml' },
-				@{ Namespace = 'app'; ResourceType = 'certificaterequests'; File = 'C:\b\app\certificaterequests.yaml' },
-				@{ Namespace = 'app'; ResourceType = 'deployments'; File = 'C:\b\app\deployments.yaml' },
-				@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\b\app\issuers.yaml' }
-			)
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 0
-			$script:retryEvents | Should -Be @(
-				'get deployment cert-manager-webhook -n cert-manager --ignore-not-found -o name',
-				'wait',
-				'apply --server-side --force-conflicts -f C:\b\app\deployments.yaml -n app',
-				'apply --server-side --force-conflicts -f C:\b\app\issuers.yaml -n app',
-				'apply --server-side --force-conflicts -f C:\b\app\certificates.yaml -n app'
-			)
-		}
-	}
-
-	It 'shares one cert-manager readiness check with the ClusterIssuer restore of the same phase' {
-		InModuleScope $moduleName -Parameters @{ Folder = $TestDrive } {
-			Mock Wait-ForCertManagerAvailable { return $false }
-			Set-Content -Path (Join-Path $Folder 'clusterissuers.yaml') -Value 'kind: List'
-			$failed = @(@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\b\app\issuers.yaml' })
-			$state = @{}
-
-			$issuerErrors = @(Restore-DeferredClusterIssuers -folderResources $Folder -ExePath 'C:\bin' -CertManagerState $state)
-			$namespacedErrors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin' -CertManagerState $state)
-
-			$issuerErrors[0] | Should -Match 'did not become ready'
-			$namespacedErrors[0] | Should -Match 'did not become ready'
-			Should -Invoke Wait-ForCertManagerAvailable -Exactly 1 -Scope It
-		}
-	}
-
-	It 'checks cert-manager readiness again for a new restore phase' {
-		InModuleScope $moduleName {
-			$failed = @(@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\b\app\issuers.yaml' })
-
-			Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin' -CertManagerState @{} | Out-Null
-			Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin' -CertManagerState @{} | Out-Null
-
-			Should -Invoke Wait-ForCertManagerAvailable -Exactly 2 -Scope It
-		}
-	}
-
-	It 'reports every resource that still fails with a manual recovery command' {
-		InModuleScope $moduleName {
-			Mock Invoke-RestoreKubectl { return [pscustomobject]@{ Output = 'Error from server (Forbidden): admission webhook denied the request'; ExitCode = 1 } } -ParameterFilter { $Arguments[0] -eq 'apply' -and $Arguments -contains 'C:\b\app\certificates.yaml' }
-			$failed = @(
-				@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\b\app\issuers.yaml' },
-				@{ Namespace = 'app'; ResourceType = 'certificates'; File = 'C:\b\app\certificates.yaml' }
-			)
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 1
-			$errors[0] | Should -Match 'certificates in namespace app could not be restored'
-			$errors[0] | Should -Match 'admission webhook denied the request'
-			$errors[0] | Should -Match ([regex]::Escape('kubectl apply --server-side --force-conflicts -f "C:\b\app\certificates.yaml" -n app'))
-		}
-	}
-
-	It 'reports all failed resources without applying them when cert-manager does not become ready' {
-		InModuleScope $moduleName {
-			Mock Wait-ForCertManagerAvailable { return $false }
-			$failed = @(
-				@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\b\app\issuers.yaml' },
-				@{ Namespace = 'web'; ResourceType = 'certificates'; File = 'C:\b\web\certificates.yaml' }
-			)
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 2
-			$errors | ForEach-Object { $_ | Should -Match 'did not become ready' }
-			Should -Invoke Invoke-RestoreKubectl -Exactly 0 -Scope It -ParameterFilter { $Arguments[0] -eq 'apply' }
-		}
-	}
-
-	It 'reports all failed resources when cert-manager is not installed' {
-		InModuleScope $moduleName {
-			Mock Invoke-RestoreKubectl { return [pscustomobject]@{ Output = ''; ExitCode = 0 } } -ParameterFilter { $Arguments[0] -eq 'get' }
-			$failed = @(@{ Namespace = 'app'; ResourceType = 'issuers'; File = 'C:\b\app\issuers.yaml' })
-
-			$errors = @(Restore-DeferredNamespacedResources -FailedResources $failed -ExePath 'C:\bin')
-
-			$errors.Count | Should -Be 1
-			$errors[0] | Should -Match 'cert-manager is not installed'
-			Should -Invoke Wait-ForCertManagerAvailable -Exactly 0 -Scope It
 		}
 	}
 }

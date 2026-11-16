@@ -158,6 +158,7 @@ Describe 'Set-RoutesToKubemaster' -Tag 'unit', 'ci', 'network' {
         @{ ErrorId = 'CimAlreadyExists'; Category = 'ResourceExists' }
         @{ ErrorId = 'Windows System Error 183,New-NetRoute'; Category = 'NotSpecified' }
         @{ ErrorId = 'Windows System Error 5010,New-NetRoute'; Category = 'NotSpecified' }
+        @{ ErrorId = 'Windows System Error 87,New-NetRoute'; Category = 'InvalidArgument' }
     ) {
         param($ErrorId, $Category)
         $script:routeCreated = $false
@@ -180,7 +181,7 @@ Describe 'Set-RoutesToKubemaster' -Tag 'unit', 'ci', 'network' {
         Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Message -like '*created concurrently*' }
     }
 
-    It 'rejects a duplicate error without the expected active route: <Reason>' -TestCases @(
+    It 'rejects the error 87 duplicate without the expected active route: <Reason>' -TestCases @(
         @{ Reason = 'missing'; Prefix = $null; Index = 27; NextHop = '0.0.0.0'; Store = 'ActiveStore' }
         @{ Reason = 'wrong prefix'; Prefix = '172.22.0.0/16'; Index = 27; NextHop = '0.0.0.0'; Store = 'ActiveStore' }
         @{ Reason = 'wrong interface'; Prefix = '172.19.1.0/24'; Index = 42; NextHop = '0.0.0.0'; Store = 'ActiveStore' }
@@ -193,7 +194,7 @@ Describe 'Set-RoutesToKubemaster' -Tag 'unit', 'ci', 'network' {
             $script:routeCreated = $true
             throw [System.Management.Automation.ErrorRecord]::new(
                 [System.Exception]::new('Instance MSFT_NetRoute already exists'),
-                'CimAlreadyExists', [System.Management.Automation.ErrorCategory]::ResourceExists, $null)
+                'Windows System Error 87,New-NetRoute', [System.Management.Automation.ErrorCategory]::InvalidArgument, $null)
         }
         Mock Get-NetRoute {
             if ($script:routeCreated -and $Prefix -and $PolicyStore -eq $Store) {
@@ -207,11 +208,17 @@ Describe 'Set-RoutesToKubemaster' -Tag 'unit', 'ci', 'network' {
         Should -Invoke Write-Log -Times 0 -Exactly -ParameterFilter { $Message -like '*created concurrently*' }
     }
 
-    It 'propagates non-duplicate creation errors even if a matching route appears' {
+    It 'propagates non-duplicate creation errors even if a matching route appears: <ErrorId>' -TestCases @(
+        @{ ErrorId = 'AccessDenied'; Category = 'PermissionDenied'; Message = 'Access denied creating route' }
+        @{ ErrorId = 'Windows System Error 87,New-NetRoute'; Category = 'InvalidArgument'; Message = 'The parameter is incorrect' }
+    ) {
+        param($ErrorId, $Category, $Message)
         $script:routeCreated = $false
         Mock New-NetRoute {
             $script:routeCreated = $true
-            throw 'Access denied creating route'
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.Exception]::new($Message),
+                $ErrorId, [System.Management.Automation.ErrorCategory]$Category, $null)
         }
         Mock Get-NetRoute {
             if ($script:routeCreated) {
@@ -219,7 +226,7 @@ Describe 'Set-RoutesToKubemaster' -Tag 'unit', 'ci', 'network' {
             }
         }
 
-        { Set-RoutesToKubemaster } | Should -Throw '*Access denied creating route*'
+        { Set-RoutesToKubemaster } | Should -Throw "*$Message*"
 
         Should -Invoke Get-NetRoute -Times 1 -Exactly
         Should -Invoke Remove-NetRoute -Times 0 -Exactly

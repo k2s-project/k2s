@@ -495,8 +495,11 @@ function Set-RoutesToKubemaster {
                 -RouteMetric 3 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
         }
         catch {
+            $isDuplicateWithGenericCode = $_.FullyQualifiedErrorId -match '^Windows System Error 87,' -and
+                $_.Exception.Message -match '^Instance MSFT_NetRoute already exists[.\s]*$'
             if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ResourceExists -and
-                $_.FullyQualifiedErrorId -notmatch '^Windows System Error (183|5010),') {
+                $_.FullyQualifiedErrorId -notmatch '^Windows System Error (183|5010),' -and
+                -not $isDuplicateWithGenericCode) {
                 throw
             }
             $connectedRoute = Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop |

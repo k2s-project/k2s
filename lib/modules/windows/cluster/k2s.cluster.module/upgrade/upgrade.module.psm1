@@ -422,10 +422,11 @@ function Import-NamespacedResources {
     $errors = @()
     $warnings = @()
     $webhookFailures = @()  # Track resources that failed due to missing webhooks
+    $failedResources = @()  # Every failed ordered resource file, so dependent resources can be retried later
 
     if (-not (Test-Path $folderNamespaces)) {
         Write-Log "No namespaced resources to restore"
-        return @{ Errors = @(); Warnings = @(); WebhookFailures = @() }
+        return @{ Errors = @(); Warnings = @(); WebhookFailures = @(); FailedResources = @() }
     }
 
     # Define restoration order within each namespace
@@ -486,6 +487,11 @@ function Import-NamespacedResources {
                             ($output -match "Error from server")
 
                 if ($hasError) {
+                    $failedResources += @{
+                        Namespace = $namespace
+                        ResourceType = $resourceType
+                        File = $file
+                    }
                     if ($isWebhookError) {
                         $msg = "⚠️  Webhook validation failed for $resourceType in namespace $namespace (addon may need to be re-enabled)"
                         Write-Log $msg
@@ -533,7 +539,7 @@ function Import-NamespacedResources {
         }
     }
 
-    return @{ Errors = $errors; Warnings = $warnings; WebhookFailures = $webhookFailures }
+    return @{ Errors = $errors; Warnings = $warnings; WebhookFailures = $webhookFailures; FailedResources = $failedResources }
 }
 
 function Invoke-RestoreKubectl {
@@ -543,11 +549,99 @@ function Invoke-RestoreKubectl {
 		[Parameter(Mandatory = $true)]
 		[string[]] $Arguments
 	)
-	$output = & "$ExePath\kubectl.exe" @Arguments 2>&1
-	$exitCode = $LASTEXITCODE
+	# with an inherited 'Stop' preference, Windows PowerShell 5.1 turns native stderr (e.g. AlreadyExists) into a terminating error
+	$previousErrorActionPreference = $ErrorActionPreference
+	$ErrorActionPreference = 'Continue'
+	try {
+		$output = & "$ExePath\kubectl.exe" @Arguments 2>&1
+		$exitCode = $LASTEXITCODE
+	}
+	finally {
+		$ErrorActionPreference = $previousErrorActionPreference
+	}
 	# ToString() keeps each stderr line as plain text (Out-String would decorate the first one with PowerShell error details)
 	$text = (@($output | ForEach-Object { $_.ToString() }) -join "`n").Trim()
 	return [pscustomobject]@{ Output = $text; ExitCode = $exitCode }
+}
+
+<#
+.SYNOPSIS
+Checks whether cert-manager can accept restored resources again.
+.DESCRIPTION
+Returns $null when the cert-manager webhook deployment exists and Wait-ForCertManagerAvailable
+('cmctl check api') succeeds; otherwise returns the reason why cert-manager resources cannot be restored yet.
+#>
+function Get-CertManagerRestoreBlocker {
+	param (
+		[Parameter(Mandatory = $true)]
+		[string] $ExePath
+	)
+
+	$webhook = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('get', 'deployment', 'cert-manager-webhook', '-n', 'cert-manager', '--ignore-not-found', '-o', 'name')
+	if ($webhook.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($webhook.Output)) {
+		return "cert-manager is not installed after addon re-enablement. $($webhook.Output)".Trim()
+	}
+
+	$certManagerReady = $false
+	try {
+		$certManagerReady = (Wait-ForCertManagerAvailable) -eq $true
+	}
+	catch {
+		Write-Log "[Restore] cert-manager readiness check failed: $_"
+	}
+	if (-not $certManagerReady) {
+		return 'the cert-manager API/webhook did not become ready'
+	}
+	return $null
+}
+
+<#
+.SYNOPSIS
+Retries namespaced cert-manager resources whose restore failed before cert-manager was re-enabled.
+.DESCRIPTION
+Issuers and Certificates are validated by the cert-manager webhook. When they are imported before addon
+re-enablement, the restored webhook configuration rejects them because the webhook service does not exist yet.
+Only the failed issuers/certificates files are re-applied (issuers first, since Certificates reference them),
+with the same server-side apply used by Import-NamespacedResources, once cert-manager is ready.
+CertificateRequests are not retried: cert-manager recreates them from the restored Certificates.
+Returns the list of error messages for resources that remain unrestored; empty when nothing is left to restore.
+#>
+function Restore-DeferredNamespacedResources {
+	param (
+		[Parameter(Mandatory = $false, HelpMessage = 'FailedResources returned by Import-NamespacedResources')]
+		[object[]] $FailedResources = @(),
+		[Parameter(Mandatory = $true, HelpMessage = 'Directory containing kubectl.exe of the current cluster')]
+		[string] $ExePath
+	)
+
+	$retryOrder = @('issuers', 'certificates')
+	$toRetry = @(@($FailedResources) | Where-Object { $null -ne $_ -and $retryOrder -contains $_.ResourceType } |
+		Sort-Object -Property @{ Expression = { $retryOrder.IndexOf($_.ResourceType) } }, @{ Expression = { $_.Namespace } })
+	if ($toRetry.Count -eq 0) {
+		return @()
+	}
+
+	Write-Log "[Restore] Retrying $($toRetry.Count) namespaced cert-manager resource file(s) after addon re-enablement" -Console
+
+	$blocker = Get-CertManagerRestoreBlocker -ExePath $ExePath
+	$errors = @()
+	foreach ($resource in $toRetry) {
+		$manualHint = "Restore them manually once cert-manager is available: kubectl apply --server-side --force-conflicts -f `"$($resource.File)`" -n $($resource.Namespace)"
+		if ($null -ne $blocker) {
+			$errors += "Backed-up $($resource.ResourceType) in namespace $($resource.Namespace) were not restored: $blocker. $manualHint"
+			continue
+		}
+
+		$result = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('apply', '--server-side', '--force-conflicts', '-f', $resource.File, '-n', $resource.Namespace)
+		Write-Log $result.Output
+		if ($result.ExitCode -ne 0) {
+			$errors += "Backed-up $($resource.ResourceType) in namespace $($resource.Namespace) could not be restored: $($result.Output) $manualHint"
+		}
+		else {
+			Write-Log "[Restore] Restored $($resource.ResourceType) in namespace $($resource.Namespace)" -Console
+		}
+	}
+	return $errors
 }
 
 <#
@@ -576,32 +670,21 @@ function Restore-DeferredClusterIssuers {
 
 	Write-Log '[Restore] Restoring deferred cluster resource: clusterissuers' -Console
 
-	$webhook = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('get', 'deployment', 'cert-manager-webhook', '-n', 'cert-manager', '--ignore-not-found', '-o', 'name')
-	if ($webhook.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($webhook.Output)) {
-		return @("Backed-up ClusterIssuers were not restored: cert-manager is not installed after addon re-enablement. $($webhook.Output)".Trim())
-	}
-
-	$certManagerReady = $false
-	try {
-		$certManagerReady = (Wait-ForCertManagerAvailable) -eq $true
-	}
-	catch {
-		Write-Log "[Restore] cert-manager readiness check failed: $_"
-	}
-	if (-not $certManagerReady) {
-		return @('Backed-up ClusterIssuers were not restored: the cert-manager API/webhook did not become ready')
+	$blocker = Get-CertManagerRestoreBlocker -ExePath $ExePath
+	if ($null -ne $blocker) {
+		return @("Backed-up ClusterIssuers were not restored: $blocker")
 	}
 
 	$result = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('create', '-f', $file)
 	Write-Log $result.Output
-	$outputLines = @($result.Output -split '\r?\n')
-	$alreadyExisting = @($outputLines | Where-Object { $_ -match '^Error from server \(AlreadyExists\)' })
-	$failures = @($outputLines | Where-Object { ($_ -match '^error:' -or $_ -match '^Error from server') -and $_ -notmatch '^Error from server \(AlreadyExists\)' })
-	if ($failures.Count -gt 0 -or ($result.ExitCode -ne 0 -and $alreadyExisting.Count -eq 0)) {
-		return @("Backed-up ClusterIssuers could not be restored: $($result.Output)")
-	}
-	foreach ($line in $alreadyExisting) {
-		Write-Log "[Restore] Keeping existing ClusterIssuer: $line"
+	if ($result.ExitCode -ne 0) {
+		# A nonzero create can mix AlreadyExists with real failures; only an existence check of every backed-up issuer proves the restore
+		$verify = Invoke-RestoreKubectl -ExePath $ExePath -Arguments @('get', '-f', $file, '-o', 'name')
+		Write-Log $verify.Output
+		if ($verify.ExitCode -ne 0) {
+			return @("Backed-up ClusterIssuers could not be restored or verified. Create output: $($result.Output) Verification output: $($verify.Output) Restore the missing ClusterIssuers manually: kubectl create -f `"$file`"")
+		}
+		Write-Log "[Restore] Verified all backed-up ClusterIssuers exist; existing ClusterIssuers were kept unchanged"
 	}
 
 	Write-Log '[Restore] Backed-up ClusterIssuers restored' -Console
@@ -1597,6 +1680,7 @@ function PerformClusterUpgrade {
 		$kubeExeFolder = Get-KubeBinPathGivenKubePath -KubePathLocal $K2sPathToInstallFrom
 		
 		# import of resources - images are already restored, so no pulls needed
+		$namespacedImport = $null
 		if ($skipResources) {
 			Write-Log 'Skipping resource import as requested' -Console
 		} else {
@@ -1609,7 +1693,7 @@ function PerformClusterUpgrade {
 			if ($ShowProgress -eq $true) {
 				Write-Progress -Activity 'Apply namespaced resources on cluster..' -Id 1 -Status '8.5/10' -PercentComplete 85 -CurrentOperation 'Apply namespaced resources, please wait..'
 			}
-			Import-NamespacedResources -folderNamespaces (Join-Path $BackupDir 'Namespaced') -ExePath $kubeExeFolder
+			$namespacedImport = Import-NamespacedResources -folderNamespaces (Join-Path $BackupDir 'Namespaced') -ExePath $kubeExeFolder
 		}
 
 		# re-enable previously enabled addons
@@ -1654,6 +1738,17 @@ function PerformClusterUpgrade {
 			catch {
 				# a ClusterIssuer restore failure must not trigger an upgrade rollback
 				$restoreErrors = @("Backed-up ClusterIssuers were not restored: $_")
+			}
+			$failedNamespacedResources = @()
+			if ($namespacedImport -is [hashtable] -and $null -ne $namespacedImport.FailedResources) {
+				$failedNamespacedResources = @($namespacedImport.FailedResources)
+			}
+			try {
+				$restoreErrors += @(Restore-DeferredNamespacedResources -FailedResources $failedNamespacedResources -ExePath $kubeExeFolder)
+			}
+			catch {
+				# a namespaced cert-manager resource restore failure must not trigger an upgrade rollback
+				$restoreErrors += "Backed-up namespaced cert-manager resources were not restored: $_"
 			}
 			foreach ($restoreError in $restoreErrors) {
 				Write-Log "[Restore] ERROR: $restoreError" -Console
@@ -1719,8 +1814,10 @@ function PerformClusterUpgrade {
 				Write-Log "**   - $restoreError" -Console
 			}
 			Write-Log "** The backup directory is kept: $BackupDir" -Console
-			Write-Log '** After cert-manager is available, restore the missing backed-up ClusterIssuers with:' -Console
-			Write-Log "**   kubectl create -f `"$clusterIssuersBackup`"" -Console
+			if (@($restoreErrors | Where-Object { $_ -match 'ClusterIssuers' }).Count -gt 0) {
+				Write-Log '** After cert-manager is available, restore the missing backed-up ClusterIssuers with:' -Console
+				Write-Log "**   kubectl create -f `"$clusterIssuersBackup`"" -Console
+			}
 			Write-Log '********************************************************************************************' -Console
 		}
 

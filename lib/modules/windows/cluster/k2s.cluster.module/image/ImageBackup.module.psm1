@@ -529,6 +529,13 @@ function Backup-K2sImages {
                 if ($usedFileNames.ContainsKey($safeFileName) -and -not [string]::IsNullOrWhiteSpace("$($image.node)")) {
                     $safeFileName = "$safeFileName-$($image.node -replace '[/\\:*?"<>|]', '_')"
                 }
+                # The suffixed name can still collide (same image twice on one node, or another image's base name), so never reuse or overwrite an archive
+                $baseFileName = $safeFileName
+                $collisionIndex = 2
+                while ($usedFileNames.ContainsKey($safeFileName) -or (Test-Path (Join-Path $imagesDir "$safeFileName.tar"))) {
+                    $safeFileName = "$baseFileName-$collisionIndex"
+                    $collisionIndex++
+                }
                 $usedFileNames[$safeFileName] = $true
                 $tarPath = Join-Path $imagesDir "$safeFileName.tar"
 

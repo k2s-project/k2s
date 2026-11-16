@@ -365,6 +365,116 @@ if ([string]::IsNullOrEmpty(`$Nodes)) {
                 }
             }
         }
+
+        Context 'archive file name collisions' {
+            BeforeEach {
+                # Each export writes a unique sequence number, so an overwritten archive is detectable
+                $script:seqExportScript = Join-Path $TestDrive 'Export-Image-seq.ps1'
+                $script:seqCallLog = Join-Path $TestDrive 'seq-calls.txt'
+                Remove-Item $script:seqCallLog -ErrorAction SilentlyContinue
+                Set-Content -Path $script:seqExportScript -Value @"
+param([string] `$Name, [string] `$ExportPath, [string] `$Nodes = '', [string] `$CrictlExePath, [string] `$CrictlConfigPath, [string] `$NerdctlExePath, [string] `$CtrExePath)
+if (Test-Path `$ExportPath) { throw "archive overwritten: `$ExportPath" }
+Add-Content -Path '$script:seqCallLog' -Value `$ExportPath
+Set-Content -Path `$ExportPath -Value (@(Get-Content '$script:seqCallLog').Count)
+"@
+            }
+
+            It 'keeps a unique archive when the node-suffixed name equals another image name' {
+                InModuleScope $script:moduleName -Parameters @{ ExportScript = $script:seqExportScript } {
+                    param($ExportScript)
+                    Mock Write-Log {}
+                    Mock New-ImageProcessingLog {}
+                    Mock Get-ConfiguredLogDirectory { 'TestDrive:\logs' }
+
+                    $images = @(
+                        @{ repository = 'repo/app'; tag = 'v1'; imageid = 'id1'; node = 'kubemaster'; size = '1MB' },
+                        @{ repository = 'repo/app'; tag = 'v1-winhost'; imageid = 'id2'; node = 'kubemaster'; size = '1MB' },
+                        @{ repository = 'repo/app'; tag = 'v1'; imageid = 'id3'; node = 'winhost'; size = '1MB' }
+                    )
+
+                    $result = Backup-K2sImages -BackupDirectory 'TestDrive:\backup-collide' -Images $images `
+                        -CrictlExePath 'C:\old\bin\crictl.exe' -CrictlConfigPath 'C:\old\bin\crictl.yaml' -ExportImageScriptPath $ExportScript
+
+                    $result.Success | Should -Be $true
+                    $result.FailedImages.Count | Should -Be 0
+                    $tarFiles = @($result.Images | ForEach-Object { $_.TarFile })
+                    $tarFiles.Count | Should -Be 3
+                    ($tarFiles | Select-Object -Unique).Count | Should -Be 3
+                    $tarFiles[0] | Should -Be 'images\images\repo_app-v1.tar'
+                    $tarFiles[1] | Should -Be 'images\images\repo_app-v1-winhost.tar'
+                    $tarFiles[2] | Should -Be 'images\images\repo_app-v1-winhost-2.tar'
+
+                    $contents = @($result.Images | ForEach-Object { Get-Content (Join-Path 'TestDrive:\backup-collide\images' (Split-Path $_.TarFile -Leaf)) })
+                    ($contents | Select-Object -Unique).Count | Should -Be 3
+                }
+            }
+
+            It 'adds a numeric suffix when the same image appears twice on one node' {
+                InModuleScope $script:moduleName -Parameters @{ ExportScript = $script:seqExportScript } {
+                    param($ExportScript)
+                    Mock Write-Log {}
+                    Mock New-ImageProcessingLog {}
+                    Mock Get-ConfiguredLogDirectory { 'TestDrive:\logs' }
+
+                    $images = @(
+                        @{ repository = 'repo/app'; tag = 'v1'; imageid = 'id1'; node = 'kubemaster'; size = '1MB' },
+                        @{ repository = 'repo/app'; tag = 'v1'; imageid = 'id2'; node = 'winhost'; size = '1MB' },
+                        @{ repository = 'repo/app'; tag = 'v1'; imageid = 'id3'; node = 'winhost'; size = '1MB' }
+                    )
+
+                    $result = Backup-K2sImages -BackupDirectory 'TestDrive:\backup-samenode' -Images $images `
+                        -CrictlExePath 'C:\old\bin\crictl.exe' -CrictlConfigPath 'C:\old\bin\crictl.yaml' -ExportImageScriptPath $ExportScript
+
+                    $result.FailedImages.Count | Should -Be 0
+                    $tarFiles = @($result.Images | ForEach-Object { $_.TarFile })
+                    $tarFiles | Should -Be @('images\images\repo_app-v1.tar', 'images\images\repo_app-v1-winhost.tar', 'images\images\repo_app-v1-winhost-2.tar')
+                    @(Get-ChildItem 'TestDrive:\backup-samenode\images' -Filter '*.tar').Count | Should -Be 3
+                }
+            }
+
+            It 'does not overwrite an archive that already exists in the backup directory' {
+                InModuleScope $script:moduleName -Parameters @{ ExportScript = $script:seqExportScript } {
+                    param($ExportScript)
+                    Mock Write-Log {}
+                    Mock New-ImageProcessingLog {}
+                    Mock Get-ConfiguredLogDirectory { 'TestDrive:\logs' }
+
+                    New-Item -ItemType Directory -Path 'TestDrive:\backup-existing\images' -Force | Out-Null
+                    Set-Content -Path 'TestDrive:\backup-existing\images\repo_app-v1.tar' -Value 'existing'
+
+                    $images = @(@{ repository = 'repo/app'; tag = 'v1'; imageid = 'id1'; node = 'kubemaster'; size = '1MB' })
+
+                    $result = Backup-K2sImages -BackupDirectory 'TestDrive:\backup-existing' -Images $images `
+                        -CrictlExePath 'C:\old\bin\crictl.exe' -CrictlConfigPath 'C:\old\bin\crictl.yaml' -ExportImageScriptPath $ExportScript
+
+                    $result.FailedImages.Count | Should -Be 0
+                    $result.Images[0].TarFile | Should -Be 'images\images\repo_app-v1-2.tar'
+                    Get-Content 'TestDrive:\backup-existing\images\repo_app-v1.tar' | Should -Be 'existing'
+                }
+            }
+
+            It 'keeps the existing archive names when nothing collides' {
+                InModuleScope $script:moduleName -Parameters @{ ExportScript = $script:seqExportScript } {
+                    param($ExportScript)
+                    Mock Write-Log {}
+                    Mock New-ImageProcessingLog {}
+                    Mock Get-ConfiguredLogDirectory { 'TestDrive:\logs' }
+
+                    $images = @(
+                        @{ repository = 'repo/app'; tag = 'v1'; imageid = 'id1'; node = 'kubemaster'; size = '1MB' },
+                        @{ repository = 'repo/app'; tag = 'v2'; imageid = 'id2'; node = 'winhost'; size = '1MB' },
+                        @{ repository = 'repo/web'; tag = 'v1'; imageid = 'id3'; node = 'kubemaster'; size = '1MB' }
+                    )
+
+                    $result = Backup-K2sImages -BackupDirectory 'TestDrive:\backup-nocollide' -Images $images `
+                        -CrictlExePath 'C:\old\bin\crictl.exe' -CrictlConfigPath 'C:\old\bin\crictl.yaml' -ExportImageScriptPath $ExportScript
+
+                    $result.FailedImages.Count | Should -Be 0
+                    @($result.Images | ForEach-Object { $_.TarFile }) | Should -Be @('images\images\repo_app-v1.tar', 'images\images\repo_app-v2.tar', 'images\images\repo_web-v1.tar')
+                }
+            }
+        }
     }
 }
 

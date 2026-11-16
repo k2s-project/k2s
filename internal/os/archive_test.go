@@ -12,7 +12,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/siemens-healthineers/k2s/internal/os"
+	"github.com/k2s-project/k2s/internal/os"
 )
 
 var _ = Describe("Archive Utilities", func() {
@@ -214,6 +214,30 @@ var _ = Describe("Archive Utilities", func() {
 			err = os.ExtractTarGz(tarGzPath, destDir)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("absolute path"))
+		})
+	})
+
+	Describe("ExtractTarGz symlinked directories", func() {
+		It("rejects writing through a pre-existing symlinked directory", func() {
+			outside := GinkgoT().TempDir()
+			dest := filepath.Join(tempDir, "dest")
+			Expect(bos.MkdirAll(dest, 0755)).To(Succeed())
+			Expect(bos.Symlink(outside, filepath.Join(dest, "esc"))).To(Succeed())
+
+			archive := filepath.Join(tempDir, "a.tar.gz")
+			f, err := bos.Create(archive)
+			Expect(err).ToNot(HaveOccurred())
+			gz := gzip.NewWriter(f)
+			tw := tar.NewWriter(gz)
+			Expect(tw.WriteHeader(&tar.Header{Name: "esc/file.txt", Typeflag: tar.TypeReg, Mode: 0644, Size: 1})).To(Succeed())
+			_, _ = tw.Write([]byte("x"))
+			Expect(tw.Close()).To(Succeed())
+			Expect(gz.Close()).To(Succeed())
+			Expect(f.Close()).To(Succeed())
+
+			Expect(os.ExtractTarGz(archive, dest)).ToNot(Succeed())
+			_, statErr := bos.Stat(filepath.Join(outside, "file.txt"))
+			Expect(statErr).To(HaveOccurred())
 		})
 	})
 })

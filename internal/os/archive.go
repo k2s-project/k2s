@@ -123,6 +123,10 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 			return fmt.Errorf("illegal file path in tar archive (Tar-Slip attempt): %s", hdr.Name)
 		}
 
+		if err := ensureNoSymlinkEscape(cleanDestDir, filepath.Dir(cleanDestPath)); err != nil {
+			return fmt.Errorf("illegal path in tar archive (%s): %w", hdr.Name, err)
+		}
+
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			mode := bos.FileMode(hdr.Mode).Perm()
@@ -142,7 +146,8 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 				mode = 0644
 			}
 
-			outFile, err := bos.OpenFile(cleanDestPath, bos.O_CREATE|bos.O_TRUNC|bos.O_WRONLY, mode)
+			_ = bos.Remove(cleanDestPath)
+			outFile, err := bos.OpenFile(cleanDestPath, bos.O_CREATE|bos.O_EXCL|bos.O_WRONLY, mode)
 			if err != nil {
 				return fmt.Errorf("failed to create file '%s': %w", cleanDestPath, err)
 			}
@@ -173,5 +178,32 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 		}
 	}
 
+	return nil
+}
+
+// ensureNoSymlinkEscape verifies that the existing part of dir, after resolving symlinks, stays within root.
+func ensureNoSymlinkEscape(root, dir string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	existing := dir
+	for {
+		if _, err := bos.Lstat(existing); err == nil {
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return nil
+		}
+		existing = parent
+	}
+	realDir, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return err
+	}
+	if realDir != realRoot && !strings.HasPrefix(realDir, realRoot+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes destination via symlink")
+	}
 	return nil
 }

@@ -15,10 +15,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
-	kos "github.com/siemens-healthineers/k2s/internal/os"
+	kos "github.com/k2s-project/k2s/internal/os"
 )
 
 var orderedClusterResourceTypes = []string{
@@ -104,14 +105,20 @@ func isK2sInstalled(installDir string) bool {
 }
 
 func isDangerousVolumePath(path string) bool {
+	if !filepath.IsAbs(path) {
+		return true
+	}
 	cleaned := filepath.Clean(path)
-	if cleaned == "/" || cleaned == "." || cleaned == "" {
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		cleaned = resolved
+	}
+	if cleaned == "/" {
 		return true
 	}
 	dangerousRoots := []string{
-		"/bin", "/sbin", "/usr", "/etc", "/lib", "/lib64",
-		"/boot", "/dev", "/proc", "/sys", "/root",
-		"/var/run", "/var/lib/kubelet",
+		"/bin", "/sbin", "/usr", "/etc", "/lib", "/lib32", "/lib64",
+		"/boot", "/dev", "/proc", "/sys", "/root", "/run",
+		"/var/run", "/var/lib/kubelet", "/var/lib/etcd", "/var/lib/containerd", "/var/lib/docker",
 	}
 	for _, root := range dangerousRoots {
 		if cleaned == root || strings.HasPrefix(cleaned, root+"/") {
@@ -263,15 +270,9 @@ func restoreContainerImages(stagingDir string) []string {
 		if err := json.Unmarshal(mData, &imgManifest); err == nil {
 			for _, item := range imgManifest.Images {
 				if item.TarFile != "" {
-					candidates := []string{
-						filepath.Join(stagingDir, item.TarFile),
-						filepath.Join(imagesDir, filepath.Base(item.TarFile)),
-					}
-					for _, c := range candidates {
-						if _, err := os.Stat(c); err == nil {
-							tarSet[c] = struct{}{}
-							break
-						}
+					c := filepath.Join(imagesDir, filepath.Base(filepath.ToSlash(item.TarFile)))
+					if _, err := os.Stat(c); err == nil {
+						tarSet[c] = struct{}{}
 					}
 				}
 			}
@@ -296,7 +297,13 @@ func restoreContainerImages(stagingDir string) []string {
 	var errorsList []string
 	restoredCount := 0
 
+	tarPaths := make([]string, 0, len(tarSet))
 	for tarPath := range tarSet {
+		tarPaths = append(tarPaths, tarPath)
+	}
+	sort.Strings(tarPaths)
+
+	for _, tarPath := range tarPaths {
 		slog.Info("[System Restore] Importing container image archive", "tar", tarPath)
 		if err := importSingleImage(tarPath); err != nil {
 			errMsg := fmt.Sprintf("failed to import image archive '%s': %v", filepath.Base(tarPath), err)
@@ -340,20 +347,12 @@ func importSingleImage(tarPath string) error {
 		errCtr, string(outCtr), errNerd, string(outNerd), errDoc, string(outDoc))
 }
 
+// Hooks are never executed from the backup archive itself; it only provides the data directory for them.
 func executeRestoreHooks(installDir, stagingDir, additionalHooksDir string) {
 	hooksDir := filepath.Join(stagingDir, "hooks")
 	_ = os.MkdirAll(hooksDir, 0755)
 
 	slog.Info("[System Restore] Executing restore hooks...")
-
-	// Scan staging hooks directory
-	if entries, err := os.ReadDir(hooksDir); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() && (strings.HasSuffix(entry.Name(), ".Restore.sh") || entry.Name() == "Restore.sh") {
-				runRestoreHook(filepath.Join(hooksDir, entry.Name()), hooksDir)
-			}
-		}
-	}
 
 	// Scan addon directory in installDir
 	addonsRoot := filepath.Join(installDir, "addons")
@@ -386,7 +385,7 @@ func executeRestoreHooks(installDir, stagingDir, additionalHooksDir string) {
 				return nil
 			}
 			name := d.Name()
-			if strings.HasSuffix(name, ".Restore.sh") || strings.HasSuffix(name, ".sh") {
+			if name == "Restore.sh" || strings.HasSuffix(name, ".Restore.sh") {
 				runRestoreHook(path, hooksDir)
 			}
 			return nil
@@ -661,7 +660,9 @@ func ensureNamespaceExists(ns string) {
 		slog.Info("[System Restore] Creating namespace", "namespace", ns)
 		ctxCreate, cancelCreate := context.WithTimeout(context.Background(), defaultKubeTimeout)
 		defer cancelCreate()
-		_ = exec.CommandContext(ctxCreate, "kubectl", "create", "namespace", ns).Run()
+		if out, err := exec.CommandContext(ctxCreate, "kubectl", "create", "namespace", ns).CombinedOutput(); err != nil {
+			slog.Warn("[System Restore] Failed to create namespace", "namespace", ns, "error", err, "output", string(out))
+		}
 	}
 }
 

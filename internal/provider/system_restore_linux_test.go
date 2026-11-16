@@ -179,7 +179,7 @@ var _ = Describe("Linux System Restore", func() {
 
 			errs := restorePersistentVolumes(tempDir)
 			Expect(errs).To(HaveLen(1))
-			Expect(errs[0]).To(ContainSubstring("dangerous volume path target rejected"))
+			Expect(errs[0]).To(ContainSubstring("dangerous volume path target"))
 		})
 
 		It("fails when backup tar.gz file is missing", func() {

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package core
 
@@ -54,6 +54,8 @@ func TestClusterCore(t *testing.T) {
 }
 
 var _ = BeforeSuite(func(ctx context.Context) {
+	// BeforeSuite failures do not run AfterEach.
+	testFailed = true
 	manifestDir = "workload/windows"
 
 	suite = framework.Setup(ctx, framework.SystemMustBeRunning,
@@ -119,6 +121,7 @@ var _ = BeforeSuite(func(ctx context.Context) {
 	}
 
 	GinkgoWriter.Println("Deployments ready for testing")
+	testFailed = false
 })
 
 var _ = AfterSuite(func(ctx context.Context) {
@@ -131,6 +134,10 @@ var _ = AfterSuite(func(ctx context.Context) {
 		podWatcher.Stop()
 	}
 
+	if testFailed {
+		suite.K2sCli().MustExec(ctx, "system", "dump", "-S", "-o")
+	}
+
 	if runtime.GOOS == "linux" && suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
 		if _, err := os.Stat("/etc/kubernetes/admin.conf"); err == nil {
 			suite.StatusChecker().IsK2sRunning(ctx)
@@ -141,14 +148,9 @@ var _ = AfterSuite(func(ctx context.Context) {
 		suite.StatusChecker().IsK2sRunning(ctx)
 	}
 
-	GinkgoWriter.Println("Deleting workloads..")
-
-	if testFailed {
-		suite.K2sCli().MustExec(ctx, "system", "dump", "-S", "-o")
-	}
-
 	// for finding out the sporadically failed test runs
 	if suite.ShouldCleanup(testFailed) {
+		GinkgoWriter.Println("Deleting workloads..")
 		suite.Kubectl().MustExec(ctx, "delete", "-k", manifestDir, "--ignore-not-found=true")
 		GinkgoWriter.Println("Workloads deleted")
 		suite.TearDown(ctx, framework.RestartKubeProxy)

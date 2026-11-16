@@ -32,6 +32,10 @@ $cred = New-Object System.Management.Automation.PSCredential($userName, $pass)
 $secondsIncrement = 5
 $elapsedSeconds = 0
 
+# Measure the timeout with a wall-clock stopwatch: a failed New-PSSession attempt can block for
+# ~30s on its own, so counting only the sleep intervals would stretch the timeout several-fold.
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
 if ($NoLog -ne $true) {
     Write-Log "Waiting for connection with VM: '$VMName' (timeout: $($TimeoutInSeconds)s) ..."
 }
@@ -41,7 +45,7 @@ do {
 
     if (-not $result) {
         Start-Sleep -Seconds $secondsIncrement
-        $elapsedSeconds += $secondsIncrement
+        $elapsedSeconds = [int]$stopwatch.Elapsed.TotalSeconds
 
         if ($NoLog -ne $true) {
             Write-Log "$($elapsedSeconds)s.. " -Progress

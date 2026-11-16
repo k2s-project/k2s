@@ -20,7 +20,7 @@ Describe 'Add-LinuxWorkerNode failure cleanup' -Tag 'unit', 'ci', 'worker-node' 
                 function Add-NodeConfig { param([string]$Name, [Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Invoke-Debian13NodeHardening { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Set-UpComputerBeforeProvisioning { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-                function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+                function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { param([string]$Architecture, [Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Repair-LinuxWorkerNodeRegistriesConfig { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Clear-LinuxWorkerNodeRoutes { param([Parameter(ValueFromRemainingArguments)]$Rest) }
                 function Join-LinuxNode { param([Parameter(ValueFromRemainingArguments)]$Rest) }
@@ -51,13 +51,30 @@ Describe 'Add-LinuxWorkerNode failure cleanup' -Tag 'unit', 'ci', 'worker-node' 
     }
 }
 
+Describe 'Add-LinuxWorkerNode architecture validation' -Tag 'unit', 'ci', 'worker-node' {
+    It 'rejects unsupported architectures before adding node configuration' {
+        InModuleScope $moduleName {
+            function script:Add-NodeConfig { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            Mock Add-NodeConfig {}
+
+            {
+                Add-LinuxWorkerNode -NodeName worker -UserName remote -IpAddress '172.19.1.101' `
+                    -WindowsHostIpAddress '172.19.1.1' -installedDistributionOnRemoteComputer debian13 `
+                    -Architecture riscv64 -NodeType VM-EXISTING
+            } | Should -Throw '*Unsupported worker architecture*'
+
+            Should -Invoke Add-NodeConfig -Times 0 -Exactly
+        }
+    }
+}
+
 Describe 'Add-LinuxWorkerNode Debian13 hardening' -Tag 'unit', 'ci', 'worker-node' {
     BeforeEach {
         InModuleScope $moduleName {
             function script:Add-NodeConfig { param([Parameter(ValueFromRemainingArguments)]$Rest) }
             function script:Invoke-Debian13NodeHardening { param($Stage, $InstalledDistribution, $UserName, $IpAddress, $UserPwd = '') }
             function script:Set-UpComputerBeforeProvisioning { param([Parameter(ValueFromRemainingArguments)]$Rest) }
-            function script:Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { param([Parameter(ValueFromRemainingArguments)]$Rest) }
+            function script:Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer { param([string]$Architecture, [Parameter(ValueFromRemainingArguments)]$Rest) }
             function script:Join-LinuxNode { param([Parameter(ValueFromRemainingArguments)]$Rest) }
             function script:Invoke-CmdOnVmViaSSHKey { param([Parameter(ValueFromRemainingArguments)]$Rest) }
 
@@ -99,6 +116,14 @@ Describe 'Add-LinuxWorkerNode Debian13 hardening' -Tag 'unit', 'ci', 'worker-nod
 
             Should -Invoke Invoke-Debian13NodeHardening -Times 2 -Exactly -ParameterFilter { $InstalledDistribution -eq 'debian12' }
             Should -Invoke Join-LinuxNode -Times 1 -Exactly
+        }
+    }
+
+    It 'passes the worker architecture to package and image provisioning' {
+        InModuleScope $moduleName {
+            Add-LinuxWorkerNode -NodeName worker -UserName remote -IpAddress '172.19.1.101' -WindowsHostIpAddress '172.19.1.1' -installedDistributionOnRemoteComputer debian13 -Architecture arm64 -NodeType VM-EXISTING
+
+            Should -Invoke Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -Times 1 -Exactly -ParameterFilter { $Architecture -eq 'arm64' }
         }
     }
 

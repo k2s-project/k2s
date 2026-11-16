@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 // Package provider defines platform-agnostic interfaces for all K2s operations.
 // Each host platform (Windows, Linux) supplies its own implementation via

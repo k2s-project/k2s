@@ -7,6 +7,26 @@ TARGET_PATH="$1"
 K8S_VERSION="$2"
 PROXY="${3:-}"
 
+if [[ -n "${K2S_APT_CONFIG:-}" || "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+    sudo() {
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            case "${1:-}" in
+                dpkg) return 0 ;;
+                apt)
+                    if [[ "${2:-}" == "--fix-broken" ]]; then
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        if [[ -n "${K2S_APT_CONFIG:-}" ]]; then
+            command sudo env APT_CONFIG="$K2S_APT_CONFIG" "$@"
+        else
+            command sudo "$@"
+        fi
+    }
+fi
+
 # Setup functions
 log_info() {
     echo "[K8sPackages] $1"
@@ -71,7 +91,7 @@ if [ -n "$PROXY" ]; then
 fi
 
 # Copy ZScaler certificate (if exists)
-if [ -f /tmp/ZScalerRootCA.crt ]; then
+if [[ "${K2S_DISABLE_ZSCALER_CERT_IMPORT:-false}" != true ]] && [ -f /tmp/ZScalerRootCA.crt ]; then
     log_info "Adding ZScaler certificate"
     sudo mv /tmp/ZScalerRootCA.crt /usr/local/share/ca-certificates/
     sudo update-ca-certificates
@@ -135,7 +155,7 @@ download_packages() {
             | cut -d ' ' -f 2 \
             | sort -u \
             | grep -v "^${pkg_base}$" \
-            | xargs -r sudo apt-get download --allow-unauthenticated 2>/dev/null || true
+            | xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download --allow-unauthenticated "$@"; else sudo apt-get download --allow-unauthenticated "$@"; fi' sh 2>/dev/null || true
 
         return 0
     fi
@@ -220,9 +240,9 @@ set_kubernetes_apt_repository() {
     log_info "Step 3: Download and configure Kubernetes and CRI-O repositories"
 
     # Setup proxy flag if provided
-    PROXY_FLAG=""
+    local proxy_args=()
     if [ -n "$PROXY" ]; then
-        PROXY_FLAG="--proxy $PROXY"
+        proxy_args=(--proxy "$PROXY")
     fi
 
     KUBERNETES_APT_KEYRING='/usr/share/keyrings/kubernetes-apt-keyring.gpg'
@@ -232,7 +252,7 @@ set_kubernetes_apt_repository() {
     
     # Download and convert Kubernetes GPG key in one pipeline (soft failure - continues if 403)
     log_info "Downloading and converting Kubernetes GPG key"
-    if sudo curl -fsSL $PROXY_FLAG "https://pkgs.k8s.io/core:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$KUBERNETES_APT_KEYRING" 2>/dev/null; then
+    if sudo curl -fsSL "${proxy_args[@]}" "https://pkgs.k8s.io/core:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$KUBERNETES_APT_KEYRING" 2>/dev/null; then
         echo "deb [signed-by=$KUBERNETES_APT_KEYRING] https://pkgs.k8s.io/core:/stable:/$K8S_VERSION_REPO/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list > /dev/null
         log_info "✓ Kubernetes repository configured successfully"
     else
@@ -251,7 +271,7 @@ set_kubernetes_apt_repository() {
     
     # Download and convert CRI-O GPG key in one pipeline (soft failure - continues if 404/403)
     log_info "Downloading and converting CRI-O GPG key from OpenSUSE"
-    if sudo curl -fsSL $PROXY_FLAG "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$CRIO_APT_KEYRING" 2>/dev/null; then
+    if sudo curl -fsSL "${proxy_args[@]}" "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$K8S_VERSION_REPO/deb/Release.key" | sudo gpg --dearmor -o "$CRIO_APT_KEYRING" 2>/dev/null; then
         echo "deb [signed-by=$CRIO_APT_KEYRING] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$K8S_VERSION_REPO/deb/ /" | sudo tee /etc/apt/sources.list.d/cri-o.list > /dev/null
         log_info "✓ CRI-O repository configured successfully"
     else
@@ -270,7 +290,16 @@ install_with_retry() {
     local package="$1"
     local retries="$2"
     local attempt=1
-    
+
+    if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+        if command -v "$package" >/dev/null 2>&1; then
+            log_info "$package is available; skipping host installation for package download"
+            return 0
+        fi
+        log_warning "$package is required as a host tool but is not installed"
+        return 1
+    fi
+
     while [ $attempt -le $retries ]; do
         log_info "Installing $package (attempt $attempt/$retries)"
         
@@ -313,9 +342,10 @@ download_required_kubernetes_package "kubeadm"
 
 # Cleanup extra versions (keep only the requested upstream version)
 log_info "Cleaning up extra package versions"
+NODE_ARCH="$(dpkg --print-architecture)"
 cd "$TARGET_PATH" && sudo find . -maxdepth 1 -type f \
     \( -name 'kubeadm_*.deb' -o -name 'kubectl_*.deb' -o -name 'kubelet_*.deb' \) \
-    ! -name "*_${SHORT_K8S_VERSION}-*_amd64.deb" \
+    ! -name "*_${SHORT_K8S_VERSION}-*_${NODE_ARCH}.deb" \
     -exec sudo rm -f {} + || true
 
 if ! ls "$TARGET_PATH"/cri-tools*.deb >/dev/null 2>&1; then

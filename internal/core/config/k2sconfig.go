@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -106,7 +107,8 @@ func ReadK2sConfig(k2sInstallDir string) (*cConfig.K2sConfig, error) {
 	sshConfig := cConfig.NewSshConfig(sshDir,
 		configJson.ConfigDir.Ssh,
 		filepath.Join(sshDir, configJson.SshKey.SubDir, keyFileName),
-		filepath.Join(configJson.ConfigDir.Ssh, configJson.SshKey.SubDir, keyFileName))
+		// tilde-relative path stays slash-separated on all platforms; it is cleaned when the tilde is resolved
+		path.Join(configJson.ConfigDir.Ssh, configJson.SshKey.SubDir, keyFileName))
 	k2sConfigDir := configJson.ConfigDir.K2s
 	logsDir := configJson.ConfigDir.Logs
 	if runtime.GOOS == "linux" {

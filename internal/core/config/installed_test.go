@@ -333,6 +333,10 @@ func createK2sConfig(installDir string, k2sConfigDir string) {
 			"ssh":  filepath.Join(installDir, "ssh"),
 			"logs": filepath.Join(installDir, "logs"),
 		},
+		"sshKey": map[string]any{
+			"subDir":   "k2s",
+			"fileName": map[string]any{"windows": "windows_key", "linux": "linux_key"},
+		},
 	}
 
 	data, err := json.Marshal(content)

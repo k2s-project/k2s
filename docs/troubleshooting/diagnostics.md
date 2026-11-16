@@ -10,6 +10,23 @@ To inspect the full *K2s* system status, run:
 k2s status -o wide
 ```
 
+## Running Health Checks
+To check the host and the cluster for known causes of problems, run:
+```console
+k2s system check
+```
+
+Each check prints `pass`, `warn`, `fail` or `skip` (when it does not apply to the setup) together with a hint on how to fix the problem. The command does not change anything on the system and exits with a non-zero exit code if at least one check fails, so it can also be used in scripts. Use `k2s system check -o json` for machine-readable output.
+
+| Check | Host | Description |
+|-------|------|-------------|
+| `host-disk-space` | *Windows*, *Linux* | Fails below 10 GiB and warns below 20 GiB of free space on the drives used by *K2s* (see [Disk Pressure](known-issues.md#disk-pressure)) |
+| `apipa-address` | *Windows* | Warns if an active network adapter has an APIPA address (`169.254.x.x`) (see [Microsoft APIPA / Link-Local Address](known-issues.md#microsoft-apipa-link-local-address)); skipped for *Linux*-only and build-only setups |
+| `hyperv-vmms` | *Windows* | Fails if the *Hyper-V* Virtual Machine Management service is not running; skipped for *WSL* setups |
+| `cluster-certificates` | *Windows*, *Linux* | Fails if the cluster CA, the client certificate in the kubeconfig or the API server certificate has expired and warns if one expires within 30 days (renew them with [`k2s system certificate renew --force`](../user-guide/k2s-cli.md#system-certificate-renew)); skipped for build-only setups |
+
+The API server certificate can only be checked while the cluster is running.
+
 ## Disruption in networking
 When there is no internet access on the host machine or when container images cannot be pulled, it is recommended to restart the cluster networking in the following scenarios:
 

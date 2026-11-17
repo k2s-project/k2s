@@ -109,7 +109,7 @@ To build an arm64 node package, run `k2s system package --node-package --arch ar
 sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 ```
 
-Only Debian 13 arm64 is tested/validated today; `--os debian12 --arch arm64` runs the same code path but is untested. Unlike the amd64 packages above, the arm64 package does not pre-stage container images as OCI archives — only `.deb` packages are bundled offline, so `k2s node add` with this package still needs network access to pull container images at join time.
+Only Debian 13 arm64 is tested/validated today; `--os debian12 --arch arm64` runs the same code path but is untested. The package has the same layout as the amd64 package: `packages/` with the `.deb` files and `images/` with the Kubernetes, flannel and (with `--include-gpu`) NVIDIA container images as OCI archives. The images are copied from the registries with `skopeo`, so the build host needs `skopeo` installed (`apt-get install skopeo`) and network access to the registries.
 
 ### GPU-Enabled Node Package
 

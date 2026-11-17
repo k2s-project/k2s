@@ -8,10 +8,9 @@
 # The build host must be Debian 13 because APT resolves package dependencies from the
 # host's configured repositories and installed-package database.
 #
-# Unlike the amd64 packages built via New-K2sNodePackage.ps1 on Windows, this does not
-# pre-stage container images as OCI archives - see BuildLinux's doc comment in
-# cmd/k2s/cmd/system/package/node/build_linux.go and
-# docs/op-manual/creating-offline-package.md for the documented gap.
+# The package has the same layout as the amd64 package built via New-K2sNodePackage.ps1 on
+# Windows: packages/ plus images/ (OCI archives exported with skopeo). See
+# internal/provider/node_package_linux.go and node_package_images_linux.go.
 name: CI - arm64 Node Package Build
 
 permissions:
@@ -37,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     container:
       image: debian:trixie
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       # Runs before checkout: the Debian image has no git/unzip/sudo, and the k2s
       # download scripts call `sudo` directly.
@@ -45,7 +44,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl git gnupg sudo unzip
+            ca-certificates curl git gnupg skopeo sudo unzip
           # The k2s APT lock lives under /run/lock, which the Debian image may not create.
           mkdir -p /run/lock
 
@@ -68,6 +67,12 @@ jobs:
         with:
           go-version: ${{ env.GOVERSION }}
           cache-dependency-path: "**/*.sum"
+
+      # Runs the unit tests for the native package builder's image export and zip layout on
+      # this arm64 host. The wider provider suite needs a real k2s install and is not run here.
+      - name: Unit tests for the node package builder
+        run: |
+          go test ./internal/provider -count=1 -run '^(TestParseKubeadmImageList|TestNvidiaImagesFromManifest|TestImageArchiveName|TestAppendUnique|TestProxyEnvironment|TestBuildZipSources)'
 
       - name: Build the Linux k2s CLI
         run: |
@@ -106,6 +111,13 @@ jobs:
           done
           find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | grep -q . || {
             echo "::error::no .deb packages found in the built zip"
+            exit 1
+          }
+          # Same layout as the Windows-built amd64 package: packages/ plus images/.
+          images=$(find "$NODE_PACKAGE_ROOT/extract/images" -name '*.tar' 2>/dev/null | wc -l)
+          echo "container image archives: $images"
+          [ "$images" -gt 0 ] || {
+            echo "::error::no image archives found in the built zip"
             exit 1
           }
 

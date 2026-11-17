@@ -179,19 +179,19 @@ k2s addons export registry -d <export-output-directory> --omit-images --omit-pac
 ```
 
 ### Addons Import
-To inspect all export options, run:
+To inspect all import options, run:
 ```console
 k2s addons import -h
 ```
 
 Either specify one or more addons to import from the offline package:
 ```console
-k2s addons import registry -f <directory-containing-addons-archive>\addons.zip
+k2s addons import registry -f <directory-containing-addons-archive>\K2s-<version>-addons-registry.oci.tar
 ```
 
 Or import all addons from the offline package:
 ```console
-k2s addons import -f <directory-containing-addons-archive>\addons.zip
+k2s addons import -f <directory-containing-addons-archive>\K2s-<version>-addons-all.oci.tar
 ```
 
 !!! note

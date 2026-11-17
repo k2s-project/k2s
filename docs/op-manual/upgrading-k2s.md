@@ -13,7 +13,7 @@ This guide explains how to upgrade an existing *K2s* cluster in-place to a newer
 Supported upgrade path:
 - Standard path: upgrade only from `MINOR-1` to the next `MINOR` within the same `MAJOR` (e.g. `1.4.x` → `1.5.y`).
 - Skipping multiple minor versions: perform sequential upgrades through each intermediate minor release.
-- Using `--force` (or `-f` if supported): attempts a direct upgrade between any two versions, but only a subset of combinations are continuously tested.
+- Using `--force` (or `-f`): attempts a direct upgrade between any two versions, but only a subset of combinations are continuously tested.
 
 Recommendation: If the currently installed version is several minor releases behind, back up persistent data (application volumes, etc.) before proceeding or use a staging environment to validate.
 
@@ -44,6 +44,9 @@ Upgrade support is available starting from *K2s* `v1.1.0`.
 | `-d` | Delete previously cached artifacts after upgrade (cleans local cache). |
 | `-c <file>` | Supply a new configuration file to override existing cluster settings (memory, CPU, storage…). |
 | `-p <http-proxy>` | Use the specified HTTP proxy for any required network access during the upgrade. |
+| `-s` | Skip takeover of Kubernetes resources (`--skip-resources`). |
+| `-i` | Skip takeover of container images (`--skip-images`). |
+| `-b <dir>` | Backup directory (`--backup-dir`). |
 | `--force` | Attempt upgrade even if skipping multiple minor versions. Use with caution; take a backup first. |
 
 Examples:

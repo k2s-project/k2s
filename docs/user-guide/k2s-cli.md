@@ -34,19 +34,23 @@ k2s install [flags]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--master-cpus` | | Number of CPUs allocated to master VM |
-| `--master-memory` | | RAM for master VM (minimum 2 GB) |
-| `--master-memory-min` | | Minimum RAM for dynamic memory (enables dynamic memory) |
-| `--master-memory-max` | | Maximum RAM for dynamic memory (enables dynamic memory) |
-| `--master-disk` | | Disk size for master VM (minimum 10 GB) |
+| `--master-cpus` | | Number of CPUs allocated to master VM (Windows host) |
+| `--master-memory` | | RAM for master VM (minimum 2 GB) (Windows host) |
+| `--master-memory-min` | | Minimum RAM for dynamic memory (enables dynamic memory) (Windows host) |
+| `--master-memory-max` | | Maximum RAM for dynamic memory (enables dynamic memory) (Windows host) |
+| `--master-disk` | | Disk size for master VM (minimum 10 GB) (Windows host) |
+| `--worker-cpus` | | Number of CPUs allocated to the managed Windows worker VM (Linux host) |
+| `--worker-memory` | | RAM for the managed Windows worker VM (minimum 2 GB, format `<number>GB`) (Linux host) |
+| `--worker-disk` | | Disk size for the managed Windows worker VM (minimum 20 GB, format `<number>GB`) (Linux host) |
+| `--windows-qcow2-path` | | Path to a prepared Windows QCOW2 image for the managed Windows worker VM (Linux host) |
 | `--proxy` | `-p` | HTTP proxy |
 | `--no-proxy` | | No-proxy hosts/domains (comma-separated) |
 | `--config` | `-c` | Path to config file |
-| `--wsl` | | Use WSL 2 for hosting the KubeMaster |
+| `--wsl` | | Use WSL 2 for hosting the KubeMaster (Windows host) |
 | `--linux-only` | | No Windows worker node |
 | `--force-online-installation` | `-f` | Force online installation |
 | `--delete-files-for-offline-installation` | `-d` | Delete offline-only files after online install |
-| `--k8s-bins` | | Path to locally built Kubernetes binaries |
+| `--k8s-bins` | | Path to locally built Kubernetes binaries (Windows host) |
 | `--skip-start` | | Do not start the cluster after installation |
 | `--append-log` | | Append to existing log file |
 | `--additional-hooks-dir` | | Directory with additional hook scripts |
@@ -94,7 +98,7 @@ Installs a minimal *buildonly* setup (Linux VM without Windows worker node, inte
 k2s install buildonly [flags]
 ```
 
-Accepts the same VM-resource, proxy, and config flags as `install`.
+Accepts the flags `--master-cpus`, `--master-memory`, `--master-memory-min`, `--master-memory-max`, `--master-disk`, `--proxy`, `--no-proxy`, `--config`, `--wsl`, `--force-online-installation`, `--delete-files-for-offline-installation` and `--append-log` (same meaning as for `install`).
 
 ---
 
@@ -143,6 +147,7 @@ k2s stop [flags]
 |------|-------|-------------|
 | `--cache-vswitch` | | Cache vswitches for cluster connectivity |
 | `--node` | | Stop only the specified additional node |
+| `--no-wait` | | Skip waiting for the node readiness transition (skips the ~50 second wait for `NotReady` state) |
 | `--additional-hooks-dir` | | Directory with additional hook scripts |
 
 ---
@@ -175,6 +180,8 @@ k2s version
 
 Manage container images on the cluster nodes.
 
+The subcommands `pull`, `push`, `tag`, `export`, `import`, `rm`, `clean`, `registry add`, `registry rm` and `registry ls` additionally accept `--node` (node name, e.g. `worker-1`) and `--nodes` (comma-separated node names) to target specific nodes.
+
 ### image ls
 
 List images on all nodes.
@@ -186,6 +193,8 @@ k2s image ls [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--include-k8s-images` | `-A` | Include Kubernetes system images |
+| `--node` | | Node name to list images from (e.g. `worker-1`) |
+| `--nodes` | | Comma-separated node names to list images from |
 | `--output` | `-o` | Output format: `json` |
 
 ### image build
@@ -258,7 +267,7 @@ k2s image export [flags]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--id` | | Image ID |
+| `--id` | `-i` | Image ID |
 | `--name` | `-n` | Image name including tag |
 | `--tar` | `-t` | Output tar file path |
 | `--docker-archive` | | Export as docker-archive (default: oci-archive) |
@@ -301,10 +310,10 @@ k2s image rm [flags]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--id` | | Image ID |
-| `--name` | | Image name |
+| `--id` | `-i` | Image ID |
+| `--name` | `-n` | Image name |
 | `--from-registry` | | Remove from local registry |
-| `--force` | | Force removal (removes containers using the image first) |
+| `--force` | `-f` | Force removal (removes containers using the image first) |
 
 ### image clean
 
@@ -414,12 +423,12 @@ Enable or disable a specific addon. The subcommands and their flags are defined 
 
 ```console
 k2s addons enable <addon> [flags]
-k2s addons disable <addon>
+k2s addons disable <addon> [flags]
 ```
 
 !!! example
     ```console
-    k2s addons enable ingress
+    k2s addons enable ingress nginx
     k2s addons enable registry
     k2s addons disable dashboard
     ```
@@ -447,6 +456,8 @@ k2s addons export <addon> [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--directory` | `-d` | Target directory for the exported artifact |
+| `--omit-images` | | Omit container images from export |
+| `--omit-packages` | | Omit packages (debian, linux, windows) from export |
 
 ### addons import
 
@@ -461,6 +472,7 @@ k2s addons import <addon> [flags]
 | `--file` | `-f` | Path to the OCI artifact tar file |
 | `--node` | | Target node name for addon image import (e.g. `worker-1`); defaults to control-plane and local Windows host when omitted |
 | `--nodes` | | Target node names (comma-separated) for addon image import (e.g. `worker-1,worker-2`) |
+| `--omit` | | Skip the images of an omitted addon functionality, e.g. `omitCertMgr` or `ingress/nginx:omitCertMgr`. Repeatable |
 
 By default the addon images are imported onto the control-plane node and the local Windows host. Use `--node` to import them onto a specific worker node, control-plane, or local Windows host, or `--nodes` to import them onto multiple nodes. When both `--node` and `--nodes` are provided, `--nodes` takes precedence. Target nodes must exist and be in the `Ready` state; otherwise the command fails without importing anything.
 
@@ -520,6 +532,8 @@ k2s system upgrade [flags]
 | `--backup-dir` | `-b` | Backup directory |
 | `--force` | `-f` | Force upgrade even if versions are not consecutive |
 | `--additional-hooks-dir` | | Directory with additional hook scripts |
+| `--node` | `-n` | Name of the worker node to upgrade (requires `--path`) |
+| `--path` | | Path to a node package zip for an offline node upgrade (requires `--node`) |
 
 ### system package
 
@@ -625,6 +639,8 @@ k2s system dump [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--skip-open` | `-S` | Do not open the dump folder afterwards |
+| `--node` | | Additional node name to collect diagnostics for (e.g. `worker-1`) |
+| `--nodes` | | Comma-separated additional node names to collect diagnostics for |
 
 ### system check
 
@@ -649,6 +665,33 @@ k2s system certificate renew [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--force` | `-f` | Force renewal |
+
+### system certificate autorotation
+
+Manage kubelet certificate auto-rotation (control-plane node only). The flags are mutually exclusive.
+
+```console
+k2s system certificate autorotation [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--enable` | `-e` | Enable kubelet certificate auto-rotation |
+| `--disable` | `-d` | Disable kubelet certificate auto-rotation |
+| `--status` | `-s` | Show the current auto-rotation status |
+
+### system compact
+
+Compact the VHDX disk of the control-plane node to reclaim unused space. The cluster is stopped for the compaction and restarted afterwards unless `--no-restart` is given. Supported for the standard and Linux-only setups; not supported for WSL-based and build-only setups. See [Compacting VHDX Storage](../op-manual/compacting-vhdx-storage.md).
+
+```console
+k2s system compact [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--no-restart` | | Keep the cluster stopped after compaction |
+| `--yes` | `-y` | Skip confirmation prompts |
 
 ### system proxy
 
@@ -850,8 +893,8 @@ k2s node copy [flags]
 | `--source` | `-s` | **Required.** Source path |
 | `--target` | `-t` | **Required.** Target path |
 | `--reverse` | `-r` | Copy from node to host |
-| `--port` | `-p` | SSH port |
-| `--timeout` | | Connection timeout |
+| `--port` | `-p` | SSH port (default `22`) |
+| `--timeout` | | Connection timeout (default `30s`) |
 
 ### node exec
 
@@ -866,8 +909,8 @@ k2s node exec [flags]
 | `--ip-addr` | `-i` | **Required.** Node IP address |
 | `--username` | `-u` | **Required.** SSH username |
 | `--command` | `-c` | **Required.** Command to execute |
-| `--port` | `-p` | SSH port |
-| `--timeout` | | Connection timeout |
+| `--port` | `-p` | SSH port (default `22`) |
+| `--timeout` | | Connection timeout (default `30s`) |
 | `--raw` | `-r` | Print only remote output |
 
 ### node connect
@@ -882,5 +925,5 @@ k2s node connect [flags]
 |------|-------|-------------|
 | `--ip-addr` | `-i` | **Required.** Node IP address |
 | `--username` | `-u` | **Required.** SSH username |
-| `--port` | `-p` | SSH port |
-| `--timeout` | | Connection timeout |
+| `--port` | `-p` | SSH port (default `22`) |
+| `--timeout` | | Connection timeout (default `30s`) |

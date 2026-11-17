@@ -199,10 +199,10 @@ For running *Linux* *Pods* in *K8s* please always specify the *Node* selector fo
         kubernetes.io/os: linux
 ```
 
-## `k2s build` Internals
-Under the hood of `k2s build` is the *PowerShell* script [Build-Image.ps1](https://github.com/k2s-project/k2s/blob/main/lib/scripts/windows/host/image/Build-Image.ps1){target="_blank"} (and its batch-wrapper, both part of the *K2s* setup) to automate the container build. A container image will be created in your local repository.
+## `k2s image build` Internals
+Under the hood of `k2s image build` is the *PowerShell* script [Build-Image.ps1](https://github.com/k2s-project/k2s/blob/main/lib/scripts/windows/host/image/Build-Image.ps1){target="_blank"} (and its batch-wrapper, both part of the *K2s* setup) to automate the container build. A container image will be created in your local repository.
 
-In general, `k2s build` supports *Linux* (default) as well as *Windows* containers.
+In general, `k2s image build` supports *Linux* (default) as well as *Windows* containers.
 There are also two types of a *Dockerfile* supported:
 
 - `Dockerfile` - The entire build chain is executed as part of the image build process resulting in a container image.

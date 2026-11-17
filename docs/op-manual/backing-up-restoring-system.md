@@ -341,9 +341,10 @@ k2s system restore [options]
 | Option | Short | Description | Required |
 |--------|-------|-------------|----------|
 | `--file` | `-f` | Path to backup archive file (`.zip`) | Yes |
-| `--error-on-conflict` | `-e` | Fail if resource conflicts occur (default: warnings only) | No |
-| `--output-style` | `-o` | Output style (standard, verbose, structured) | No |
-| `--show-logs` | `-v` | Show detailed logs during restore | No |
+| `--error-on-failure` | `-e` | Fail if errors occur while restoring resources (default: warnings only) | No |
+| `--additional-hooks-dir` | | Directory with additional custom hook scripts | No |
+| `--output` | `-o` | Show command output in terminal | No |
+| `--verbosity` | `-v` | Log level verbosity (`debug`, `info`, `warn`, `error`) | No |
 | `--help` | `-h` | Display help information | No |
 
 ### Examples
@@ -354,7 +355,7 @@ k2s system restore [options]
 k2s system restore -f c:\backups\k2s-backup.zip
 ```
 
-#### Strict Restore (Fail on Any Conflict)
+#### Strict Restore (Fail on Any Error)
 
 ```console
 k2s system restore -f c:\backups\k2s-backup.zip -e
@@ -363,7 +364,7 @@ k2s system restore -f c:\backups\k2s-backup.zip -e
 #### Verbose Restore with Detailed Logs
 
 ```console
-k2s system restore -f c:\backups\k2s-backup.zip -o -v
+k2s system restore -f c:\backups\k2s-backup.zip -o -v debug
 ```
 
 ## Restore Behavior
@@ -421,7 +422,7 @@ The `k2s system upgrade` command automatically integrates backup/restore:
 ### Upgrade Workflow
 
 ```console
-k2s system upgrade -v <new-version>
+k2s system upgrade
 ```
 
 **Internal Sequence**:
@@ -436,13 +437,13 @@ k2s system upgrade -v <new-version>
 
 ### Upgrade with Custom Backup Options
 
-The upgrade command supports backup-related flags:
+The upgrade command supports flags that control what is taken over from the old cluster:
 
 ```console
-k2s system upgrade -v 1.7.0 --skip-images --skip-pvs
+k2s system upgrade --skip-images --skip-resources
 ```
 
-These flags are passed to the internal `k2s system backup` call.
+`--skip-images` (`-i`) skips the takeover of container images and `--skip-resources` (`-s`) skips the takeover of Kubernetes resources.
 
 ## Error Handling
 

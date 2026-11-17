@@ -220,7 +220,7 @@ Backup/restore is **scoped to the `rollout` namespace only**.
 
 ```console
 k2s addons backup rollout argocd
-k2s addons restore rollout argocd <path-to-backup-zip>
+k2s addons restore rollout argocd -f <path-to-backup-zip>
 ```
 
 ### Admin import/export

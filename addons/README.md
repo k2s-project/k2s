@@ -19,7 +19,7 @@ The following addons will be deployed with **K2s**:
 | [autoscaling](./autoscaling/README.md) | Horizontally scale workloads based on external events or triggers with KEDA (Kubernetes Event-Driven Autoscaling) | 
 | [dashboard](./dashboard/README.md) | Headlamp - Kubernetes Dashboard (kubernetes-sigs) | 
 | [dicom](./dicom/README.md) | DICOM client/server for medical imaging data running in Kubernetes | 
-| [gpu-node](./gpu-node/README.md) | Configure the control plane node to utilize GPUs for direct GPU access and high-performance computing tasks. | 
+| [gpu-node](./gpu-node/README.md) | Configure GPU-capable cluster nodes for direct GPU access and high-performance workloads (control plane or selected Linux workers). | 
 | [ingress nginx](./ingress/nginx/README.md) | Ingress Controller for external access that uses nginx as a reverse proxy | 
 | [ingress traefik](./ingress/traefik/README.md) | Ingress Controller for external access that uses traefik as a reverse proxy | 
 | [ingress nginx-gw](./ingress/nginx-gw/README.md) | Ingress Controller for external access that uses NGINX Gateway Fabric | 
@@ -31,6 +31,7 @@ The following addons will be deployed with **K2s**:
 | [rollout argocd](./rollout/argocd/README.md) | Automating the deployment/updating of applications using ArgoCD | 
 | [rollout fluxcd](./rollout/fluxcd/README.md) | Automating the deployment/updating of applications using FluxCD | 
 | [security](./security/README.md) | Enables secure communication into and inside the cluster | 
+| [storage ceph](./storage/ceph/README.md) | EXPERIMENTAL - Ceph CSI operator for CephFS (file) storage provisioning | 
 | [storage smb](./storage/smb/README.md) | StorageClass provisioning based on SMB share between K8s nodes (Windows/Linux) | 
 | [viewer](./viewer/README.md) | Private clinical image viewer running in the Kubernetes cluster | 
 <!-- addons-list-end -->

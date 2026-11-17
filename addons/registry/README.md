@@ -34,6 +34,14 @@ k2s addons enable registry --ingress nginx-gw
 ```
 _Note:_ The above command shall enable the ingress traefik addon if it is not enabled.
 
+### Placement options
+
+Use `--snode` (`-s`) to select the node for the registry's persistent volume storage (defaults to the control plane) and `--infra-node-selector` to constrain the registry infrastructure to nodes matching a label selector:
+```
+k2s addons enable registry --snode worker1
+k2s addons enable registry --infra-node-selector kubernetes.io/hostname=kubemaster
+```
+
 ## Access to registry
 
 ### Ingress
@@ -54,15 +62,16 @@ In order to push container images to the local registry during `k2s image build 
 k2s.registry.local:<nodeport>/<imagename>:<imagetag>
 ```
 
-### Registry credentials
-
-During enabling of the registry addon the user is prompt to provide registry credentials.
-
 ## Disable registry
 
 The registry addon can be disabled using the k2s CLI by running the following command:
 ```
 k2s addons disable registry
+```
+
+To also delete the local image storage, use `--delete-images` (`-d`):
+```
+k2s addons disable registry --delete-images
 ```
 
 _Note:_ The above command will only disable registry addon. If other addons were enabled while enabling the registry addon, they will not be disabled.

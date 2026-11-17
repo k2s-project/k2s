@@ -46,7 +46,7 @@ Deploying individual workloads (e.g., manually installing an ingress controller,
 | **autoscaling** | Horizontal workload scaling based on external events with KEDA |
 | **dashboard** | Headlamp - Kubernetes Dashboard (kubernetes-sigs) |
 | **dicom** | DICOM server based on Orthanc |
-| **gpu-node** | GPU access for the control plane node |
+| **gpu-node** | GPU access for the control plane or selected Linux worker nodes |
 | **ingress** | Ingress controllers (nginx, nginx-gw, traefik implementations) |
 | **kubevirt** | VM workload management on Kubernetes |
 | **logging** | Container log dashboard |
@@ -77,6 +77,7 @@ Three mutually exclusive implementations for external access:
 
 | Enable Flag | Type | Default | Description |
 |-------------|------|---------|-------------|
+| `--infra-node-selector` | string | (empty) | Hard node selector for ingress infrastructure and compatible shared services |
 | `--omitCertMgr` | boolean | `false` | Omit cert-manager installation. Use when you want to provide your own certificate issuer. See [Certificate Management](certificate-management.md). |
 
 ```console
@@ -94,6 +95,7 @@ Only one ingress implementation can be active at a time. By default, cert-manage
 
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
+| `--infra-node-selector` | | string | (empty) | Constrain Headlamp infrastructure to nodes matching all label requirements |
 | `--ingress` | | string | `none` | Ingress controller to expose the dashboard (`none`, `nginx`, `nginx-gw`, `traefik`) |
 | `--enable-metrics` | | boolean | `false` | Enable metrics display in the dashboard |
 
@@ -105,7 +107,9 @@ k2s addons enable dashboard --ingress nginx --enable-metrics
 
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
+| `--infra-node-selector` | | string | (empty) | Hard node selector for central monitoring services, excluding node exporters |
 | `--ingress` | `-i` | string | `none` | Ingress controller for the monitoring dashboard (`none`, `nginx`, `nginx-gw`, `traefik`) |
+| `--omitGrafana` | | boolean | `false` | Omit Grafana web UI; deploy only Prometheus, Alertmanager, and exporters |
 
 Includes Windows node metrics collection via `windows-exporter` alongside Linux metrics via `node-exporter`.
 
@@ -113,13 +117,18 @@ Includes Windows node metrics collection via `windows-exporter` alongside Linux 
 
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
+| `--infra-node-selector` | | string | (empty) | Hard node selector for OpenSearch services, excluding Fluent Bit node agents |
 | `--ingress` | | string | `none` | Ingress controller for log dashboards (`none`, `nginx`, `nginx-gw`, `traefik`) |
+| `--omitOpensearch` | | boolean | `false` | Deploy only Fluent-bit; omit OpenSearch and OpenSearch Dashboards |
+| `--snode` | `-s` | string | (empty) | Node to use for persistent volume storage (defaults to control-plane) |
 
 ### registry
 
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
+| `--infra-node-selector` | | string | (empty) | Hard node selector for registry infrastructure compatible with its storage node |
 | `--ingress` | `-i` | string | `nginx` | Ingress controller for the registry (`nginx`, `nginx-gw`, `traefik`) |
+| `--snode` | `-s` | string | (empty) | Node to use for persistent volume storage (defaults to control-plane) |
 
 | Disable Flag | Short | Type | Default | Description |
 |--------------|-------|------|---------|-------------|
@@ -164,12 +173,14 @@ Two mutually exclusive GitOps implementations:
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
 | `--ingress` | `-i` | string | `none` | Ingress controller for the ArgoCD dashboard (`none`, `nginx`, `nginx-gw`, `traefik`) |
+| `--addon-sync` | | boolean | `true` | Deploy addon-sync infrastructure for GitOps addon delivery from OCI registry |
 
 **Flux CD:**
 
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
 | `--ingress` | `-i` | string | `none` | Ingress controller for the webhook receiver (`none`, `nginx`, `nginx-gw`, `traefik`) |
+| `--addon-sync` | | boolean | `true` | Deploy addon-sync infrastructure for GitOps addon delivery from OCI registry |
 
 When you enable `rollout fluxcd`, *K2s* installs the host Flux CLI at `bin\\flux.exe`. In offline environments the CLI zip is bundled in the addon export and extracted on import.
 
@@ -217,6 +228,10 @@ Cluster host and OSD sizing are read from `addons/storage/ceph/config/ceph-confi
 
 Ceph enable commands:
 
+| Enable Flag | Short | Type | Default | Description |
+|-------------|-------|------|---------|-------------|
+| `--setupWindowsNode` | `-w` | boolean | `false` | Configure Ceph SMB access (mgr/smb + SMB CSI) so Windows pods can consume CephFS |
+
 ```console
 # Linux CephFS only
 k2s addons enable storage ceph
@@ -229,10 +244,10 @@ When `-w` is used, K2s configures Ceph `mgr/smb`, creates SMB CSI resources, and
 
 | Disable Flag | Short | Type | Default | Description |
 |--------------|-------|------|---------|-------------|
-| `--force` | `-f` | boolean | `false` | Disable without confirmation prompt |
+| `--force` | `-f` | boolean | `false` | Skip the confirmation prompt before permanently deleting Ceph cluster data |
 
 !!! warning
-    Disabling Ceph always tears down the provisioned Ceph cluster, including OSD resources and Ceph-backed PVs from this setup. Ceph data is permanently lost after disable.
+    Disabling Ceph deletes PVCs using the configured CephFS and Ceph SMB StorageClasses, then tears down the provisioned Ceph cluster. All data in the Ceph cluster is permanently lost. Using `-f` skips the confirmation prompt.
 
 ```console
 k2s addons disable storage ceph
@@ -285,10 +300,12 @@ Additional helper scripts:
 | Enable Flag | Short | Type | Default | Description |
 |-------------|-------|------|---------|-------------|
 | `--time-slices` | `-t` | integer | `1` | Number of virtual GPU slots per physical GPU. `1` = exclusive access. Set `>1` to share the GPU across multiple pods simultaneously via CUDA time-slicing (max `16`). |
+| `--node` | `-n` | string | (empty) | Comma-separated list of cluster nodes to label as GPU nodes for this addon run |
 
 ```console
 k2s addons enable gpu-node
 k2s addons enable gpu-node --time-slices 4
+k2s addons enable gpu-node --node my-gpu-worker
 ```
 
 Installs the NVIDIA Container Toolkit on the Linux VM and deploys the NVIDIA Device Plugin DaemonSet. For Hyper-V setups, also configures GPU-PV passthrough and installs the WSL2 kernel. For WSL2 setups, the GPU libraries are already available via the shared dxcore stack.
@@ -301,7 +318,11 @@ No CLI flags. Installs [KEDA](https://keda.sh){target="_blank"} (Kubernetes Even
 
 ### metrics
 
-No CLI flags. Installs the Kubernetes **metrics server**, enabling `kubectl top nodes`, `kubectl top pods`, and Horizontal Pod Autoscaler (HPA) support.
+| Enable Flag | Short | Type | Default | Description |
+|-------------|-------|------|---------|-------------|
+| `--infra-node-selector` | | string | (empty) | Constrain the metrics-server Pod to nodes matching all label requirements |
+
+Installs the Kubernetes **metrics server**, enabling `kubectl top nodes`, `kubectl top pods`, and Horizontal Pod Autoscaler (HPA) support.
 
 ## Managing Addons
 
@@ -321,7 +342,7 @@ k2s addons enable dashboard
 k2s addons enable ingress nginx
 
 # Enable with flags
-k2s addons enable dashboard --ingress
+k2s addons enable dashboard --ingress nginx
 ```
 
 ### Disabling an Addon

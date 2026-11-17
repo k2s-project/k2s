@@ -13,7 +13,7 @@ The `storage` addon provides persistent storage solutions for the K2s cluster. I
 - **[smb](./smb/README.md)** — StorageClass provisioning based on SMB share between K8s nodes (Windows/Linux)
 - **[ceph](./ceph/README.md)** — **EXPERIMENTAL** - Ceph CSI operator for CephFS (file) storage provisioning
 
-**Important:** Only ONE storage implementation can be enabled at a time. Enabling one automatically disables any active alternative.
+**Important:** Only ONE storage implementation can be enabled at a time. Disable the active implementation before enabling another.
 
 ## Quick Start
 
@@ -26,9 +26,7 @@ k2s addons enable storage smb
 ### Enable Ceph CSI Storage
 
 ```console
-k2s addons enable storage ceph \
-  --monitorEndpoints "10.0.0.1:6789,10.0.0.2:6789" \
-  --adminKey "AQDa1Ipn...=="
+k2s addons enable storage ceph
 ```
 
 ### Disable Storage
@@ -51,7 +49,7 @@ k2s addons disable storage smb -k
 | Requirement | SMB | Ceph |
 |-------------|-----|------|
 | Simple local/network share | ✅ Yes | ❌ No |
-| External Ceph cluster | ❌ No | ✅ Required |
+| Ceph cluster provisioned by K2s | ❌ No | ✅ Yes |
 | High availability | ⚠️ Limited | ✅ Full |
 | Shared file storage | ✅ Yes | ✅ Yes (CephFS) |
 | Enterprise workloads | ⚠️ Basic | ✅ Yes |
@@ -75,13 +73,13 @@ k2s addons disable storage smb -k
 k2s addons disable storage smb -k  # Keep data if needed
 
 # 2. Enable new backend
-k2s addons enable storage ceph --monitorEndpoints "..." --adminKey "..."
+k2s addons enable storage ceph
 ```
 
 ## Implementation Details
 
 - **[SMB Implementation](./smb/README.md)** — Windows/Linux SMB-based storage
-- **[Ceph CSI Implementation](./ceph/README.md)** — External Ceph cluster integration
+- **[Ceph CSI Implementation](./ceph/README.md)** — Ceph cluster provisioning with CephFS
 - **[Storage Implementations Guide](./STORAGE_IMPLEMENTATIONS.md)** — Architecture and validation details
 
 ## Status & Monitoring

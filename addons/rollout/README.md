@@ -184,8 +184,8 @@ k2s addons backup rollout argocd
 k2s addons backup rollout fluxcd
 
 # Restore
-k2s addons restore rollout argocd <path-to-backup-zip>
-k2s addons restore rollout fluxcd <path-to-backup-zip>
+k2s addons restore rollout argocd -f <path-to-backup-zip>
+k2s addons restore rollout fluxcd -f <path-to-backup-zip>
 ```
 
 ### What gets backed up

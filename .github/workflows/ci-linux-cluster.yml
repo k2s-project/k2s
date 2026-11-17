@@ -107,11 +107,17 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Build k2s CLI (linux/amd64)
-        timeout-minutes: 15
+      - name: Build K2s executables (linux/amd64)
+        timeout-minutes: 30
         run: |
           set -euo pipefail
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o k2s ./cmd/k2s
+          # Native Linux build: k2s plus the helpers the host install runs from bin/
+          # (httpproxy, dnsproxy, cloudinitisobuilder, yaml2json). Building only the CLI
+          # makes the install fail in k2s_proxy_install (lib/modules/linux/infra/proxy.sh).
+          bash build.sh
+          for binary in k2s bin/httpproxy bin/dnsproxy bin/cloudinitisobuilder bin/yaml2json; do
+            test -x "$binary" || { echo "::error::Build did not produce $binary"; exit 1; }
+          done
           file k2s | grep -q 'ELF 64-bit' || { echo "::error::k2s is not a linux/amd64 ELF binary"; exit 1; }
 
       - name: Start Debian 13 guest

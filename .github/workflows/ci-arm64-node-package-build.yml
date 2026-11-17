@@ -55,6 +55,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # The checkout is owned by the runner user, but every step runs as root in the container.
+      # Without this, git refuses to read the repo, so `go build` fails stamping VCS info and
+      # `git describe` fails too. Must run before the Go build.
+      - name: Trust the checked-out workspace for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Set up node package workspace
         run: echo "NODE_PACKAGE_ROOT=$RUNNER_TEMP/k2s-node-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
 
@@ -74,8 +80,6 @@ jobs:
       - name: Determine package version for naming
         id: version
         run: |
-          # The checkout is owned by the runner user, but this step runs as root in the container.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           version="$(git describe --tags --always)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

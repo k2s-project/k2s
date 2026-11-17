@@ -54,7 +54,6 @@ jobs:
           # `git describe --tags` in the version step needs full history and tags.
           fetch-depth: 0
           fetch-tags: true
-
       # The checkout is owned by the runner user, but every step runs as root in the container.
       # Without this, git refuses to read the repo, so `go build` fails stamping VCS info and
       # `git describe` fails too. Must run before the Go build.

@@ -75,33 +75,58 @@ k2s_windows_worker_start_libvirt() {
 }
 
 k2s_windows_worker_memory_mb() {
-  [[ "$K2S_WORKER_MEMORY" =~ ^([2-9]|[1-9][0-9]+)(GB|G)$ ]] || { k2s_log ERROR "Invalid --worker-memory value: $K2S_WORKER_MEMORY"; return 2; }
+  [[ "$K2S_WORKER_MEMORY" =~ ^([2-9]|[1-9][0-9]+)(GB|G)$ ]] || { k2s_log_prereq_failure "Invalid --worker-memory value: $K2S_WORKER_MEMORY"; return 2; }
   printf '%s\n' "$(( ${BASH_REMATCH[1]} * 1024 ))"
 }
 
 k2s_windows_worker_disk_gb() {
-  [[ "$K2S_WORKER_DISK_SIZE" =~ ^([2-9][0-9]|[1-9][0-9]{2,})(GB|G)$ ]] || { k2s_log ERROR "Invalid --worker-disk value: $K2S_WORKER_DISK_SIZE"; return 2; }
+  [[ "$K2S_WORKER_DISK_SIZE" =~ ^([2-9][0-9]|[1-9][0-9]{2,})(GB|G)$ ]] || { k2s_log_prereq_failure "Invalid --worker-disk value: $K2S_WORKER_DISK_SIZE"; return 2; }
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
-k2s_windows_worker_preflight() {
-  local command memory_mb available_mb total_mb disk_gb available_gb vm_dir
-  [[ -r /dev/kvm && -c /dev/kvm ]] || { k2s_log ERROR 'KVM is unavailable. Enable nested virtualization and expose /dev/kvm to the Debian host.'; return 3; }
-  for command in virsh qemu-img sfdisk ssh scp ssh-keyscan ssh-keygen sshpass tar; do k2s_require_command "$command" || return 4; done
-  getent passwd libvirt-qemu >/dev/null || { k2s_log ERROR 'The libvirt-qemu service account is missing. Reinstall libvirt-daemon-system.'; return 3; }
-  getent passwd dnsmasq >/dev/null || { k2s_log ERROR 'The dnsmasq service account is missing. Install dnsmasq-base.'; return 3; }
-  k2s_windows_worker_start_libvirt || return 3
-  [[ "$K2S_WORKER_CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { k2s_log ERROR "Invalid --worker-cpus value: $K2S_WORKER_CPU_COUNT"; return 2; }
+k2s_windows_worker_disk_path() { printf '%s/%s.qcow2' "$(k2s_windows_worker_vm_dir)" "$K2S_WINDOWS_WORKER_NAME"; }
+k2s_windows_worker_cache_path() { printf '%s/WindowsWorker-Base.qcow2' "$(k2s_windows_worker_vm_dir)"; }
+
+# A prepared base image is only needed while neither the worker disk nor the cached base image exists.
+k2s_windows_worker_image_needed() {
+  [[ ! -f "$(k2s_windows_worker_disk_path)" && ! -f "$(k2s_windows_worker_cache_path)" ]]
+}
+
+# The preflight is split in two phases so that the install can fail before it changes the host.
+# Phase 1 needs no tooling and runs before any package is installed.
+k2s_windows_worker_preflight_host() {
+  local memory_mb available_mb total_mb disk_gb available_gb disk_check_dir
+  [[ -r /dev/kvm && -c /dev/kvm ]] || { k2s_log_prereq_failure 'KVM is unavailable. Enable nested virtualization and expose /dev/kvm to the Debian host.'; return 3; }
+  [[ "$K2S_WORKER_CPU_COUNT" =~ ^[1-9][0-9]*$ ]] || { k2s_log_prereq_failure "Invalid --worker-cpus value: $K2S_WORKER_CPU_COUNT"; return 2; }
   memory_mb=$(k2s_windows_worker_memory_mb) || return $?
   disk_gb=$(k2s_windows_worker_disk_gb) || return $?
   available_mb=$(awk '/MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
   total_mb=$(awk '/MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
-  (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log ERROR 'Windows worker memory must not exceed 75% of host memory.'; return 3; }
-  (( available_mb >= memory_mb + 2048 )) || { k2s_log ERROR 'Windows worker would leave less than 2GB of host memory available.'; return 3; }
-  vm_dir=$(k2s_windows_worker_vm_dir)
-  install -d -m 0711 "$vm_dir" || return 1
-  available_gb=$(df -BG --output=avail "$vm_dir" | tail -1 | tr -dc '0-9')
-  (( available_gb - disk_gb >= 20 )) || { k2s_log ERROR 'Windows worker would leave less than 20GB of host disk space available.'; return 3; }
+  (( memory_mb * 4 <= total_mb * 3 )) || { k2s_log_prereq_failure "Windows worker memory (${memory_mb} MB) must not exceed 75% of host memory (${total_mb} MB). Lower --worker-memory."; return 3; }
+  (( available_mb >= memory_mb + 2048 )) || { k2s_log_prereq_failure "Windows worker needs ${memory_mb} MB plus 2048 MB headroom for the host, but only ${available_mb} MB of host memory is available (total: ${total_mb} MB). Free up memory or lower --worker-memory."; return 3; }
+  disk_check_dir=$(k2s_windows_worker_vm_dir)
+  while [[ ! -d "$disk_check_dir" ]]; do disk_check_dir=$(dirname "$disk_check_dir"); done
+  available_gb=$(df -BG --output=avail "$disk_check_dir" | tail -1 | tr -dc '0-9')
+  (( available_gb - disk_gb >= 20 )) || { k2s_log_prereq_failure "Windows worker needs ${disk_gb} GB plus 20 GB headroom for the host, but only ${available_gb} GB of disk space is available in '${disk_check_dir}'. Free up disk space or lower --worker-disk."; return 3; }
+  if k2s_windows_worker_image_needed; then
+    [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log_prereq_failure 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
+  fi
+}
+
+# Phase 2 needs the tooling installed by k2s_windows_worker_install_host_dependencies, but still runs
+# before the cluster is created.
+k2s_windows_worker_preflight_tools() {
+  local command source_format
+  for command in virsh qemu-img sfdisk ssh scp ssh-keyscan ssh-keygen sshpass tar; do
+    command -v "$command" >/dev/null 2>&1 || { k2s_log_prereq_failure "Required command is not available: $command"; return 4; }
+  done
+  getent passwd libvirt-qemu >/dev/null || { k2s_log_prereq_failure 'The libvirt-qemu service account is missing. Reinstall libvirt-daemon-system.'; return 3; }
+  getent passwd dnsmasq >/dev/null || { k2s_log_prereq_failure 'The dnsmasq service account is missing. Install dnsmasq-base.'; return 3; }
+  k2s_windows_worker_start_libvirt || { k2s_log_prereq_failure 'libvirt is not available.'; return 3; }
+  if k2s_windows_worker_image_needed; then
+    source_format=$(qemu-img info --output=json "$K2S_WINDOWS_QCOW2_PATH" | jq -r '.format') || return 1
+    [[ "$source_format" == 'qcow2' ]] || { k2s_log_prereq_failure "Windows worker image must use QCOW2 format, found: $source_format"; return 2; }
+  fi
 }
 
 k2s_windows_worker_network_create() {
@@ -140,11 +165,12 @@ EOF
 k2s_windows_worker_prepare_image() {
   local vm_dir disk disk_gb
   vm_dir=$(k2s_windows_worker_vm_dir)
-  disk="$vm_dir/$K2S_WINDOWS_WORKER_NAME.qcow2"
+  disk=$(k2s_windows_worker_disk_path)
   disk_gb=$(k2s_windows_worker_disk_gb) || return $?
   install -d -m 0711 "$vm_dir" || return 1
   [[ ! -e "$disk" ]] || { printf '%s\n' "$disk"; return 0; }
-  local cache="$vm_dir/WindowsWorker-Base.qcow2"
+  local cache
+  cache=$(k2s_windows_worker_cache_path)
   [[ -f "$cache" ]] || k2s_windows_worker_import_qcow2 "$cache" >&2 || return $?
   k2s_windows_worker_create_overlay "$cache" "$disk" "$disk_gb" >&2 || return $?
   printf '%s\n' "$disk"
@@ -167,10 +193,7 @@ k2s_windows_worker_create_overlay() {
 }
 
 k2s_windows_worker_import_qcow2() {
-  local cache="$1" source_format temporary_cache
-  [[ -f "$K2S_WINDOWS_QCOW2_PATH" ]] || { k2s_log ERROR 'A cached Windows worker base image or --windows-qcow2-path is required.'; return 2; }
-  source_format=$(qemu-img info --output=json "$K2S_WINDOWS_QCOW2_PATH" | jq -r '.format') || return 1
-  [[ "$source_format" == 'qcow2' ]] || { k2s_log ERROR "Windows worker image must use QCOW2 format, found: $source_format"; return 2; }
+  local cache="$1" temporary_cache
   temporary_cache="$cache.tmp"
   rm -f "$temporary_cache"
   k2s_log INFO "Importing prepared Windows worker QCOW2 image: $K2S_WINDOWS_QCOW2_PATH"
@@ -204,23 +227,13 @@ k2s_windows_worker_detect_boot_mode() {
   esac
 }
 
-k2s_windows_worker_ssh_dir() { printf '%s/ssh' "$K2S_CONFIG_DIR"; }
-k2s_windows_worker_private_key() { printf '%s/windows-worker' "$(k2s_windows_worker_ssh_dir)"; }
-k2s_windows_worker_known_hosts() { printf '%s/windows-worker.known_hosts' "$(k2s_windows_worker_ssh_dir)"; }
-
-k2s_windows_worker_create_ssh_key() {
-  local key_dir key
-  key_dir=$(k2s_windows_worker_ssh_dir); key=$(k2s_windows_worker_private_key)
-  mkdir -p "$key_dir"; chmod 700 "$key_dir"
-  [[ -f "$key" && -f "$key.pub" ]] || ssh-keygen -q -t ed25519 -N '' -f "$key" -C k2s-windows-worker
-  chmod 600 "$key"; chmod 644 "$key.pub"
-}
+k2s_windows_worker_known_hosts() { printf '%s/ssh/windows-worker.known_hosts' "$K2S_CONFIG_DIR"; }
 
 # ServerAlive* bounds how long a session hangs after the worker's networking drops out
 # from under it, which happens whenever HNS rebinds the NIC. Without it ssh waits for
 # the TCP timeout, roughly 20 minutes.
 k2s_windows_worker_ssh() {
-  ssh -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip)" "$@"
+  ssh -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip)" "$@"
 }
 
 k2s_windows_worker_password() { printf '%s' "${K2S_WINDOWS_WORKER_PASSWORD:-admin}"; }
@@ -234,7 +247,7 @@ k2s_windows_worker_password_ssh() {
 }
 
 k2s_windows_worker_password_scp() {
-  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$(k2s_windows_worker_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
+  SSHPASS=$(k2s_windows_worker_password) sshpass -e scp -o BatchMode=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$(k2s_ssh_private_key).pub" "remote@$(k2s_windows_worker_ip):windows-worker.pub"
 }
 
 # sshd reads administrators_authorized_keys on every authentication, so the key takes
@@ -248,10 +261,10 @@ k2s_windows_worker_bootstrap_ssh_key() {
 
 k2s_windows_worker_wait_for_ssh() {
   local known_hosts worker_ip deadline attempt=0
-  k2s_windows_worker_create_ssh_key || return 1
+  k2s_ssh_require_key || return 1
   known_hosts=$(k2s_windows_worker_known_hosts)
   worker_ip=$(k2s_windows_worker_ip) || return 1
-  install -d -m 0700 "$(k2s_windows_worker_ssh_dir)" || return 1
+  install -d -m 0700 "$(dirname "$known_hosts")" || return 1
   : > "$known_hosts"; chmod 600 "$known_hosts"
   k2s_log INFO "Waiting for the Windows worker to answer SSH on $worker_ip."
   deadline=$((SECONDS + 900))
@@ -325,16 +338,16 @@ k2s_windows_worker_sync_clock() {
 k2s_windows_worker_log_ssh_diagnostics() {
   local worker_ip="$1"
   k2s_log ERROR "Windows worker SSH diagnostics for $worker_ip"
-  virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh dominfo "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh domifaddr "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh net-dhcp-leases "$K2S_WINDOWS_WORKER_NETWORK" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  ip -4 neigh show "$worker_ip" 2>&1 | tee -a "$K2S_LOG_FILE" || true
-  virsh vncdisplay "$K2S_WINDOWS_WORKER_NAME" 2>&1 | tee -a "$K2S_LOG_FILE" || true
+  virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
+  virsh dominfo "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
+  virsh domifaddr "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
+  virsh net-dhcp-leases "$K2S_WINDOWS_WORKER_NETWORK" 2>&1 | k2s_log_output || true
+  ip -4 neigh show "$worker_ip" 2>&1 | k2s_log_output || true
+  virsh vncdisplay "$K2S_WINDOWS_WORKER_NAME" 2>&1 | k2s_log_output || true
   if virsh screenshot "$K2S_WINDOWS_WORKER_NAME" "$K2S_CONFIG_DIR/${K2S_WINDOWS_WORKER_NAME}-console.png" >/dev/null 2>&1; then
     k2s_log ERROR "Windows worker console screenshot: $K2S_CONFIG_DIR/${K2S_WINDOWS_WORKER_NAME}-console.png"
   fi
-  tail -n 100 "/var/log/libvirt/qemu/${K2S_WINDOWS_WORKER_NAME}.log" 2>&1 | tee -a "$K2S_LOG_FILE" || true
+  tail -n 100 "/var/log/libvirt/qemu/${K2S_WINDOWS_WORKER_NAME}.log" 2>&1 | k2s_log_output || true
 }
 
 k2s_windows_worker_copy_runtime() {
@@ -349,7 +362,7 @@ k2s_windows_worker_copy_runtime() {
     --exclude='bin/*.vhdx' \
     -cf "$archive" "${runtime_paths[@]}" || { rm -f "$archive"; return 1; }
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\ProgramData\K2s -Force | Out-Null"' || { rm -f "$archive"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$archive" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/k2s-runtime.tar"
   result=$?
   rm -f "$archive"
   (( result == 0 )) || return "$result"
@@ -365,7 +378,7 @@ k2s_windows_worker_copy_kubeconfig() {
   k2s_log INFO 'Copying the cluster kubeconfig to the Windows worker.'
   kubeconfig=$(mktemp) || return 1
   cp /etc/kubernetes/admin.conf "$kubeconfig" || { rm -f "$kubeconfig"; return 1; }
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$kubeconfig" "remote@$(k2s_windows_worker_ip):C:/k2s/config"
   result=$?
   rm -f "$kubeconfig"
   return "$result"
@@ -386,7 +399,7 @@ k2s_windows_worker_collect_logs() {
   log_dir=${log_dir//\\//}
   log=$(mktemp) || return 0
   k2s_log ERROR "Retrieving the Windows worker K2s log from $log_dir/k2s.log"
-  if scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
+  if scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "remote@$(k2s_windows_worker_ip):$log_dir/k2s.log" "$log" >/dev/null 2>&1; then
     printf '===== Windows worker K2s log (last 300 lines) =====\n'
     tail -n 300 "$log" | tr -d '\r'
     printf '===== end of Windows worker K2s log =====\n'
@@ -519,7 +532,7 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$join_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/JoinWorker.ps1"
   local result=$?; rm -f "$join_script"; (( result == 0 )) || return "$result"
   # The worker disk may be reused after a failed provisioning attempt. Do not launch the
   # join unless the previous result marker is confirmed absent.
@@ -612,7 +625,7 @@ catch {
     throw
 }
 EOF
-  scp -i "$(k2s_windows_worker_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
+  scp -i "$(k2s_ssh_private_key)" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$(k2s_windows_worker_known_hosts)" -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$start_script" "remote@$(k2s_windows_worker_ip):C:/ProgramData/K2s/StartWorker.ps1"
   local result=$?; rm -f "$start_script"; (( result == 0 )) || return "$result"
   # The worker disk persists across stop/start, so remove any previous result before launching.
   k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"if (Test-Path '$result_file') { Remove-Item -Path '$result_file' -Force -ErrorAction Stop }\"" || return 1
@@ -695,13 +708,10 @@ k2s_windows_worker_write_state() {
 }
 
 k2s_windows_worker_provision() {
-  k2s_log INFO 'Preflighting managed KVM Windows worker.'
-  k2s_windows_worker_preflight || return $?
   k2s_log INFO "Creating libvirt network '$K2S_WINDOWS_WORKER_NETWORK' on bridge '$K2S_WINDOWS_WORKER_BRIDGE'."
   k2s_windows_worker_network_create || return 1
   local disk
   disk=$(k2s_windows_worker_prepare_image) || return $?
-  k2s_windows_worker_create_ssh_key || return 1
   k2s_log INFO "Defining libvirt domain '$K2S_WINDOWS_WORKER_NAME' with ${K2S_WORKER_CPU_COUNT} vCPUs."
   k2s_windows_worker_define "$disk" || return 1
   k2s_windows_worker_write_state "$disk" || return 1

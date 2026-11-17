@@ -17,15 +17,16 @@ import (
 	"github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/definitions"
 	bl "github.com/k2s-project/k2s/internal/logging"
-	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/k2s-project/k2s/internal/providers/kubeconfig"
 
 	"github.com/pterm/pterm"
 )
 
-type FailureSeverity uint8
-type ContextKey string
+type (
+	FailureSeverity uint8
+	ContextKey      string
+)
 
 type Spinner interface {
 	Stop() error
@@ -47,13 +48,7 @@ type CmdResult struct {
 }
 
 type PtermWriter struct {
-	ShowProgress    bool
 	errorLineBuffer *bl.LogBuffer
-	ErrorOccurred   bool
-	ErrorLines      []string
-}
-
-type SlogWriter struct {
 }
 
 type CmdContext struct {
@@ -104,18 +99,13 @@ const (
 
 	NodeFlagName  = "node"
 	NodeFlagUsage = "Name of a specific node to start/stop"
-
-	PreReqMarker = "[PREREQ-FAILED]"
 )
 
 func NewPtermWriter() *PtermWriter {
 	return &PtermWriter{
-		ShowProgress:    true,
 		errorLineBuffer: createErrorLineBuffer(),
 	}
 }
-
-func NewSlogWriter() output.StreamWriter { return &SlogWriter{} }
 
 func NewCmdContext(config *config.K2sConfig, logger *logging.Slogger, providers *provider.Registry) *CmdContext {
 	return &CmdContext{
@@ -210,19 +200,6 @@ func StopSpinner(spinner Spinner) {
 	}
 }
 
-func GetInstallPreRequisiteError(errorLines []string) (line string, found bool) {
-	for _, line := range errorLines {
-		if strings.Contains(line, PreReqMarker) {
-			// Remove error line with pre-requisite marker e.g [PREREQ-FAILED] Master node memory passed too low
-			cleanedLine := strings.Replace(line, PreReqMarker, "", -1)
-			cleanedLine = strings.Replace(cleanedLine, " ", "", 1)
-			return cleanedLine, true
-		}
-	}
-
-	return "", false
-}
-
 func (c *CmdFailure) Error() string { return fmt.Sprintf("%s: %s", c.Code, c.Message) }
 
 func (s CmdSession) Finish(suppressOutput ...bool) {
@@ -254,28 +231,16 @@ func (w *PtermWriter) WriteStdOut(line string) {
 	if strings.TrimSpace(line) == "" {
 		return
 	}
-	if w.ShowProgress {
-		pterm.Printfln("⏳ %s", line)
-	} else {
-		pterm.Println(line)
-	}
+	pterm.Printfln("⏳ %s", line)
 }
 
 func (w *PtermWriter) WriteStdErr(line string) {
 	w.errorLineBuffer.Log(line)
-	w.ErrorOccurred = true
-	w.ErrorLines = append(w.ErrorLines, line)
 
 	pterm.Printfln("⏳ %s", pterm.Yellow(line))
 }
 
 func (w *PtermWriter) Flush() { w.errorLineBuffer.Flush() }
-
-func (*SlogWriter) WriteStdOut(message string) { slog.Info(message) }
-
-func (*SlogWriter) WriteStdErr(message string) { slog.Error(message) }
-
-func (*SlogWriter) Flush() { /*empty*/ }
 
 func (c *CmdContext) Config() *config.K2sConfig { return c.config }
 

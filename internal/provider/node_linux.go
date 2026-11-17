@@ -100,30 +100,7 @@ func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
 }
 
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
-	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "name", cfg.NodeName)
-
-	if err := assertSupportedNodeArchitecture(cfg.UserName, cfg.IpAddress); err != nil {
-		return err
-	}
-
-	// Generate join token on control plane
-	output, err := exec.Command("kubeadm", "token", "create", "--print-join-command").Output()
-	if err != nil {
-		return fmt.Errorf("failed to create join token: %w", err)
-	}
-	joinCmd := kubeadmJoinCommand(string(output))
-
-	// kubeadm join must run as root (it writes /etc/kubernetes, starts kubelet, etc.);
-	// the SSH user is assumed to have passwordless sudo, matching every other
-	// bare-metal provisioning path in this codebase (e.g. harden-node.sh re-execs
-	// itself via sudo when not already root).
-	_, err = sshCmdToNode(cfg.UserName, cfg.IpAddress, "sudo "+joinCmd)
-	if err != nil {
-		return fmt.Errorf("kubeadm join failed on remote node: %w", err)
-	}
-
-	slog.Info("[Node] Node added successfully")
-	return nil
+	return errors.New("not implemented")
 }
 
 func (p *linuxNodeProvider) Remove(cfg NodeRemoveConfig) error {

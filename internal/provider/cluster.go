@@ -56,8 +56,8 @@ type ClusterInstallConfig struct {
 	ClusterName                       string
 	ControlPlaneHostname              string
 	EffectiveInstallConfig            []byte
-	// StdWriter overrides the default writer for capturing PS output (Windows).
-	// Linux providers ignore this field.
+	// StdWriter receives the install output instead of the provider's default writer; it is required
+	// so that the caller can observe the output (e.g. to detect prerequisite failures).
 	StdWriter output.StreamWriter
 }
 

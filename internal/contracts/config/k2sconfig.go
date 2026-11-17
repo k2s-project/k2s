@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
 package config
@@ -23,9 +23,10 @@ type KubeConfig struct { // TODO: dir + files really necessary?
 }
 
 type SSHConfig struct {
-	currentDir            string
-	currentPrivateKeyPath string
-	relativeDir           string
+	currentDir             string
+	currentPrivateKeyPath  string
+	relativeDir            string
+	relativePrivateKeyPath string
 }
 
 type ControlPlaneConfig struct {
@@ -63,17 +64,27 @@ func NewKubeConfig(currentDir, relativeDir, currentPath string) *KubeConfig {
 	}
 }
 
-func NewSshConfig(currentDir, relativeDir, currentPrivateKeyPath string) *SSHConfig {
+// NewSshConfig creates the SSH config of the K2s host. The "current" values are resolved for the user running K2s,
+// the "relative" values keep the leading tilde ('~') so that they can be resolved against the home dir of any user.
+//
+// Parameters:
+//   - currentDir: SSH config dir of the current user, e.g. "/root/.ssh" or "C:\Users\john\.ssh"
+//   - relativeDir: SSH config dir with tilde as configured in 'configDir.ssh', e.g. "~/.ssh"
+//   - currentPrivateKeyPath: K2s private key of the current user, e.g. "/root/.ssh/k2s/id_ed25519" or "C:\Users\john\.ssh\k2s\id_rsa"
+//   - relativePrivateKeyPath: K2s private key with tilde, e.g. "~/.ssh/k2s/id_ed25519"
+func NewSshConfig(currentDir, relativeDir, currentPrivateKeyPath, relativePrivateKeyPath string) *SSHConfig {
 	return &SSHConfig{
-		currentDir:            currentDir,
-		relativeDir:           relativeDir,
-		currentPrivateKeyPath: currentPrivateKeyPath,
+		currentDir:             currentDir,
+		relativeDir:            relativeDir,
+		currentPrivateKeyPath:  currentPrivateKeyPath,
+		relativePrivateKeyPath: relativePrivateKeyPath,
 	}
 }
 
 func (c *K2sConfig) Host() *HostConfig {
 	return c.hostConfig
 }
+
 func (c *K2sConfig) ControlPlane() *ControlPlaneConfig {
 	return c.controlPlaneConfig
 }
@@ -126,4 +137,8 @@ func (c *SSHConfig) RelativeDir() string {
 
 func (c *SSHConfig) CurrentPrivateKeyPath() string {
 	return c.currentPrivateKeyPath
+}
+
+func (c *SSHConfig) RelativePrivateKeyPath() string {
+	return c.relativePrivateKeyPath
 }

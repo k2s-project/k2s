@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
 package config_test
@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/k2s-project/k2s/internal/core/config"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/k2s-project/k2s/internal/core/config"
 )
 
 // realistic excerpt of 'cfg/config.json' containing entries that are unknown to the typed
@@ -36,9 +36,16 @@ const configFileFixture = `{
   "configDir": {
     "kube": "~\\.kube",
     "k2s": "C:\\ProgramData\\K2s",
-    "ssh": "~\\.ssh",
+    "ssh": "~/.ssh",
     "docker": "~\\.docker",
     "logs": "C:\\var\\log"
+  },
+  "sshKey": {
+    "subDir": "k2s",
+    "fileName": {
+      "windows": "windows_key",
+      "linux": "linux_key"
+    }
   },
   "vfprules-k2s": {
     "rules": ["rule-1", "rule-2"]
@@ -83,6 +90,28 @@ var _ = Describe("K2s config file", func() {
 			Expect(k2sConfig.Host().K2sSetupConfigDir()).To(Equal(`C:\ProgramData\K2s`))
 			Expect(k2sConfig.Host().K2sInstallDir()).To(Equal(installDir))
 		})
+
+		It("returns the SSH key configured for the host OS", func() {
+			expectedFileName := map[string]string{"windows": "windows_key", "linux": "linux_key"}[runtime.GOOS]
+			if expectedFileName == "" {
+				Skip("no SSH key file name configured for this OS in the fixture")
+			}
+
+			k2sConfig, err := config.ReadK2sConfig(installDir)
+
+			Expect(err).ToNot(HaveOccurred())
+			sshConfig := k2sConfig.Host().SshConfig()
+			Expect(sshConfig.RelativePrivateKeyPath()).To(Equal("~/.ssh/k2s/" + expectedFileName))
+			Expect(filepath.Base(sshConfig.CurrentPrivateKeyPath())).To(Equal(expectedFileName))
+		})
+
+		It("fails if the SSH key is only partially configured for the host OS", func() {
+			Expect(os.WriteFile(configFilePath, []byte(`{"configDir": {}, "sshKey": {"subDir": "k2s"}}`), os.ModePerm)).To(Succeed())
+
+			_, err := config.ReadK2sConfig(installDir)
+
+			Expect(err).To(MatchError(ContainSubstring("SSH key")))
+		})
 	})
 
 	Describe("ReadSupportedWorkerOS", func() {
@@ -99,4 +128,3 @@ var _ = Describe("K2s config file", func() {
 		})
 	})
 })
-

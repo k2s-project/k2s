@@ -45,7 +45,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates git sudo unzip
+            ca-certificates curl git gnupg sudo unzip
           # The k2s APT lock lives under /run/lock, which the Debian image may not create.
           mkdir -p /run/lock
 

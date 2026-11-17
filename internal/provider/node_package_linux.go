@@ -279,10 +279,21 @@ func downloadNvidiaGpuPackages(ctx context.Context, targetPath, proxy, aptConfig
 	return nil
 }
 
+// zipSource places the files under root into the zip under the given top-level prefix.
+type zipSource struct {
+	prefix string
+	root   string
+}
+
 // buildZip writes srcRoot (recursively, under a "packages" prefix) into a new zip file
 // at destZipPath. Callers are responsible for only exposing destZipPath to the rest of
 // the system once this returns successfully.
 func buildZip(ctx context.Context, destZipPath, srcRoot string) error {
+	return buildZipSources(ctx, destZipPath, zipSource{prefix: "packages", root: srcRoot})
+}
+
+// buildZipSources writes each source under its prefix into a new zip file at destZipPath.
+func buildZipSources(ctx context.Context, destZipPath string, sources ...zipSource) error {
 	zf, err := os.CreateTemp(filepath.Dir(destZipPath), "."+filepath.Base(destZipPath)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("could not create temporary output for %s: %w", destZipPath, err)
@@ -291,10 +302,12 @@ func buildZip(ctx context.Context, destZipPath, srcRoot string) error {
 	defer os.Remove(tmpZipPath)
 
 	zw := zip.NewWriter(zf)
-	if err := zipDir(ctx, zw, srcRoot, "packages"); err != nil {
-		zw.Close()
-		zf.Close()
-		return fmt.Errorf("could not zip packages: %w", err)
+	for _, source := range sources {
+		if err := zipDir(ctx, zw, source.root, source.prefix); err != nil {
+			zw.Close()
+			zf.Close()
+			return fmt.Errorf("could not zip %s: %w", source.prefix, err)
+		}
 	}
 	if err := zw.Close(); err != nil {
 		zf.Close()
@@ -524,11 +537,9 @@ func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
 // Dependency resolution uses an isolated empty package database so installed build-host
 // packages cannot be omitted from the resulting offline package.
 //
-// Unlike the Windows-built package, this does not pre-stage container images as OCI
-// archives: 'k2s node add' with a package built here still needs network access to
-// pull Kubernetes/flannel/GPU images at join time. Only the .deb packages are bundled
-// for offline use. This is a deliberate, documented gap for the initial arm64 support
-// (see docs/op-manual/creating-offline-package.md), not an oversight.
+// The resulting zip has the same layout as the Windows-built package: packages/<os>/ with
+// the .deb files and images/ with the Kubernetes, flannel and (optionally) NVIDIA container
+// images as OCI archives, exported with skopeo (see node_package_images_linux.go).
 func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildErr error) {
 	targetDir := cfg.OutputDir
 	zipName := cfg.PackageName
@@ -689,6 +700,16 @@ func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildEr
 		return err
 	}
 
+	imagesDir := filepath.Join(stagingDir, "images")
+	kubeadmDebs, err := filepath.Glob(filepath.Join(k8sPkgDir, "kubeadm_*.deb"))
+	if err != nil || len(kubeadmDebs) == 0 {
+		return fmt.Errorf("kubeadm package not found in %s", k8sPkgDir)
+	}
+	fmt.Println("[NodePkg] === Exporting container images ===")
+	if err := exportNodePackageImages(buildCtx, imagesDir, kubeadmDebs[0], k8sVersion, arch, installDir, proxy, includeGpu); err != nil {
+		return fmt.Errorf("container image export failed: %w", err)
+	}
+
 	fmt.Println("[NodePkg] === Creating output zip ===")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return fmt.Errorf("could not create target directory: %w", err)
@@ -697,7 +718,10 @@ func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildEr
 	// written: a partial zip left at zipTarget after a failed/interrupted run would
 	// otherwise be mistaken for a finished package by the "already exists" check above
 	// on the next invocation.
-	if err := buildZip(buildCtx, zipTarget, filepath.Join(stagingDir, "packages")); err != nil {
+	if err := buildZipSources(buildCtx, zipTarget,
+		zipSource{prefix: "packages", root: filepath.Join(stagingDir, "packages")},
+		zipSource{prefix: "images", root: imagesDir},
+	); err != nil {
 		return err
 	}
 

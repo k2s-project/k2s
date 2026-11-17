@@ -578,8 +578,33 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
         [ValidateScript({ Get-IsValidIPv4Address($_) })]
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
         [string] $Architecture = 'amd64',
-        [string] $ControlPlaneArchitecture = 'amd64'
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
+
+    $executeRemoteCommandOnRemoteComputer = {
+        param(
+            $command = $(throw 'Argument missing: Command'),
+            [switch]$IgnoreErrors = $false, [string]$RepairCmd = $null, [uint16]$Retries = 0
+        )
+        (Invoke-CmdOnVmViaSSHKey -CmdToExecute $command -UserName $UserName -IpAddress $IpAddress -Retries $Retries -RepairCmd $RepairCmd -IgnoreErrors:$IgnoreErrors).Output | Write-Log
+    }
+
+    $imagesPath = Get-DirectoryOfKubenodeImagesOnWindowsHost -Architecture $Architecture
+    if ($UseNodePackageArtifacts) {
+        $imageArchives = @(Get-ChildItem -LiteralPath $imagesPath -Filter '*.tar' -File -ErrorAction SilentlyContinue)
+        if ($imageArchives.Count -eq 0) {
+            throw "[NodeAdd] Explicit node package contains no usable images for architecture '$Architecture' in '$imagesPath'."
+        }
+
+        Write-Log "[NodeAdd] Importing bundled container images for architecture '$Architecture' from '$imagesPath'"
+        foreach ($imageArchive in $imageArchives) {
+            Copy-ToRemoteComputerViaSshKey -Source $imageArchive.FullName -Target '/tmp/import.tar' -UserName $UserName -IpAddress $IpAddress
+            &$executeRemoteCommandOnRemoteComputer 'sudo buildah pull oci-archive:/tmp/import.tar 2>&1'
+            &$executeRemoteCommandOnRemoteComputer 'cd /tmp && sudo rm -rf import.tar'
+        }
+        return
+    }
 
     if ($Architecture -ne $ControlPlaneArchitecture) {
         $remoteUser = "$UserName@$IpAddress"
@@ -592,16 +617,6 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
         }
         return
     }
-
-    $executeRemoteCommandOnRemoteComputer = { 
-        param(
-            $command = $(throw 'Argument missing: Command'), 
-            [switch]$IgnoreErrors = $false, [string]$RepairCmd = $null, [uint16]$Retries = 0
-        )
-        (Invoke-CmdOnVmViaSSHKey -CmdToExecute $command -UserName $UserName -IpAddress $IpAddress -Retries $Retries -RepairCmd $RepairCmd -IgnoreErrors:$IgnoreErrors).Output | Write-Log
-    }
-
-    $imagesPath = $directoryOfKubenodeImagesOnWindowsHost
 
     Write-Log 'Copy container images from the control plane node to the Windows host' 
     Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -TargetPath $imagesPath
@@ -2570,7 +2585,11 @@ function Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost {
 }
 
 function Get-DirectoryOfKubenodeImagesOnWindowsHost {
-    return $directoryOfKubenodeImagesOnWindowsHost
+    param([string] $Architecture = '')
+    if ([string]::IsNullOrWhiteSpace($Architecture)) {
+        return $directoryOfKubenodeImagesOnWindowsHost
+    }
+    return Join-Path $directoryOfKubenodeImagesOnWindowsHost $Architecture
 }
 
 function Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost {

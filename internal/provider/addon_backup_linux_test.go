@@ -474,11 +474,105 @@ func TestApplyBackupFiles_ReplacesObjectsOnConflict(t *testing.T) {
 	}
 }
 
+func writeTestArchive(t *testing.T, path string, headers []tar.Header) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	for i := range headers {
+		if err := tw.WriteHeader(&headers[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreRegistry_RejectsInvalidArchivesBeforeTouchingTheRegistry(t *testing.T) {
+	for name, tc := range map[string]struct {
+		write func(t *testing.T, path string)
+		want  string
+	}{
+		"corrupt archive": {
+			write: func(t *testing.T, path string) { writeTestFile(t, path, "not a tar.gz") },
+			want:  "invalid archive",
+		},
+		"entry outside repository": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/../auth/htpasswd", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "outside of 'repository'",
+		},
+		"symlink entry": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeSymlink, Linkname: "../auth", Mode: 0o777},
+				})
+			},
+			want: "link entry",
+		},
+		"no repository content": {
+			write: func(t *testing.T, path string) { writeTestArchive(t, path, nil) },
+			want:  "no 'repository' content",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dataDir := useRegistryDataDir(t)
+			writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+			backupDir := t.TempDir()
+			tc.write(t, filepath.Join(backupDir, registryRepositoryArchive))
+			fake := stubAddonCommands(t, nil)
+
+			err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got: %v", tc.want, err)
+			}
+			if len(fake.calls) != 0 {
+				t.Fatalf("expected no commands, got: %v", fake.calls)
+			}
+			if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+				t.Fatalf("expected repository data to be untouched: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestRestore_RegistryBackupWithoutArchiveIsRejectedBeforeEnabling(t *testing.T) {
+	backupDir := t.TempDir()
+	writeTestFile(t, filepath.Join(backupDir, registryConfigBackupFile), "{}")
+	writeTestFile(t, filepath.Join(backupDir, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"registry","files":["registry-config.json"]}`)
+	fake := stubAddonCommands(t, nil)
+
+	err := newBackupTestProvider(t).Restore(AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: backupDir})
+
+	if err == nil || !strings.Contains(err.Error(), "required archive") {
+		t.Fatalf("expected missing archive error, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no commands, got: %v", fake.calls)
+	}
+}
+
 func TestRestoreRegistry_AbortsWhenPodsDoNotTerminate(t *testing.T) {
 	dataDir := useRegistryDataDir(t)
 	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
 	backupDir := t.TempDir()
-	writeTestFile(t, filepath.Join(backupDir, registryRepositoryArchive), "unused")
+	writeTestArchive(t, filepath.Join(backupDir, registryRepositoryArchive), []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
 
 	previous := registryPodsTerminationTimeout
 	registryPodsTerminationTimeout = 0

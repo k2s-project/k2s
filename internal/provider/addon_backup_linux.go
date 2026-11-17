@@ -7,9 +7,12 @@
 package provider
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -74,16 +77,18 @@ type addonBackupManifest struct {
 
 // linuxAddonDataHandler backs up and restores the data of one addon implementation.
 // backup writes its files into the backup directory and returns their names;
-// restore runs after the addon has been enabled again.
+// restore runs after the addon has been enabled again. The optional validate
+// runs before the addon is enabled and rejects backups that restore could not use.
 type linuxAddonDataHandler struct {
-	backup  func(backupDir string) ([]string, error)
-	restore func(backupDir string, files []string) error
+	backup   func(backupDir string) ([]string, error)
+	validate func(backupDir string, files []string) error
+	restore  func(backupDir string, files []string) error
 }
 
 // linuxAddonDataHandlers lists the addons whose backup and restore are
 // implemented natively on Linux hosts, keyed by their 'k2s addons' name.
 var linuxAddonDataHandlers = map[string]linuxAddonDataHandler{
-	"registry": {backup: backupRegistry, restore: restoreRegistry},
+	"registry": {backup: backupRegistry, validate: validateRegistryBackup, restore: restoreRegistry},
 	"ingress nginx": {
 		backup: func(backupDir string) ([]string, error) {
 			return backupKubeResources(backupDir, "ingress-nginx", []kubeResourceBackup{
@@ -156,6 +161,11 @@ func (p *linuxAddonProvider) Restore(cfg AddonRestoreConfig) error {
 	files, err := readAddonBackupFiles(cfg.BackupDir)
 	if err != nil {
 		return err
+	}
+	if handler.validate != nil && len(files) > 0 {
+		if err := handler.validate(cfg.BackupDir, files); err != nil {
+			return err
+		}
 	}
 
 	if err := p.Enable(AddonEnableConfig{
@@ -327,9 +337,60 @@ func minimalConfigMap(configMapJSON []byte, name, namespace string) ([]byte, err
 	}, "", "  ")
 }
 
-func restoreRegistry(backupDir string, files []string) error {
+// validateRegistryBackup makes sure the repository archive is listed and
+// restorable, so that a broken backup is rejected before the cluster or the
+// live registry data is touched.
+func validateRegistryBackup(backupDir string, files []string) error {
 	if !slices.Contains(files, registryRepositoryArchive) {
 		return fmt.Errorf("backup does not contain required archive '%s'", registryRepositoryArchive)
+	}
+	return validateRepositoryArchive(filepath.Join(backupDir, registryRepositoryArchive))
+}
+
+// validateRepositoryArchive reads the whole archive and rejects it when it is
+// corrupt, has no 'repository' directory, or holds entries outside of
+// 'repository/' or links, which could redirect the privileged extraction.
+func validateRepositoryArchive(archivePath string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("opening '%s' failed: %w", registryRepositoryArchive, err)
+	}
+	defer file.Close()
+
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("invalid archive '%s': %w", registryRepositoryArchive, err)
+	}
+	defer gz.Close()
+
+	reader := tar.NewReader(gz)
+	foundRepository := false
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("invalid archive '%s': %w", registryRepositoryArchive, err)
+		}
+		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
+			return fmt.Errorf("invalid archive '%s': link entry '%s' is not allowed", registryRepositoryArchive, header.Name)
+		}
+		entry := filepath.Clean(header.Name)
+		if entry != "repository" && !strings.HasPrefix(entry, "repository"+string(filepath.Separator)) {
+			return fmt.Errorf("invalid archive '%s': entry '%s' is outside of 'repository'", registryRepositoryArchive, header.Name)
+		}
+		foundRepository = true
+	}
+	if !foundRepository {
+		return fmt.Errorf("invalid archive '%s': no 'repository' content found", registryRepositoryArchive)
+	}
+	return nil
+}
+
+func restoreRegistry(backupDir string, files []string) error {
+	if err := validateRegistryBackup(backupDir, files); err != nil {
+		return err
 	}
 	archivePath := filepath.Join(backupDir, registryRepositoryArchive)
 	repositoryDir := filepath.Join(linuxRegistryDataDir, "repository")

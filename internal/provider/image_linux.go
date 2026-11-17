@@ -485,6 +485,10 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 	return cmd.Run()
 }
 
+func (p *linuxImageProvider) Repair(cfg ImageRepairConfig) error {
+	return errors.New("image repair is not supported on Linux hosts")
+}
+
 func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {
 	slog.Info("[Image] Cleaning non-K8s images")
 

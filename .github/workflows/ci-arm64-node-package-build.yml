@@ -31,10 +31,29 @@ env:
 jobs:
   build-arm64-node-package:
     name: Build debian13 arm64 node package
-    runs-on: [self-hosted, linux, ARM64, debian-13]
+    # GitHub-hosted arm64 VM (same runner as ci-arm64-node-smoke.yml). GitHub does not offer
+    # a Debian host image, so the job runs inside a Debian 13 (trixie) container: the k2s CLI
+    # checks /etc/os-release (ID=debian, VERSION_ID=13) and APT must resolve against Debian 13.
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:trixie
     timeout-minutes: 30
     steps:
+      # Runs before checkout: the Debian image has no git/unzip/sudo, and the k2s
+      # download scripts call `sudo` directly.
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git sudo unzip
+          # The k2s APT lock lives under /run/lock, which the Debian image may not create.
+          mkdir -p /run/lock
+
       - uses: actions/checkout@v4
+        with:
+          # `git describe --tags` in the version step needs full history and tags.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up node package workspace
         run: echo "NODE_PACKAGE_ROOT=$RUNNER_TEMP/k2s-node-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
@@ -55,6 +74,8 @@ jobs:
       - name: Determine package version for naming
         id: version
         run: |
+          # The checkout is owned by the runner user, but this step runs as root in the container.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           version="$(git describe --tags --always)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

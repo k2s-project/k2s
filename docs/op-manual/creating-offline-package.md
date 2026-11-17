@@ -1,6 +1,6 @@
 <!--
-SPDX-FileCopyrightText: © 2024 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: © 2026 The K2s Authors
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Creating Offline Package
@@ -100,6 +100,16 @@ k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnect
     The node package is intended for extending an existing cluster with a Linux worker node. It is separate from the full offline installation package used for installing *K2s* itself.
 
 See [Extending K2s cluster](extending-k2s-cluster.md) for the complete node onboarding workflow.
+
+### arm64 Node Package
+
+To build an arm64 node package, run `k2s system package --node-package --arch arm64` **directly on a Linux arm64 host** with `sudo` — not on the Windows K2s host that builds the amd64 packages above. There is no Hyper-V VM or cross-build path for arm64; the build host's own `apt` is used to download packages for its own architecture:
+
+```console
+sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
+```
+
+Only Debian 13 arm64 is tested/validated today; `--os debian12 --arch arm64` runs the same code path but is untested. Unlike the amd64 packages above, the arm64 package does not pre-stage container images as OCI archives — only `.deb` packages are bundled offline, so `k2s node add` with this package still needs network access to pull container images at join time.
 
 ### GPU-Enabled Node Package
 

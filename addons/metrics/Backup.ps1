@@ -173,6 +173,10 @@ $manifest = [pscustomobject]@{
     files      = $files
     createdAt  = (Get-Date).ToString('o')
 }
+$addonConfig = Get-AddonConfig -Name 'metrics'
+if ($null -ne $addonConfig -and -not [string]::IsNullOrWhiteSpace([string]$addonConfig.InfraNodeSelector)) {
+    $manifest | Add-Member -NotePropertyName infraNodeSelector -NotePropertyValue ([string]$addonConfig.InfraNodeSelector)
+}
 
 $manifestPath = Join-Path $BackupDir 'backup.json'
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8 -Force

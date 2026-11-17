@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package smb_share
 
@@ -65,8 +65,7 @@ const (
 	testClusterTimeout    = time.Minute * 10
 	testStepPollInterval  = time.Millisecond * 200
 
-	testFileCreationTimeout = time.Minute * 5
-	testFileOverallTimeout  = time.Minute * 10
+	testFileOverallTimeout = time.Minute * 10
 )
 
 var (
@@ -490,8 +489,8 @@ var _ = Describe(fmt.Sprintf("%s Addon, %s Implementation", addonName, implement
 			})
 
 			It("checks that the test files are still available", func(ctx context.Context) {
-				expectTestFilesAreAvailable(ctx, storageConfig[0].WinMountPath)
-				expectTestFilesAreAvailable(ctx, storageConfig[1].WinMountPath)
+				expectTestFilesAreAvailable(ctx, storageConfig[0].WinMountPath, suite.TestStepPollInterval())
+				expectTestFilesAreAvailable(ctx, storageConfig[1].WinMountPath, suite.TestStepPollInterval())
 			})
 
 			It("deletes the test files", func() {
@@ -623,8 +622,8 @@ var _ = Describe(fmt.Sprintf("%s Addon, %s Implementation", addonName, implement
 			})
 
 			It("checks that the test files are still available", func(ctx context.Context) {
-				expectTestFilesAreAvailable(ctx, storageConfig[0].WinMountPath)
-				expectTestFilesAreAvailable(ctx, storageConfig[1].WinMountPath)
+				expectTestFilesAreAvailable(ctx, storageConfig[0].WinMountPath, suite.TestStepPollInterval())
+				expectTestFilesAreAvailable(ctx, storageConfig[1].WinMountPath, suite.TestStepPollInterval())
 			})
 
 			It("deploys Linux-based workloads", func(ctx context.Context) {
@@ -1236,16 +1235,15 @@ func createTestFiles(mountPath string) {
 	}
 }
 
-func expectTestFilesAreAvailable(ctx context.Context, mountPath string) {
+func expectTestFilesAreAvailable(ctx context.Context, mountPath string, pollInterval time.Duration) {
 	fileNames := []string{"file1.txt", "file2.txt", "file3.txt"}
 	for _, fileName := range fileNames {
-		// check only if the file exists and is not empty
-		Eventually(os.IsFileYoungerThan).
-			WithArguments(testFileCreationTimeout, mountPath, fileName).
+		Eventually(bos.ReadFile).
+			WithArguments(filepath.Join(mountPath, fileName)).
 			WithTimeout(testFileOverallTimeout).
-			WithPolling(suite.TestStepPollInterval()).
+			WithPolling(pollInterval).
 			WithContext(ctx).
-			Should(BeTrue(), fmt.Sprintf("Expected file %s to be available in %s", fileName, mountPath))
+			Should(Equal([]byte("test content")), fmt.Sprintf("Expected file %s to retain its content in %s", fileName, mountPath))
 	}
 }
 

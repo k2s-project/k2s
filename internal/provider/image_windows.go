@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build windows
 
@@ -281,6 +281,17 @@ func (p *windowsImageProvider) Clean(cfg ImageCleanConfig) error {
 	if cfg.Nodes != "" {
 		params = append(params, " -Nodes '"+cfg.Nodes+"'")
 	}
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+
+	return p.execPS(psCmd, params...)
+}
+
+func (p *windowsImageProvider) Repair(cfg ImageRepairConfig) error {
+	psCmd := p.scriptPath("Repair-Image.ps1")
+
+	var params []string
 	if cfg.ShowOutput {
 		params = append(params, " -ShowLogs")
 	}

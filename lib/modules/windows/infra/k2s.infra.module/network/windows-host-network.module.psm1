@@ -327,6 +327,82 @@ function Test-DefaultSwitch {
     }
 }
 
+function Test-WslIpv4Subnet {
+    param(
+        [string]$Cidr,
+        [string]$Source
+    )
+
+    $address = $null
+    if ($Cidr -notmatch '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:[0-9]|[12][0-9]|3[0-2])$' -or
+        -not [System.Net.IPAddress]::TryParse(($Cidr -split '/')[0], [ref]$address)) {
+        $message = "[WslNetwork] Cannot validate $Source subnet '$Cidr': expected an IPv4 CIDR."
+        Write-Log $message -Error
+        throw "[PREREQ-FAILED] $message"
+    }
+}
+
+function Test-WslNetwork {
+    Import-K2sHnsModule
+
+    $k2sSubnets = @(Get-ConfiguredK2sSubnets)
+    foreach ($subnet in $k2sSubnets) {
+        Test-WslIpv4Subnet -Cidr $subnet.Value -Source "K2s $($subnet.Name)"
+    }
+
+    $networks = @(Get-HnsNetwork -ErrorAction Stop | Where-Object { $_.Name -like 'WSL*' })
+    if ($networks.Count -eq 0) {
+        $message = '[WslNetwork] No WSL HNS network found; its subnet cannot be validated. Allow WSL networking to initialize before retrying.'
+        Write-Log $message -Error
+        throw "[PREREQ-FAILED] $message"
+    }
+
+    $conflicts = @()
+    foreach ($network in $networks) {
+        $networkSubnets = @(
+            if ($null -ne $network.Subnets) {
+                $network.Subnets
+            }
+            foreach ($ipam in $network.Ipams) {
+                if ($null -ne $ipam.Subnets) {
+                    $ipam.Subnets
+                }
+            }
+        )
+        if ($networkSubnets.Count -eq 0) {
+            $message = "[WslNetwork] HNS '$($network.Name)' ($($network.Id)) has no inspectable subnets."
+            Write-Log $message -Error
+            throw "[PREREQ-FAILED] $message"
+        }
+        foreach ($subnet in $networkSubnets) {
+            $cidr = $subnet.AddressPrefix
+            if ($null -eq $cidr) {
+                $cidr = $subnet.IpAddressPrefix
+            }
+            Test-WslIpv4Subnet -Cidr $cidr -Source "HNS '$($network.Name)'"
+            Write-Log "[WslNetwork] HNS '$($network.Name)' ($($network.Id)): $cidr"
+            foreach ($k2sSubnet in $k2sSubnets) {
+                if (Test-SubnetOverlap -Subnet1 $cidr -Subnet2 $k2sSubnet.Value) {
+                    $overlap = "HNS '$($network.Name)' $cidr overlaps K2s $($k2sSubnet.Name) $($k2sSubnet.Value)"
+                    if ($k2sSubnet.Name -in @('podNetworkCIDR', 'servicesCIDR')) {
+                        Write-Log "[WslNetwork] WARNING: $overlap. Aggregate overlap alone is not blocking; future allocations may collide." -Console
+                    }
+                    else {
+                        $conflicts += $overlap
+                    }
+                }
+            }
+        }
+    }
+
+    if ($conflicts.Count -gt 0) {
+        $message = "[WslNetwork] $($conflicts -join '; '). Resolve the WSL network overlap before retrying, or use Hyper-V hosting (k2s install without --wsl). Changing only the host adapter IP does not change the HNS subnet. K2s has not removed or renumbered any HNS networks."
+        Write-Log $message -Error
+        throw "[PREREQ-FAILED] $message"
+    }
+    Write-Log '[WslNetwork] No overlap with configured control-plane, node pod, service slice, or transit subnets.'
+}
+
 function Test-DefaultSwitchPresent {
     $adapter = @(Get-NetAdapter -ErrorAction Stop | Where-Object Name -EQ 'vEthernet (Default Switch)')
     if ($adapter.Count -gt 0) {
@@ -503,5 +579,5 @@ function Test-IpInPhysicalSubnet {
 }
 
 
-Export-ModuleMember -Function Get-DnsIpAddressesFromActivePhysicalNetworkInterfacesOnWindowsHost, Get-HostPhysicalIp, Get-HostIpAddressForRemoteIp, Test-DefaultSwitch, Get-PhysicalNetworkSubnets, Test-IpInPhysicalSubnet
+Export-ModuleMember -Function Get-DnsIpAddressesFromActivePhysicalNetworkInterfacesOnWindowsHost, Get-HostPhysicalIp, Get-HostIpAddressForRemoteIp, Test-DefaultSwitch, Test-WslNetwork, Get-PhysicalNetworkSubnets, Test-IpInPhysicalSubnet
 # Set-K2sDnsProxyForActivePhysicalInterfacesOnWindowsHost, Reset-DnsForActivePhysicalInterfacesOnWindowsHost

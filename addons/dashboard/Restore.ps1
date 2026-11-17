@@ -108,10 +108,11 @@ try {
     }
 
     Write-Log "[DashboardRestore] Applying dashboard ingress integration (preferred: $desiredIngress)" -Console
-    &"$PSScriptRoot\Update.ps1" -PreferredIngress $desiredIngress
+    $selector = Get-AddonEffectiveInfrastructureSelector -Name 'dashboard' -Selector (Get-AddonBackupInfrastructureSelector -BackupDir $BackupDir)
+    &"$PSScriptRoot\Update.ps1" -PreferredIngress $desiredIngress -InfraNodeSelector $selector
 
     Write-Log "[DashboardRestore] Waiting for Headlamp to become ready" -Console
-    $ok = Wait-ForHeadlampAvailable
+    $ok = if (-not [string]::IsNullOrWhiteSpace($selector) -and -not (Test-AddonInfrastructureSelectorOnCluster -Name 'dashboard' -Selector $selector)) { $true } else { Wait-ForHeadlampAvailable }
     if (-not $ok) {
         throw "Headlamp dashboard pods did not become ready after restore."
     }

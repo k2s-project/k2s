@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 // Package setuporchestration defines the platform-abstraction interfaces for
 // cluster lifecycle operations. Each host OS (Windows, Linux) provides its own

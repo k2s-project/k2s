@@ -120,6 +120,52 @@ var _ = Describe("config pkg", func() {
 				Expect(actual.Host().SshConfig().CurrentPrivateKeyPath()).To(MatchRegexp(`(windows|linux)_key$`))
 			})
 		})
+
+		When("config file of an older installation has no sshKey section", func() {
+			var dir string
+
+			BeforeEach(func() {
+				dir = GinkgoT().TempDir()
+				Expect(os.MkdirAll(filepath.Join(dir, "cfg"), os.ModePerm)).To(Succeed())
+
+				blob, err := json.Marshal(map[string]any{
+					"configDir": map[string]any{"ssh": "~/.ssh", "kube": "~/.kube", "k2s": "C:\\ProgramData\\K2s"},
+				})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(os.WriteFile(filepath.Join(dir, "cfg", "config.json"), blob, os.ModePerm)).To(Succeed())
+			})
+
+			It("falls back to the legacy SSH key location", func() {
+				actual, err := config.ReadK2sConfig(dir)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(actual.Host().SshConfig().CurrentPrivateKeyPath()).To(HaveSuffix(filepath.Join("k2s", "id_rsa")))
+				Expect(actual.Host().SshConfig().RelativePrivateKeyPath()).To(Equal("~/.ssh/k2s/id_rsa"))
+			})
+		})
+
+		When("sshKey section is incomplete", func() {
+			var dir string
+
+			BeforeEach(func() {
+				dir = GinkgoT().TempDir()
+				Expect(os.MkdirAll(filepath.Join(dir, "cfg"), os.ModePerm)).To(Succeed())
+
+				blob, err := json.Marshal(map[string]any{
+					"configDir": map[string]any{"ssh": "~/.ssh", "kube": "~/.kube", "k2s": "C:\\ProgramData\\K2s"},
+					"sshKey":    map[string]any{"subDir": "k2s"},
+				})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(os.WriteFile(filepath.Join(dir, "cfg", "config.json"), blob, os.ModePerm)).To(Succeed())
+			})
+
+			It("returns an error", func() {
+				actual, err := config.ReadK2sConfig(dir)
+
+				Expect(actual).To(BeNil())
+				Expect(err).To(MatchError(ContainSubstring("SSH key sub dir or file name")))
+			})
+		})
 	})
 
 	Describe("ReadRuntimeConfig", func() {

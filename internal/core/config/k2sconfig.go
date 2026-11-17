@@ -71,11 +71,11 @@ type configDir struct {
 	Logs string `json:"logs"`
 }
 
-// configFileRelDir and configFileName are joined via filepath.Join so the
-// correct OS path separator is used on both Windows and Linux.
 const (
-	configFileRelDir = "cfg"
-	configFileName   = "config.json"
+	configFileRelDir     = "cfg"
+	configFileName       = "config.json"
+	legacySshKeySubDir   = "k2s"
+	legacySshKeyFileName = "id_rsa"
 )
 
 func ReadK2sConfig(k2sInstallDir string) (*cConfig.K2sConfig, error) {
@@ -96,9 +96,9 @@ func ReadK2sConfig(k2sInstallDir string) (*cConfig.K2sConfig, error) {
 		return nil, fmt.Errorf("error occurred while resolving tilde in file path '%s': %w", configJson.ConfigDir.Ssh, err)
 	}
 
-	keyFileName := configJson.SshKey.FileName[sshKeyHostOS]
-	if configJson.SshKey.SubDir == "" || keyFileName == "" {
-		return nil, fmt.Errorf("SSH key sub dir or file name for '%s' is not configured in '%s'", sshKeyHostOS, configFilePath)
+	keySubDir, keyFileName, err := resolveSshKeyLocation(configJson.SshKey, configFilePath)
+	if err != nil {
+		return nil, err
 	}
 
 	kubeConfig := cConfig.NewKubeConfig(kubeConfigDir,
@@ -106,9 +106,9 @@ func ReadK2sConfig(k2sInstallDir string) (*cConfig.K2sConfig, error) {
 		filepath.Join(kubeConfigDir, definitions.KubeconfigName))
 	sshConfig := cConfig.NewSshConfig(sshDir,
 		configJson.ConfigDir.Ssh,
-		filepath.Join(sshDir, configJson.SshKey.SubDir, keyFileName),
+		filepath.Join(sshDir, keySubDir, keyFileName),
 		// tilde-relative path stays slash-separated on all platforms; it is cleaned when the tilde is resolved
-		path.Join(configJson.ConfigDir.Ssh, configJson.SshKey.SubDir, keyFileName))
+		path.Join(configJson.ConfigDir.Ssh, keySubDir, keyFileName))
 	k2sConfigDir := configJson.ConfigDir.K2s
 	logsDir := configJson.ConfigDir.Logs
 	if runtime.GOOS == "linux" {
@@ -228,4 +228,18 @@ func DetectLocalVM(ipAddress, installDir string) (bool, error) {
 		return false, nil
 	}
 	return network.Contains(ip), nil
+}
+
+// resolveSshKeyLocation returns the SSH key sub dir and file name for the current host OS. A config without
+// an 'sshKey' section (older installation) falls back to the legacy location; a partially configured section is an error.
+func resolveSshKeyLocation(key sshKey, configFilePath string) (subDir string, fileName string, err error) {
+	if key.SubDir == "" && len(key.FileName) == 0 {
+		return legacySshKeySubDir, legacySshKeyFileName, nil
+	}
+
+	fileName = key.FileName[sshKeyHostOS]
+	if key.SubDir == "" || fileName == "" {
+		return "", "", fmt.Errorf("SSH key sub dir or file name for '%s' is not configured in '%s'", sshKeyHostOS, configFilePath)
+	}
+	return key.SubDir, fileName, nil
 }

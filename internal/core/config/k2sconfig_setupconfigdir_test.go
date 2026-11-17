@@ -105,8 +105,8 @@ var _ = Describe("K2s config file", func() {
 			Expect(filepath.Base(sshConfig.CurrentPrivateKeyPath())).To(Equal(expectedFileName))
 		})
 
-		It("fails if no SSH key is configured for the host OS", func() {
-			Expect(os.WriteFile(configFilePath, []byte(`{"configDir": {}}`), os.ModePerm)).To(Succeed())
+		It("fails if the SSH key is only partially configured for the host OS", func() {
+			Expect(os.WriteFile(configFilePath, []byte(`{"configDir": {}, "sshKey": {"subDir": "k2s"}}`), os.ModePerm)).To(Succeed())
 
 			_, err := config.ReadK2sConfig(installDir)
 

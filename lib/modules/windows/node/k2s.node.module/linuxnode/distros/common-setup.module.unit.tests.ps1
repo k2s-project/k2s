@@ -60,6 +60,52 @@ Describe 'Linux worker artifacts by architecture' -Tag 'unit', 'ci' {
             Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
         }
     }
+
+    It 'imports the supplied node package images instead of pulling for a different architecture' {
+        InModuleScope $moduleName {
+            Mock Get-DirectoryOfKubenodeImagesOnWindowsHost { 'C:\linuxnode\images\arm64' }
+            Mock Get-ChildItem { @([pscustomobject]@{ FullName = 'C:\linuxnode\images\arm64\kube-apiserver.tar' }) }
+            Mock Copy-ToRemoteComputerViaSshKey {}
+
+            Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+
+            Should -Invoke Copy-ToRemoteComputerViaSshKey -Times 1 -Exactly -ParameterFilter {
+                $Source -eq 'C:\linuxnode\images\arm64\kube-apiserver.tar' -and $Target -eq '/tmp/import.tar'
+            }
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 2 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*buildah pull oci-archive:/tmp/import.tar*' -or
+                $CmdToExecute -eq 'cd /tmp && sudo rm -rf import.tar'
+            }
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+
+    It 'fails rather than falling back online when an explicit node package has no images' {
+        InModuleScope $moduleName {
+            Mock Get-DirectoryOfKubenodeImagesOnWindowsHost { 'C:\linuxnode\images\arm64' }
+            Mock Get-ChildItem { @() }
+
+            {
+                Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+            } | Should -Throw '*Explicit node package contains no usable images*'
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 0 -Exactly
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+}
+
+Describe 'Worker image cache paths' -Tag 'unit', 'ci' {
+    It 'returns an architecture-specific path when requested and the shared path otherwise' {
+        $basePath = Join-Path $TestDrive 'images'
+        InModuleScope $moduleName -Parameters @{ BasePath = $basePath } {
+            param($BasePath)
+            $directoryOfKubenodeImagesOnWindowsHost = $BasePath
+
+            Get-DirectoryOfKubenodeImagesOnWindowsHost -Architecture arm64 | Should -Be (Join-Path $BasePath 'arm64')
+            Get-DirectoryOfKubenodeImagesOnWindowsHost | Should -Be $BasePath
+        }
+    }
 }
 
 Describe 'Get-RemoteArchitecture' -Tag 'unit', 'ci' {

@@ -236,7 +236,7 @@ Backup/restore is scoped to the `rollout` namespace only.
 
 ```cmd
 k2s addons backup rollout fluxcd
-k2s addons restore rollout fluxcd <path-to-backup-zip>
+k2s addons restore rollout fluxcd -f <path-to-backup-zip>
 ```
 
 ---

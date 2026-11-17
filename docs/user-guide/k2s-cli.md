@@ -682,7 +682,7 @@ k2s system certificate autorotation [flags]
 
 ### system compact
 
-Compact the VHDX disk of the control-plane node to reclaim unused space. The cluster is stopped for the compaction and restarted afterwards unless `--no-restart` is given. Supported for the standard and Linux-only setups; not supported for WSL-based and build-only setups. See [Compacting VHDX Storage](../op-manual/compacting-vhdx-storage.md).
+Compact the VHDX disk of the control-plane node to reclaim unused space. If the cluster was running before compaction, it restarts afterwards unless `--no-restart` is given; a cluster that was already stopped remains stopped. Supported for the standard and Linux-only setups; not supported for WSL-based and build-only setups. See [Compacting VHDX Storage](../op-manual/compacting-vhdx-storage.md).
 
 ```console
 k2s system compact [flags]

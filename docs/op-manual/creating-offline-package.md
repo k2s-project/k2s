@@ -186,12 +186,12 @@ k2s addons import -h
 
 Either specify one or more addons to import from the offline package:
 ```console
-k2s addons import registry -f <directory-containing-addons-archive>\addons.oci.tar
+k2s addons import registry -f <directory-containing-addons-archive>\K2s-<version>-addons-registry.oci.tar
 ```
 
 Or import all addons from the offline package:
 ```console
-k2s addons import -f <directory-containing-addons-archive>\addons.oci.tar
+k2s addons import -f <directory-containing-addons-archive>\K2s-<version>-addons-all.oci.tar
 ```
 
 !!! note

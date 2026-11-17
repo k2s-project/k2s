@@ -244,10 +244,10 @@ When `-w` is used, K2s configures Ceph `mgr/smb`, creates SMB CSI resources, and
 
 | Disable Flag | Short | Type | Default | Description |
 |--------------|-------|------|---------|-------------|
-| `--force` | `-f` | boolean | `false` | Disable and **delete all PersistentVolumes** without confirmation |
+| `--force` | `-f` | boolean | `false` | Skip the confirmation prompt before permanently deleting Ceph cluster data |
 
 !!! warning
-    Disabling Ceph always tears down the provisioned Ceph cluster, including OSD resources and Ceph-backed PVs from this setup. Ceph data is permanently lost after disable.
+    Disabling Ceph deletes PVCs using the configured CephFS and Ceph SMB StorageClasses, then tears down the provisioned Ceph cluster. All data in the Ceph cluster is permanently lost. Using `-f` skips the confirmation prompt.
 
 ```console
 k2s addons disable storage ceph

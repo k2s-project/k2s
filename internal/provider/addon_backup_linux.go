@@ -349,7 +349,9 @@ func validateRegistryBackup(backupDir string, files []string) error {
 
 // validateRepositoryArchive reads the whole archive and rejects it when it is
 // corrupt, has no 'repository' directory, or holds entries outside of
-// 'repository/' or links, which could redirect the privileged extraction.
+// 'repository/' or symbolic links, which could redirect the privileged
+// extraction. Hard links are allowed (the registry deduplicates blobs) as long
+// as their target stays inside 'repository/'.
 func validateRepositoryArchive(archivePath string) error {
 	file, err := os.Open(archivePath)
 	if err != nil {
@@ -365,6 +367,7 @@ func validateRepositoryArchive(archivePath string) error {
 
 	reader := tar.NewReader(gz)
 	foundRepository := false
+	entries := map[string]struct{}{}
 	for {
 		header, err := reader.Next()
 		if err == io.EOF {
@@ -373,19 +376,37 @@ func validateRepositoryArchive(archivePath string) error {
 		if err != nil {
 			return fmt.Errorf("invalid archive '%s': %w", registryRepositoryArchive, err)
 		}
-		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
-			return fmt.Errorf("invalid archive '%s': link entry '%s' is not allowed", registryRepositoryArchive, header.Name)
+		if header.Typeflag == tar.TypeSymlink {
+			return fmt.Errorf("invalid archive '%s': symbolic link entry '%s' is not allowed", registryRepositoryArchive, header.Name)
 		}
-		entry := filepath.Clean(header.Name)
-		if entry != "repository" && !strings.HasPrefix(entry, "repository"+string(filepath.Separator)) {
+		if !isInsideRepository(header.Name) {
 			return fmt.Errorf("invalid archive '%s': entry '%s' is outside of 'repository'", registryRepositoryArchive, header.Name)
 		}
+		if header.Typeflag == tar.TypeLink && !isInsideRepository(header.Linkname) {
+			return fmt.Errorf("invalid archive '%s': hard link '%s' targets '%s' outside of 'repository'", registryRepositoryArchive, header.Name, header.Linkname)
+		}
+		if header.Typeflag == tar.TypeLink {
+			if _, ok := entries[filepath.Clean(header.Linkname)]; !ok {
+				return fmt.Errorf("invalid archive '%s': hard link '%s' targets missing entry '%s'", registryRepositoryArchive, header.Name, header.Linkname)
+			}
+		}
+		entries[filepath.Clean(header.Name)] = struct{}{}
 		foundRepository = true
 	}
 	if !foundRepository {
 		return fmt.Errorf("invalid archive '%s': no 'repository' content found", registryRepositoryArchive)
 	}
+	// The tar end markers can precede the end of the gzip stream, so read it to
+	// the end to have the gzip checksum verified before anything is deleted.
+	if _, err := io.Copy(io.Discard, gz); err != nil {
+		return fmt.Errorf("invalid archive '%s': %w", registryRepositoryArchive, err)
+	}
 	return nil
+}
+
+func isInsideRepository(name string) bool {
+	entry := filepath.Clean(name)
+	return entry == "repository" || strings.HasPrefix(entry, "repository"+string(filepath.Separator))
 }
 
 func restoreRegistry(backupDir string, files []string) error {

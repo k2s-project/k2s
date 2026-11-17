@@ -521,7 +521,41 @@ func TestRestoreRegistry_RejectsInvalidArchivesBeforeTouchingTheRegistry(t *test
 					{Name: "repository/link", Typeflag: tar.TypeSymlink, Linkname: "../auth", Mode: 0o777},
 				})
 			},
-			want: "link entry",
+			want: "symbolic link entry",
+		},
+		"hard link leaving repository": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeLink, Linkname: "auth/htpasswd", Mode: 0o644},
+				})
+			},
+			want: "outside of 'repository'",
+		},
+		"hard link to missing entry": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeLink, Linkname: "repository/missing", Mode: 0o644},
+				})
+			},
+			want: "missing entry",
+		},
+		"corrupt gzip checksum": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+				})
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data[len(data)-8] ^= 0xff // CRC32 in the gzip trailer
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "invalid archive",
 		},
 		"no repository content": {
 			write: func(t *testing.T, path string) { writeTestArchive(t, path, nil) },
@@ -547,6 +581,19 @@ func TestRestoreRegistry_RejectsInvalidArchivesBeforeTouchingTheRegistry(t *test
 				t.Fatalf("expected repository data to be untouched: %v", statErr)
 			}
 		})
+	}
+}
+
+func TestValidateRepositoryArchive_AcceptsHardLinksInsideRepository(t *testing.T) {
+	path := filepath.Join(t.TempDir(), registryRepositoryArchive)
+	writeTestArchive(t, path, []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "repository/blobs/a", Typeflag: tar.TypeReg, Mode: 0o644},
+		{Name: "repository/blobs/b", Typeflag: tar.TypeLink, Linkname: "repository/blobs/a", Mode: 0o644},
+	})
+
+	if err := validateRepositoryArchive(path); err != nil {
+		t.Fatalf("expected archive with in-repository hard link to be accepted: %v", err)
 	}
 }
 

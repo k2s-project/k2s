@@ -13,7 +13,7 @@ $kubeBinPath = Get-KubeBinPath
 
 $windowsNode_OrasDirectory = 'oras'
 
-function Invoke-DownloadOrasArtifacts($downloadsBaseDirectory, $Proxy, $windowsNodeArtifactsDirectory, $OrasVersion = '1.3.6') {
+function Invoke-DownloadOrasArtifacts($downloadsBaseDirectory, $Proxy, $windowsNodeArtifactsDirectory, $OrasVersion = '1.4.0') {
     $orasDownloadsDirectory = "$downloadsBaseDirectory\$windowsNode_OrasDirectory"
     $compressedOrasFile = "oras_${OrasVersion}_windows_amd64.zip"
     $compressedFile = "$orasDownloadsDirectory\$compressedOrasFile"

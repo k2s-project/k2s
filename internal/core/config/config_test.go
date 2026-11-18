@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package config_test
 
@@ -10,12 +10,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	contracts "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/definitions"
-	kos "github.com/k2s-project/k2s/internal/os"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func TestConfig(t *testing.T) {
@@ -64,14 +63,32 @@ var _ = Describe("config pkg", func() {
 			var actual *contracts.K2sConfig
 
 			BeforeAll(func() {
-				currentDir, err := kos.ExecutableDir()
-				installDir := filepath.Join(currentDir, "..\\..\\..")
+				dir := GinkgoT().TempDir()
+				subDir := filepath.Join(dir, "cfg")
 
+				Expect(os.MkdirAll(subDir, os.ModePerm)).To(Succeed())
+
+				configPath := filepath.Join(subDir, "config.json")
+				inputConfig := map[string]any{
+					"configDir": map[string]any{
+						"ssh":  "~/.ssh",
+						"kube": "~/.kube",
+						"k2s":  "C:\\ProgramData\\K2s",
+					},
+					"sshKey": map[string]any{
+						"subDir":   "k2s",
+						"fileName": map[string]any{"windows": "windows_key", "linux": "linux_key"},
+					},
+				}
+
+				blob, err := json.Marshal(inputConfig)
 				Expect(err).ToNot(HaveOccurred())
 
-				GinkgoWriter.Println("Current test dir: <", currentDir, ">, install dir: <", installDir, ">")
+				GinkgoWriter.Println("Writing test config file to <", configPath, ">")
 
-				actual, err = config.ReadK2sConfig(installDir)
+				Expect(os.WriteFile(configPath, blob, os.ModePerm)).To(Succeed())
+
+				actual, err = config.ReadK2sConfig(dir)
 
 				Expect(err).ToNot(HaveOccurred())
 			})
@@ -80,7 +97,7 @@ var _ = Describe("config pkg", func() {
 				GinkgoWriter.Println("kube config dir: <", actual.Host().KubeConfig().CurrentDir(), ">")
 
 				Expect(filepath.IsAbs(actual.Host().KubeConfig().CurrentDir())).To(BeTrue())
-				Expect(actual.Host().KubeConfig().CurrentDir()).ToNot(ContainSubstring("/"))
+				Expect(actual.Host().KubeConfig().CurrentDir()).ToNot(ContainSubstring("~"))
 			})
 
 			It("K2s config path is absolute", func() {
@@ -93,7 +110,60 @@ var _ = Describe("config pkg", func() {
 				GinkgoWriter.Println("ssh dir: <", actual.Host().SshConfig().CurrentDir(), ">")
 
 				Expect(filepath.IsAbs(actual.Host().SshConfig().CurrentDir())).To(BeTrue())
-				Expect(actual.Host().SshConfig().CurrentDir()).ToNot(ContainSubstring("/"))
+				Expect(actual.Host().SshConfig().CurrentDir()).ToNot(ContainSubstring("~"))
+			})
+
+			It("SSH private key path is absolute and uses the configured file name", func() {
+				GinkgoWriter.Println("ssh key path: <", actual.Host().SshConfig().CurrentPrivateKeyPath(), ">")
+
+				Expect(filepath.IsAbs(actual.Host().SshConfig().CurrentPrivateKeyPath())).To(BeTrue())
+				Expect(actual.Host().SshConfig().CurrentPrivateKeyPath()).To(MatchRegexp(`(windows|linux)_key$`))
+			})
+		})
+
+		When("config file of an older installation has no sshKey section", func() {
+			var dir string
+
+			BeforeEach(func() {
+				dir = GinkgoT().TempDir()
+				Expect(os.MkdirAll(filepath.Join(dir, "cfg"), os.ModePerm)).To(Succeed())
+
+				blob, err := json.Marshal(map[string]any{
+					"configDir": map[string]any{"ssh": "~/.ssh", "kube": "~/.kube", "k2s": "C:\\ProgramData\\K2s"},
+				})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(os.WriteFile(filepath.Join(dir, "cfg", "config.json"), blob, os.ModePerm)).To(Succeed())
+			})
+
+			It("falls back to the legacy SSH key location", func() {
+				actual, err := config.ReadK2sConfig(dir)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(actual.Host().SshConfig().CurrentPrivateKeyPath()).To(HaveSuffix(filepath.Join("k2s", "id_rsa")))
+				Expect(actual.Host().SshConfig().RelativePrivateKeyPath()).To(Equal("~/.ssh/k2s/id_rsa"))
+			})
+		})
+
+		When("sshKey section is incomplete", func() {
+			var dir string
+
+			BeforeEach(func() {
+				dir = GinkgoT().TempDir()
+				Expect(os.MkdirAll(filepath.Join(dir, "cfg"), os.ModePerm)).To(Succeed())
+
+				blob, err := json.Marshal(map[string]any{
+					"configDir": map[string]any{"ssh": "~/.ssh", "kube": "~/.kube", "k2s": "C:\\ProgramData\\K2s"},
+					"sshKey":    map[string]any{"subDir": "k2s"},
+				})
+				Expect(err).ToNot(HaveOccurred())
+				Expect(os.WriteFile(filepath.Join(dir, "cfg", "config.json"), blob, os.ModePerm)).To(Succeed())
+			})
+
+			It("returns an error", func() {
+				actual, err := config.ReadK2sConfig(dir)
+
+				Expect(actual).To(BeNil())
+				Expect(err).To(MatchError(ContainSubstring("SSH key sub dir or file name")))
 			})
 		})
 	})
@@ -189,7 +259,6 @@ var _ = Describe("config pkg", func() {
 			})
 
 			It("returns config data and system-in-corrupted-state error", func() {
-
 				config, err := config.ReadRuntimeConfig(dir)
 
 				Expect(err).To(Equal(contracts.ErrSystemInCorruptedState))

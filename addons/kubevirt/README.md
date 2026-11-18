@@ -17,11 +17,6 @@ The kubevirt addon can be enabled using the k2s CLI by running the following com
 k2s addons enable kubevirt
 ```
 
-To enable with software virtualization (no nested hardware virtualization required):
-```console
-k2s addons enable kubevirt -o software-virtualization=true
-```
-
 ## Disable kubevirt
 
 The kubevirt addon can be disabled using the k2s CLI by running the following command:

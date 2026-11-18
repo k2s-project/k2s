@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds an arm64 Debian 13 node package natively on real ARM silicon
+# (k2s-project/k2s#3052). This is a release-process input, not a PR check -
+# workflow_dispatch only.
+#
+# The build host must be Debian 13 because APT resolves package dependencies from the
+# host's configured repositories and installed-package database.
+#
+# The package has the same layout as the amd64 package built via New-K2sNodePackage.ps1 on
+# Windows: packages/ plus images/ (OCI archives exported with skopeo). See
+# internal/provider/node_package_linux.go and node_package_images_linux.go.
+name: CI - arm64 Node Package Build
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_gpu:
+        description: "Include NVIDIA Container Toolkit packages"
+        type: boolean
+        default: true
+
+env:
+  GOVERSION: "1.27.4"
+
+jobs:
+  build-arm64-node-package:
+    name: Build debian13 arm64 node package
+    # GitHub-hosted arm64 VM (same runner as ci-arm64-node-smoke.yml). GitHub does not offer
+    # a Debian host image, so the job runs inside a Debian 13 (trixie) container: the k2s CLI
+    # checks /etc/os-release (ID=debian, VERSION_ID=13) and APT must resolve against Debian 13.
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:trixie
+    timeout-minutes: 60
+    steps:
+      # Runs before checkout: the Debian image has no git/unzip/sudo, and the k2s
+      # download scripts call `sudo` directly.
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git gnupg skopeo sudo unzip
+          # The k2s APT lock lives under /run/lock, which the Debian image may not create.
+          mkdir -p /run/lock
+
+      - uses: actions/checkout@v4
+        with:
+          # `git describe --tags` in the version step needs full history and tags.
+          fetch-depth: 0
+          fetch-tags: true
+      # The checkout is owned by the runner user, but every step runs as root in the container.
+      # Without this, git refuses to read the repo, so `go build` fails stamping VCS info and
+      # `git describe` fails too. Must run before the Go build.
+      - name: Trust the checked-out workspace for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Set up node package workspace
+        run: echo "NODE_PACKAGE_ROOT=$RUNNER_TEMP/k2s-node-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GOVERSION }}
+          cache-dependency-path: "**/*.sum"
+
+      # Runs the unit tests for the native package builder's image export and zip layout on
+      # this arm64 host. The wider provider suite needs a real k2s install and is not run here.
+      - name: Unit tests for the node package builder
+        run: |
+          go test ./internal/provider -count=1 -run '^(TestParseKubeadmImageList|TestNvidiaImagesFromManifest|TestImageArchiveName|TestAppendUnique|TestProxyEnvironment|TestBuildZipSources)'
+
+      - name: Build the Linux k2s CLI
+        run: |
+          cd cmd/k2s
+          go build -o /tmp/k2s-cli .
+          # No GOOS/GOARCH override: this binary runs directly on this runner (it execs
+          # local apt/dpkg/bash), so it must match the runner's own arm64, not amd64.
+
+      - name: Determine package version for naming
+        id: version
+        run: |
+          version="$(git describe --tags --always)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build the arm64 node package
+        run: |
+          rm -rf "$NODE_PACKAGE_ROOT"
+          mkdir -p "$NODE_PACKAGE_ROOT/out"
+          gpu_flag=""
+          if [ "${{ inputs.include_gpu }}" = "true" ]; then
+            gpu_flag="--include-gpu"
+          fi
+          sudo install -m 755 /tmp/k2s-cli "$GITHUB_WORKSPACE/k2s"
+          sudo "$GITHUB_WORKSPACE/k2s" system package --node-package --os debian13 --arch arm64 $gpu_flag \
+            --target-dir "$NODE_PACKAGE_ROOT/out" \
+            --name "k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+
+      - name: Verify package contents
+        run: |
+          zip_path="$NODE_PACKAGE_ROOT/out/k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+          mkdir -p "$NODE_PACKAGE_ROOT/extract"
+          unzip -q "$zip_path" -d "$NODE_PACKAGE_ROOT/extract"
+          find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | while read -r deb; do
+            echo "=== $deb ==="
+            dpkg --info "$deb" | grep -E 'Package|Architecture'
+          done
+          find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | grep -q . || {
+            echo "::error::no .deb packages found in the built zip"
+            exit 1
+          }
+          # Same layout as the Windows-built amd64 package: packages/ plus images/.
+          images=$(find "$NODE_PACKAGE_ROOT/extract/images" -name '*.tar' 2>/dev/null | wc -l)
+          echo "container image archives: $images"
+          [ "$images" -gt 0 ] || {
+            echo "::error::no image archives found in the built zip"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian13-arm64-node-package
+          path: ${{ env.NODE_PACKAGE_ROOT }}/out/*.zip
+          retention-days: 14

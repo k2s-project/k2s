@@ -1,0 +1,274 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Full arm64 worker join flow for k2s-project/k2s#3052.
+#
+# This validates the shared kubeadm-join code path (internal/provider/node_linux.go)
+# and the arm64 worker-provisioning scripts (cfg/nodeextension/debian13/scripts/*) on
+# real ARM silicon - but against K2s's experimental "Linux Host" control-plane variant
+# (docs/user-guide/hosting-variants.md), not the default Windows-hosted product. That
+# is a deliberate, documented gap: the Linux Host variant is a test harness for this
+# workflow, not a product deliverable of #3052.
+#
+# workflow_dispatch only, by design: this is a new, two-runner, mesh-networked test and
+# its runtime/stability needs to be proven out manually before it runs unattended on a
+# schedule (see the k2s-support CLAUDE.md-equivalent plan notes for #3052).
+#
+# Both runners must be self-hosted Debian 13 machines with the 'debian-13' label;
+# the worker also needs ARM64 and the control plane needs X64. The runners provide
+# the services and networking required by the native installer and Tailscale mesh.
+#
+# The two jobs run concurrently (not via 'needs', which would make GitHub Actions wait
+# for the worker job to fully *finish* before the control-plane job even starts - but
+# the worker has to stay up and reachable over SSH while control-plane joins it). They
+# rendezvous over the Tailscale mesh and hand off the run-scoped SSH key, worker host key,
+# and mesh IP via upload-artifact/download-artifact, polling until the other side's
+# artifact appears.
+name: CI - arm64 Node Join
+
+permissions:
+  actions: read
+  contents: read
+
+on:
+  workflow_dispatch:
+
+env:
+  JOIN_TIMEOUT_SECONDS: 1200
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  worker:
+    name: arm64 worker (stand-in for the real external node)
+    runs-on: [self-hosted, linux, ARM64, debian-13]
+    timeout-minutes: 30
+    steps:
+      - name: Join Tailscale mesh
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:k2s-ci
+          hostname: arm64-node-join-worker-${{ github.run_id }}
+
+      - uses: actions/checkout@v4
+
+      - name: Provision the worker with Debian node-extension assets
+        # 'k2s node add' (internal/provider/node_linux.go) only runs 'kubeadm join' over
+        # SSH - it does not provision the node. Run the node-extension installer here
+        # to install Kubernetes packages and configure the kernel and CRI-O for the join.
+        run: |
+          mkdir -p /tmp/k8s-packages
+          sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
+          registry_token="$(sed '1s/^\xEF\xBB\xBF//' bin/registry.dat | tr -d '\r\n[:space:]')"
+          sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" "$registry_token" false
+          unset registry_token
+          sudo systemctl enable kubelet
+
+      - name: Start sshd and wait for the control-plane's public key
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server
+          sudo ssh-keygen -A
+          sudo systemctl enable --now ssh
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+
+          echo "Waiting for control-plane public key artifact..."
+          for i in $(seq 1 60); do
+            if gh run download "${{ github.run_id }}" -n cp-pubkey-${{ github.run_attempt }} --dir /tmp/cp-pubkey 2>/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          test -f /tmp/cp-pubkey/id_ed25519.pub || { echo "::error::control-plane public key never arrived"; exit 1; }
+          cat /tmp/cp-pubkey/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          sudo ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key > /tmp/worker-host-key.pub
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish this worker's mesh IP and username
+        run: |
+          mkdir -p /tmp/worker-ready
+          tailscale ip -4 > /tmp/worker-ready/ip
+          whoami > /tmp/worker-ready/user
+          cp /tmp/worker-host-key.pub /tmp/worker-ready/host-key.pub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-ready-${{ github.run_attempt }}
+          path: /tmp/worker-ready
+          retention-days: 1
+
+      - name: Wait for the control-plane to signal the join is done
+        run: |
+          deadline=$(( $(date +%s) + JOIN_TIMEOUT_SECONDS ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            if gh run download "${{ github.run_id }}" -n join-done-${{ github.run_attempt }} --dir /tmp/join-done 2>/dev/null; then
+              echo "Join signaled complete: $(cat /tmp/join-done/status 2>/dev/null || true)"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::timed out waiting for the control-plane to signal join completion"
+          exit 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOIN_TIMEOUT_SECONDS: ${{ env.JOIN_TIMEOUT_SECONDS }}
+
+      - name: Remove run-scoped SSH authorization and worker cluster state
+        if: always()
+        run: |
+          if [ -f /tmp/cp-pubkey/id_ed25519.pub ] && [ -f ~/.ssh/authorized_keys ]; then
+            key="$(cat /tmp/cp-pubkey/id_ed25519.pub)"
+            awk -v key="$key" '$0 != key' ~/.ssh/authorized_keys > /tmp/authorized_keys.k2s
+            cat /tmp/authorized_keys.k2s > ~/.ssh/authorized_keys
+            rm -f /tmp/authorized_keys.k2s
+          fi
+          sudo kubeadm reset -f || true
+          sudo systemctl disable --now kubelet crio 2>/dev/null || true
+          sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet /etc/cni/net.d/10-flannel.conflist /run/flannel
+          sudo rm -f /root/.config/containers/auth.json
+          rm -rf /tmp/k8s-packages /tmp/cp-pubkey /tmp/worker-ready /tmp/worker-host-key.pub
+
+  control-plane:
+    name: Linux Host control plane - bootstrap and join the arm64 worker
+    runs-on: [self-hosted, linux, X64, debian-13]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Join Tailscale mesh
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:k2s-ci
+          hostname: arm64-node-join-cp-${{ github.run_id }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: "**/*.sum"
+
+      - name: Build the Linux k2s CLI
+        run: |
+          ./build.sh
+
+      - name: Generate an SSH keypair and publish the public half to the worker
+        run: |
+          ssh_home="/tmp/k2s-arm64-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          install -d -m 700 "$ssh_home/.ssh"
+          ssh-keygen -t ed25519 -N '' -C "k2s-ci-${GITHUB_RUN_ID}" -f "$ssh_home/.ssh/id_ed25519"
+          echo "K2S_CI_SSH_HOME=$ssh_home" >> "$GITHUB_ENV"
+          if [ -f "$HOME/.kube/config" ]; then
+            cp -p "$HOME/.kube/config" "$ssh_home/kubeconfig.original"
+          else
+            touch "$ssh_home/kubeconfig.absent"
+          fi
+          mkdir -p /tmp/cp-pubkey
+          cp "$ssh_home/.ssh/id_ed25519.pub" /tmp/cp-pubkey/id_ed25519.pub
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cp-pubkey-${{ github.run_attempt }}
+          path: /tmp/cp-pubkey
+          retention-days: 1
+
+      - name: Wait for the worker's mesh IP
+        run: |
+          for i in $(seq 1 60); do
+            if gh run download "${{ github.run_id }}" -n worker-ready-${{ github.run_attempt }} --dir /tmp/worker-ready 2>/dev/null; then
+              break
+            fi
+            sleep 10
+          done
+          test -f /tmp/worker-ready/ip || { echo "::error::worker never published its mesh IP"; exit 1; }
+          echo "WORKER_IP=$(cat /tmp/worker-ready/ip)" >> "$GITHUB_ENV"
+          echo "WORKER_USER=$(cat /tmp/worker-ready/user)" >> "$GITHUB_ENV"
+          worker_ip="$(cat /tmp/worker-ready/ip)"
+          runner_known_hosts="$HOME/.ssh/known_hosts"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          if ! ssh-keygen -F "$worker_ip" -f "$runner_known_hosts" >/dev/null 2>&1; then
+            printf '%s %s\n' "$worker_ip" "$(cat /tmp/worker-ready/host-key.pub)" >> "$runner_known_hosts"
+          fi
+          cp "$runner_known_hosts" "$K2S_CI_SSH_HOME/.ssh/known_hosts"
+          chmod 600 "$K2S_CI_SSH_HOME/.ssh/known_hosts"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Bootstrap the K2s Linux Host variant (control plane only, no VM)
+        run: |
+          sudo mkdir -p /etc/k2s
+          cat > /tmp/k2s-install-operation.json <<EOF
+          {
+            "installDir": "${{ github.workspace }}",
+            "configDir": "/var/lib/k2s",
+            "linuxOnly": true,
+            "skipStart": false,
+            "skipPurge": false
+          }
+          EOF
+          chmod 600 /tmp/k2s-install-operation.json
+          sudo bash lib/scripts/linux/debian/linuxonly/Install.sh --operation-file /tmp/k2s-install-operation.json
+
+      - name: Add the arm64 worker node
+        run: |
+          sudo env \
+            HOME="$K2S_CI_SSH_HOME" \
+            K2S_SSH_IDENTITY_FILE="$K2S_CI_SSH_HOME/.ssh/id_ed25519" \
+            K2S_SSH_KNOWN_HOSTS_FILE="$K2S_CI_SSH_HOME/.ssh/known_hosts" \
+            "${{ github.workspace }}/k2s" node add --ip-addr "$WORKER_IP" --username "$WORKER_USER"
+
+      - name: Assert the worker joined as arm64 and is Ready
+        run: |
+          export KUBECONFIG="$HOME/.kube/config"
+          kubectl get nodes -o wide
+          deadline=$((SECONDS + 180))
+          until kubectl get nodes -l kubernetes.io/arch=arm64 -o name | grep -q .; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::arm64 node never registered"
+              exit 1
+            fi
+            sleep 5
+          done
+          kubectl wait --for=condition=Ready node -l kubernetes.io/arch=arm64 --timeout=180s
+
+      - name: Signal the worker that the join is done
+        if: always()
+        run: |
+          mkdir -p /tmp/join-done
+          echo "${{ job.status }}" > /tmp/join-done/status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: join-done-${{ github.run_attempt }}
+          path: /tmp/join-done
+          retention-days: 1
+
+      - name: Restore control-plane cluster and SSH state
+        if: always()
+        run: |
+          ssh_home="${K2S_CI_SSH_HOME:-}"
+          if [ -f /tmp/k2s-install-operation.json ]; then
+            sudo bash lib/scripts/linux/debian/linuxonly/Uninstall.sh --operation-file /tmp/k2s-install-operation.json || true
+          fi
+          sudo kubeadm reset -f || true
+          sudo systemctl disable --now kubelet crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true
+          sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet /etc/cni/net.d/10-flannel.conflist /run/flannel /var/lib/k2s
+          sudo rm -f /etc/systemd/system/kubelet.service.d/20-k2s-logging.conf /root/.config/containers/auth.json
+          sudo ip link delete cni0 2>/dev/null || true
+          sudo ip link delete flannel.1 2>/dev/null || true
+          if [ -n "$ssh_home" ] && [ -f "$ssh_home/kubeconfig.original" ]; then
+            mkdir -p "$HOME/.kube"
+            cp -p "$ssh_home/kubeconfig.original" "$HOME/.kube/config"
+          elif [ -n "$ssh_home" ] && [ -f "$ssh_home/kubeconfig.absent" ]; then
+            rm -f "$HOME/.kube/config"
+            rmdir "$HOME/.kube" 2>/dev/null || true
+          fi
+          if [ -n "$ssh_home" ]; then
+            rm -rf "$ssh_home"
+          fi
+          rm -rf /tmp/cp-pubkey /tmp/worker-ready /tmp/join-done

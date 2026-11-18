@@ -34,7 +34,7 @@ on:
       - 'k2s/test/**'
 
 env:
-  GOVERSION: "1.27.3"
+  GOVERSION: "1.27.4"
 
 jobs:
   run-unit-tests:

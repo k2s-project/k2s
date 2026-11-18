@@ -1,6 +1,6 @@
 <!--
 SPDX-FileCopyrightText: © 2026 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Configuration Reference
@@ -227,6 +227,18 @@ The `backup` section configures what is excluded from `k2s system backup`:
 | `configDir.docker` | `~/.docker` | Docker config directory |
 | `configDir.k2s` | `C:\ProgramData\K2s` | K2s runtime data directory |
 | `clusterName` | `k2s-cluster` | Kubernetes cluster name |
+
+### SSH Key
+
+The K2s SSH key pair is used to access the control plane and additional nodes. It is stored in the sub directory `sshKey.subDir` of `configDir.ssh` (default `~/.ssh/k2s`), so the key always follows the configured SSH directory. The file names are read from this section on all host platforms.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `sshKey.subDir` | `k2s` | Sub directory of `configDir.ssh` that contains the K2s SSH key pair; `~` in `configDir.ssh` is replaced by the home directory of the user running *K2s* (`/root` when using `sudo` on a Linux host) |
+| `sshKey.fileName.windows` | `id_rsa` | Private key file name on *Windows* hosts (RSA); the public key has the suffix `.pub` |
+| `sshKey.fileName.linux` | `id_ed25519` | Private key file name on *Linux* hosts (ed25519); the public key has the suffix `.pub` |
+
+The key pair is created during `k2s install` and deleted by `k2s uninstall`.
 
 ---
 

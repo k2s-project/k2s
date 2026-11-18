@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package logging_test
 
@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -174,7 +175,7 @@ var _ = Describe("logging", func() {
 			It("shortens the properties", func() {
 				source := &slog.Source{
 					Function: "some-function",
-					File:     "c:\\this\\is\\a\\full\\file.path",
+					File:     filepath.Join("c:", "this", "is", "a", "full", "file.path"),
 				}
 				input := slog.Attr{Key: slog.SourceKey, Value: slog.AnyValue(source)}
 
@@ -201,33 +202,16 @@ var _ = Describe("logging", func() {
 
 		When("error occurs while deleting files", func() {
 			var tempDir string
-			var fileHandle *os.File
 
 			BeforeEach(func() {
 				tempDir = GinkgoT().TempDir()
 				filePath := filepath.Join(tempDir, "test.log")
 				Expect(os.WriteFile(filePath, []byte("test"), os.ModePerm)).To(Succeed())
 
-				var err error
-				fileHandle, err = os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, fs.ModeExclusive)
-				Expect(err).NotTo(HaveOccurred())
-
-				GinkgoWriter.Println("Test log file <", filePath, "> opened")
-
-				DeferCleanup(func() {
-					if fileHandle == nil {
-						GinkgoWriter.Println("File handle is nil")
-						return
-					}
-
-					GinkgoWriter.Println("Closing test log file <", filePath, ">..")
-					Expect(fileHandle.Close()).To(Succeed())
-				})
+				preventRemoval(filePath)
 			})
 
 			It("returns error", FlakeAttempts(3), func() {
-				Expect(fileHandle).NotTo(BeNil(), "handle must not be nil, otherwise this test is invalid")
-
 				var maxAge time.Duration = -5 * time.Hour
 
 				err := logging.CleanLogDir(tempDir, maxAge)
@@ -303,20 +287,7 @@ var _ = Describe("logging", func() {
 					filePath := filepath.Join(tempDir, fileName)
 					Expect(os.WriteFile(filePath, []byte("test"), os.ModePerm)).To(Succeed())
 
-					var err error
-					fileHandle, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, fs.ModeExclusive)
-					Expect(err).NotTo(HaveOccurred())
-
-					GinkgoWriter.Println("Test log file <", filePath, "> opened")
-
-					DeferCleanup(func() {
-						if fileHandle == nil {
-							return
-						}
-
-						GinkgoWriter.Println("Closing test log file <", filePath, ">..")
-						Expect(fileHandle.Close()).To(Succeed())
-					})
+					preventRemoval(filePath)
 				})
 
 				It("returns error", func() {
@@ -583,3 +554,31 @@ var _ = Describe("logging", func() {
 		})
 	})
 })
+
+// preventRemoval makes removing the given file fail until the end of the spec:
+// Windows rejects removing open files, Unix requires write permission on the parent dir.
+func preventRemoval(filePath string) {
+	if runtime.GOOS == "windows" {
+		fileHandle, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, fs.ModeExclusive)
+		Expect(err).NotTo(HaveOccurred())
+
+		GinkgoWriter.Println("Test log file <", filePath, "> opened")
+
+		DeferCleanup(func() {
+			GinkgoWriter.Println("Closing test log file <", filePath, ">..")
+			Expect(fileHandle.Close()).To(Succeed())
+		})
+		return
+	}
+
+	if os.Geteuid() == 0 {
+		Skip("root bypasses directory permissions, so file removal cannot be prevented")
+	}
+
+	dir := filepath.Dir(filePath)
+	Expect(os.Chmod(dir, 0o500)).To(Succeed())
+
+	DeferCleanup(func() {
+		Expect(os.Chmod(dir, 0o700)).To(Succeed())
+	})
+}

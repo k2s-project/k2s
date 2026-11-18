@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
 $pathModule = "$PSScriptRoot\..\path\path.module.psm1"
@@ -56,9 +56,14 @@ function Resolve-K2sSetupConfigDir {
 
 $script:k2sConfigDir = Resolve-K2sSetupConfigDir
 
-$script:sshKeyFileName = 'id_rsa'
+$sshKeyConfig = $rootConfig.psobject.properties['sshKey'].value
+$sshKeySubDir = $sshKeyConfig.psobject.properties['subDir'].value
+$script:sshKeyDir = Join-Path $script:sshConfigDir $sshKeySubDir
+# key dir relative to a user profile, e.g. '.ssh\k2s' for configDir.ssh '~/.ssh' and sub dir 'k2s'
+$script:sshKeyRelativeDir = ((($configDir.psobject.properties['ssh'].value -replace '^~[\\/]?', '') + "/$sshKeySubDir") -replace '^/', '') -replace '/', '\'
+$script:sshKeyFileName = $sshKeyConfig.psobject.properties['fileName'].value.psobject.properties['windows'].value
 $script:kubernetesImagesJsonFile = "$script:k2sConfigDir\kubernetes_images.json"
-$script:sshKeyControlPlane = "$script:sshConfigDir\k2s\$script:sshKeyFileName"
+$script:sshKeyControlPlane = Join-Path $script:sshKeyDir $script:sshKeyFileName
 
 #NETWORKING
 $ipControlPlane = $smallsetup.psobject.properties['masterIP'].value
@@ -167,7 +172,7 @@ function Get-SSHKeyControlPlane {
         return $script:sshKeyControlPlane
     }
 
-    $keyFileName = if ($script:sshKeyFileName) { $script:sshKeyFileName } else { 'id_rsa' }
+    $keyFileName = $script:sshKeyFileName
     $usersDir = "$env:SystemDrive\Users"
 
     if (Test-Path $usersDir) {
@@ -175,7 +180,7 @@ function Get-SSHKeyControlPlane {
             Where-Object { $_.Name -notmatch '^(systemprofile|LocalService|NetworkService|Public|Default|Default User)$' }
 
         foreach ($profile in $userProfiles) {
-            $candidateKey = Join-Path $profile.FullName ".ssh\k2s\$keyFileName"
+            $candidateKey = Join-Path (Join-Path $profile.FullName $script:sshKeyRelativeDir) $keyFileName
             if (Test-Path $candidateKey) {
                 return $candidateKey
             }
@@ -183,9 +188,9 @@ function Get-SSHKeyControlPlane {
 
         if ($script:sshKeyControlPlane -match 'systemprofile') {
             foreach ($profile in $userProfiles) {
-                $userSshDir = Join-Path $profile.FullName '.ssh'
-                if (Test-Path $userSshDir) {
-                    return "$userSshDir\k2s\$keyFileName"
+                $userKeyDir = Join-Path $profile.FullName $script:sshKeyRelativeDir
+                if (Test-Path (Split-Path -Parent $userKeyDir)) {
+                    return Join-Path $userKeyDir $keyFileName
                 }
             }
         }

@@ -5,8 +5,9 @@ $configModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\config\config.
 $fileModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\config\file.module.psm1"
 $pathModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\path\path.module.psm1"
 $logModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\log\log.module.psm1"
+$hostNetworkModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\network\windows-host-network.module.psm1"
 $hnsModule = "$PSScriptRoot\hns.module.psm1"
-Import-Module $logModule, $pathModule, $configModule, $hnsModule, $fileModule
+Import-Module $logModule, $pathModule, $configModule, $hnsModule, $fileModule, $hostNetworkModule
 
 $hnsService = 'hns'
 $l2BridgeSwitchName = 'cbr0'
@@ -356,6 +357,7 @@ function Set-WSLSwitch() {
             $oldIp = (Get-NetIPAddress -InterfaceIndex $ipindex).IPAddress
         }
         if ($ipindex -and $oldIp) {
+            Test-WslNetwork
             Write-Log "ifindex of ${interfaceAlias}: $ipindex"
             Write-Log "Old ip: $oldIp"
             if ($oldIp) {

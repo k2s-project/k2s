@@ -16,4 +16,5 @@ else {
     $isHeadlampRunningProp.Message = "The Headlamp dashboard is not working. Try restarting the cluster with 'k2s start' or disable and re-enable the addon with 'k2s addons disable dashboard' and 'k2s addons enable dashboard'"
 }
 
-return , @($isHeadlampRunningProp)
+Import-Module "$PSScriptRoot\..\addons.module.psm1"
+return , (@($isHeadlampRunningProp) + @(Get-AddonInfrastructurePlacementStatus -Name 'dashboard'))

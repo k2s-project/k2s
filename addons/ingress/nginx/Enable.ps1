@@ -17,6 +17,7 @@ It allows applications to register their ingress resources and handles incoming 
 powershell <installation folder>\addons\ingress\nginx\Enable.ps1
 #>
 Param(
+    [string] $InfraNodeSelector = '',
     [parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
     [switch] $ShowLogs = $false,
     [parameter(Mandatory = $false, HelpMessage = 'JSON config object to override preceeding parameters')]
@@ -37,6 +38,10 @@ $dashboardModule = "$PSScriptRoot\..\..\dashboard\dashboard.module.psm1"
 Import-Module $infraModule, $clusterModule, $addonsModule, $nginxModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
+trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
+$ownerOptions = Get-AddonPlacementOwnerOptions -Name 'ingress' -Implementation 'nginx' -BoundParameters $PSBoundParameters -Defaults @{OmitCertMgr = $OmitCertMgr.IsPresent}
+$OmitCertMgr = [switch]$ownerOptions.OmitCertMgr
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'ingress' -Implementation 'nginx' -Selector $InfraNodeSelector
 
 $windowsHostIpAddress = Get-ConfiguredKubeSwitchIP
 $Proxy = "http://$($windowsHostIpAddress):8181"
@@ -106,7 +111,8 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'gateway-api' })) -eq
 }
 
 $existingServices = (Invoke-Kubectl -Params 'get', 'service', '-n', 'ingress-nginx', '-o', 'yaml').Output
-if ("$existingServices" -match '.*ingress-nginx-controller.*') {
+$retryIntent = Test-AddonPlacementIntent -Name 'ingress' -Implementation 'nginx' -Selector $InfraNodeSelector
+if ("$existingServices" -match '.*ingress-nginx-controller.*' -and -not $retryIntent) {
     $errMsg = 'It seems as if ingress nginx is already installed in the namespace ingress-nginx. Disable it before enabling it again.'
     
     if ($EncodeStructuredOutput -eq $true) {
@@ -120,12 +126,21 @@ if ("$existingServices" -match '.*ingress-nginx-controller.*') {
 }
 
 Write-Log 'Installing ExternalDNS' -Console
+Assert-SharedInfrastructurePlacement -Name 'external-dns' -Selector $InfraNodeSelector -Namespace 'external-dns' -Deployment 'external-dns'
+if (-not $OmitCertMgr) { Assert-SharedInfrastructurePlacement -Name 'cert-manager' -Selector $InfraNodeSelector -Namespace 'cert-manager' -Deployment 'cert-manager' }
+if ($InfraNodeSelector) {
+    Assert-AddonPlacementHost -Selector $InfraNodeSelector -NodeName (Get-ConfigControlPlaneNodeHostname) -Reason 'ingress external IP and local traffic policy'
+    $preflight = New-AddonPlacementInput -AddonName 'ingress' -Path (Get-IngressNginxConfig) -Selector $InfraNodeSelector
+    Remove-Item -LiteralPath $preflight.Path -Force -ErrorAction SilentlyContinue
+    Set-AddonPlacementIntent -Addon ([pscustomobject]@{Name = 'ingress'; Implementation = 'nginx'; InfraNodeSelector = $InfraNodeSelector; OmitCertMgr = $OmitCertMgr.IsPresent})
+}
 $externalDnsConfig = Get-ExternalDnsConfigDir
-(Invoke-Kubectl -Params 'apply' , '-k', $externalDnsConfig).Output | Write-Log
+(Invoke-AddonOwnedApply -AddonName 'externaldns' -Path $externalDnsConfig -Selector $InfraNodeSelector -Kustomize).Output | Write-Log
+if ($InfraNodeSelector) { Set-SharedInfrastructurePlacement -Name 'external-dns' -Selector $InfraNodeSelector }
 
 if (-not $OmitCertMgr) {
     Write-Log 'Installing cert-manager' -Console
-    Enable-CertManager -Proxy $Proxy -EncodeStructuredOutput:$EncodeStructuredOutput -MessageType:$MessageType
+    Enable-CertManager -Proxy $Proxy -EncodeStructuredOutput:$EncodeStructuredOutput -MessageType:$MessageType -InfraNodeSelector $InfraNodeSelector
 }
 else {
     Write-Log '[ingress nginx] Skipping cert-manager installation (--omitCertMgr)' -Console
@@ -136,7 +151,7 @@ $ingressNginxNamespace = 'ingress-nginx'
 $ingressNginxConfig = Get-IngressNginxConfig
 
 (Invoke-Kubectl -Params 'create', 'ns', $ingressNginxNamespace).Output | Write-Log
-(Invoke-Kubectl -Params 'apply' , '-f', $ingressNginxConfig).Output | Write-Log
+(Invoke-AddonOwnedApply -AddonName 'ingress' -Path $ingressNginxConfig -Selector $InfraNodeSelector).Output | Write-Log
 
 $controlPlaneIp = Get-ConfiguredIPControlPlane
 
@@ -174,7 +189,9 @@ $clusterIngressConfig = "$PSScriptRoot\manifests\cluster-local-ingress.yaml"
 
 Write-Log 'All ingress nginx pods are up and ready.'
 
-Add-AddonToSetupJson -Addon ([pscustomobject] @{Name = 'ingress'; Implementation = 'nginx' })
+$addonConfig = [pscustomobject] @{Name = 'ingress'; Implementation = 'nginx' }
+if ($InfraNodeSelector) { $addonConfig | Add-Member -NotePropertyName OmitCertMgr -NotePropertyValue $OmitCertMgr.IsPresent }
+Add-AddonToSetupJson -Addon $addonConfig
 
 if (-not $OmitCertMgr) {
     Assert-IngressTlsCertificate -IngressType 'nginx' -CertificateManifestPath $clusterIngressConfig

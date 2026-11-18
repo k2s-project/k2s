@@ -7,7 +7,9 @@
 Param(
 	[parameter(Mandatory = $false, HelpMessage = 'Preferred ingress integration to apply (auto/nginx/traefik/nginx-gw/none)')]
 	[ValidateSet('auto', 'nginx', 'traefik', 'nginx-gw', 'none')]
-	[string] $PreferredIngress = 'auto'
+	[string] $PreferredIngress = 'auto',
+	[string] $InfraNodeSelector = '',
+	[switch] $SkipReadiness
 )
 
 $clusterModule = "$PSScriptRoot/../../lib/modules/windows/cluster/k2s.cluster.module/k2s.cluster.module.psm1"
@@ -17,6 +19,11 @@ $dashboardModule = "$PSScriptRoot\dashboard.module.psm1"
 
 Import-Module $clusterModule, $infraModule, $addonsModule, $dashboardModule
 
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'dashboard' -Selector $InfraNodeSelector
+$hasMatchingNodes = -not $SkipReadiness
+if (-not [string]::IsNullOrWhiteSpace($InfraNodeSelector)) {
+	$hasMatchingNodes = $hasMatchingNodes -and (Test-AddonInfrastructureSelectorOnCluster -Name 'dashboard' -Selector $InfraNodeSelector)
+}
 $addonObj = [pscustomobject] @{ Name = 'dashboard' }
 
 if ($PreferredIngress -eq 'auto') {
@@ -111,7 +118,7 @@ else {
 	}
 }
 
-if ($patchApplied) {
+if ($patchApplied -and $hasMatchingNodes) {
 	(Invoke-Kubectl -Params 'rollout', 'status', 'deployment', 'headlamp', '-n', 'dashboard', '--timeout', '120s').Output | Write-Log
 
 	# Wait for the old pod to be fully gone — ignore pods already in a terminal state
@@ -159,7 +166,7 @@ Write-Log '[Dashboard] Syncing Headlamp plugins' -Console
 # NOT fail the dashboard update: the plugin reconciliation is idempotent and re-runs on
 # every enable/update, so degrade gracefully with a warning instead.
 try {
-    Sync-HeadlampPlugins
+    Sync-HeadlampPlugins -SkipReadiness:(!$hasMatchingNodes)
 }
 catch {
     Write-Log "[Dashboard] Headlamp plugin sync failed (dashboard update continues; plugins will reconcile on the next 'k2s addons enable dashboard' or update): $($_.Exception.Message)" -Console

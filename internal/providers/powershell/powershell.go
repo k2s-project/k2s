@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package powershell
 
@@ -94,11 +94,14 @@ func (sWriter *structuredOutputWriter) Flush() {
 
 func buildCmdString(psScriptPath string, targetType string, additionalParams ...string) string {
 	builder := strings.Builder{}
-	builder.WriteString(psScriptPath + " -EncodeStructuredOutput -MessageType " + targetType)
+	builder.WriteString(psScriptPath)
+	builder.WriteString(" -EncodeStructuredOutput -MessageType ")
+	builder.WriteString(targetType)
 
 	if len(additionalParams) > 0 {
 		for _, param := range additionalParams {
-			builder.WriteString(" " + param)
+			builder.WriteString(" ")
+			builder.WriteString(param)
 		}
 	}
 	return builder.String()

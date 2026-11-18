@@ -245,18 +245,30 @@ Function Add-KubernetesArtifactsToRemoteComputer {
         [string] $Proxy = '',
         [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
         [string] $TargetPath = $(throw 'Argument missing: TargetPath'),
-        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution')
+        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
     #binPath\linuxnode\packages\debian12\ kubernetes
     $debPackagesSourcePath = "$SourcePath\$kubernetesDebPackagesDirectory"
     
-    if (Test-Path -Path $debPackagesSourcePath) {
+    $packageCacheExists = Test-Path -Path $debPackagesSourcePath
+    if ($packageCacheExists -and (Test-DebPackageArchitecture -SourcePath $debPackagesSourcePath -Architecture $Architecture)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
+        return
     }
-    else {
-        Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+    if ($UseNodePackageArtifacts) {
+        throw "[NodeAdd] Node package Kubernetes artifacts are missing or do not match worker architecture '$Architecture'"
     }
+    if ($packageCacheExists) {
+        Write-Log "[NodeAdd] Ignoring Kubernetes package cache that does not match worker architecture '$Architecture'."
+    }
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading Kubernetes packages for the worker."
+    }
+    Get-KubernetesArtifactsFromInternet -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -K8sVersion $kubernetesVersion -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
 }
 
 Function Add-BuildahArtifactsToRemoteComputer {
@@ -265,17 +277,48 @@ Function Add-BuildahArtifactsToRemoteComputer {
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
         [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
         [string] $TargetPath = $(throw 'Argument missing: TargetPath'),
-        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution')
+        [string] $InstalledDistribution = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
     $debPackagesSourcePath = "$SourcePath\$buildahDebPackagesDirectory"
     
-    if (Test-Path -Path $debPackagesSourcePath) {
+    $packageCacheExists = Test-Path -Path $debPackagesSourcePath
+    if ($packageCacheExists -and (Test-DebPackageArchitecture -SourcePath $debPackagesSourcePath -Architecture $Architecture)) {
         Copy-DebPackagesFromWindowsHostToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $debPackagesSourcePath -TargetPath $TargetPath
+        return
     }
-    else {
-        Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+    if ($UseNodePackageArtifacts) {
+        throw "[NodeAdd] Node package Buildah artifacts are missing or do not match worker architecture '$Architecture'"
     }
+    if ($packageCacheExists) {
+        Write-Log "[NodeAdd] Ignoring Buildah package cache that does not match worker architecture '$Architecture'."
+    }
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; downloading buildah packages for the worker."
+    }
+    Get-BuildahDebPackagesFromInternet -UserName $userName -IpAddress $IpAddress -TargetPath $TargetPath -InstalledDistribution $InstalledDistribution
+}
+
+Function Test-DebPackageArchitecture {
+    param (
+        [string] $SourcePath = $(throw 'Argument missing: SourcePath'),
+        [string] $Architecture = $(throw 'Argument missing: Architecture')
+    )
+    $debPackages = @(Get-ChildItem -LiteralPath $SourcePath -Filter '*.deb' -File -ErrorAction SilentlyContinue)
+    if ($debPackages.Count -eq 0) {
+        return $false
+    }
+
+    $architecturePattern = "_(all|$([regex]::Escape($Architecture)))\.deb$"
+    $incompatiblePackages = @($debPackages | Where-Object { $_.Name -notmatch $architecturePattern })
+    if ($incompatiblePackages.Count -gt 0) {
+        Write-Log "[NodeAdd] Package cache '$SourcePath' contains packages incompatible with '$Architecture': $($incompatiblePackages.Name -join ', ')"
+        return $false
+    }
+    return $true
 }
 
 Function Get-OfflineK2sDebPackagesPath {
@@ -340,8 +383,39 @@ Function Get-InstalledDistribution {
     }
     
     $installedDistribution = "$distributionName$distributionReleaseNumber".ToLower()
-    
+
     return $installedDistribution
+}
+
+Function Get-RemoteArchitecture {
+    <#
+    .SYNOPSIS
+        Detects the CPU architecture of a remote Linux computer via SSH, normalized to
+        Go-style names (amd64/arm64), matching the normalization already used for the
+        control-plane in install-cli-tools.sh.
+    #>
+    param (
+        [ValidateScript({ !([string]::IsNullOrWhiteSpace($_)) })]
+        [string]$UserName = $(throw 'Argument missing: UserName'),
+        [ValidateScript({ Get-IsValidIPv4Address($_) })]
+        [string]$IpAddress = $(throw 'Argument missing: IpAddress')
+    )
+
+    $unameResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute 'uname -m' -UserName $UserName -IpAddress $IpAddress
+    if (!$unameResult.Success) {
+        throw "Cannot get the CPU architecture from the computer with IP '$IpAddress': $($unameResult.Output)"
+    }
+    $unameOutput = $unameResult.Output
+    if ([string]::IsNullOrWhiteSpace($unameOutput)) {
+        throw "Cannot get the CPU architecture from the computer with IP '$IpAddress'"
+    }
+    $arch = ([string]$unameOutput).Trim()
+
+    switch ($arch) {
+        'x86_64' { return 'amd64' }
+        'aarch64' { return 'arm64' }
+        default { return $arch }
+    }
 }
 
 
@@ -502,18 +576,47 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
         [ValidateScript({ !([string]::IsNullOrWhiteSpace($_)) })]
         [string] $UserName = $(throw 'Argument missing: UserName'),
         [ValidateScript({ Get-IsValidIPv4Address($_) })]
-        [string] $IpAddress = $(throw 'Argument missing: IpAddress')
+        [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
+        [string] $Architecture = 'amd64',
+        [string] $ControlPlaneArchitecture = 'amd64',
+        [switch] $UseNodePackageArtifacts = $false
     )
 
-    $executeRemoteCommandOnRemoteComputer = { 
+    $executeRemoteCommandOnRemoteComputer = {
         param(
-            $command = $(throw 'Argument missing: Command'), 
+            $command = $(throw 'Argument missing: Command'),
             [switch]$IgnoreErrors = $false, [string]$RepairCmd = $null, [uint16]$Retries = 0
         )
         (Invoke-CmdOnVmViaSSHKey -CmdToExecute $command -UserName $UserName -IpAddress $IpAddress -Retries $Retries -RepairCmd $RepairCmd -IgnoreErrors:$IgnoreErrors).Output | Write-Log
     }
 
-    $imagesPath = $directoryOfKubenodeImagesOnWindowsHost
+    $imagesPath = Get-DirectoryOfKubenodeImagesOnWindowsHost -Architecture $Architecture
+    if ($UseNodePackageArtifacts) {
+        $imageArchives = @(Get-ChildItem -LiteralPath $imagesPath -Filter '*.tar' -File -ErrorAction SilentlyContinue)
+        if ($imageArchives.Count -eq 0) {
+            throw "[NodeAdd] Explicit node package contains no usable images for architecture '$Architecture' in '$imagesPath'."
+        }
+
+        Write-Log "[NodeAdd] Importing bundled container images for architecture '$Architecture' from '$imagesPath'"
+        foreach ($imageArchive in $imageArchives) {
+            Copy-ToRemoteComputerViaSshKey -Source $imageArchive.FullName -Target '/tmp/import.tar' -UserName $UserName -IpAddress $IpAddress
+            &$executeRemoteCommandOnRemoteComputer 'sudo buildah pull oci-archive:/tmp/import.tar 2>&1'
+            &$executeRemoteCommandOnRemoteComputer 'cd /tmp && sudo rm -rf import.tar'
+        }
+        return
+    }
+
+    if ($Architecture -ne $ControlPlaneArchitecture) {
+        $remoteUser = "$UserName@$IpAddress"
+        Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; pulling compatible Kubernetes and flannel images on the worker."
+        $kubernetesImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo kubeadm config images pull --cri-socket unix:///run/crio/crio.sock --kubernetes-version $kubernetesVersion" -UserName $UserName -IpAddress $IpAddress
+        Assert-ProvisioningCommandResult -Result $kubernetesImageResult -RemoteUser $remoteUser
+        foreach ($image in @('docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3', 'docker.io/flannel/flannel:v0.28.10')) {
+            $flannelImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo crictl --runtime-endpoint unix:///run/crio/crio.sock pull $image" -UserName $UserName -IpAddress $IpAddress
+            Assert-ProvisioningCommandResult -Result $flannelImageResult -RemoteUser $remoteUser
+        }
+        return
+    }
 
     Write-Log 'Copy container images from the control plane node to the Windows host' 
     Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -TargetPath $imagesPath
@@ -640,6 +743,155 @@ Function Install-BuildahDebPackages {
     Write-Log '[BuildahInstall] Finished installing buildah packages'
 }
 
+function Assert-ProvisioningCommandResult {
+    param (
+        [pscustomobject]$Result,
+        [string]$RemoteUser,
+        [switch]$IgnoreErrors
+    )
+
+    $Result.Output | Write-Log
+    if (!$Result.Success -and !$IgnoreErrors) {
+        throw "[Provision] Remote provisioning command failed on '$RemoteUser'. See command output above."
+    }
+}
+
+<#
+.SYNOPSIS
+Returns the shell commands that configure CRI-O to keep its image store after an unclean shutdown.
+.DESCRIPTION
+CRI-O's internal repair wipes the whole storage directory (images included) when the storage check
+or repair fails after an unclean shutdown. On offline nodes this removes the control plane images.
+The commands disable the internal repair and install a systemd ExecStartPre hook that runs
+'crio check --quick --repair --force' (never --wipe) only after an unclean shutdown. The hook always exits 0.
+#>
+function Get-CrioOfflineImageRetentionCommands {
+    $precheckScript = @'
+#!/bin/sh
+# K2s: repair CRI-O storage after an unclean shutdown without wiping images
+if [ ! -e /var/lib/crio/clean.shutdown ] && [ -e /var/lib/crio/clean.shutdown.supported ]; then
+    crio check --quick --repair --force || echo "k2s-crio-precheck: crio check exited with $?, continuing without wipe"
+fi
+exit 0
+'@
+    $crioDropIn = @'
+[crio]
+internal_repair = false
+'@
+    $systemdDropIn = @'
+[Service]
+ExecStartPre=/usr/local/sbin/k2s-crio-precheck
+'@
+    $toBase64 = { param($text) [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n"))) }
+
+    return @(
+        "echo '$(& $toBase64 $precheckScript)' | base64 -d | sudo tee /usr/local/sbin/k2s-crio-precheck > /dev/null",
+        'sudo chmod 755 /usr/local/sbin/k2s-crio-precheck',
+        'sudo mkdir -p /etc/crio/crio.conf.d /etc/systemd/system/crio.service.d',
+        "echo '$(& $toBase64 $crioDropIn)' | base64 -d | sudo tee /etc/crio/crio.conf.d/99-k2s-image-retention.conf > /dev/null",
+        "echo '$(& $toBase64 $systemdDropIn)' | base64 -d | sudo tee /etc/systemd/system/crio.service.d/99-k2s-image-retention.conf > /dev/null",
+        'sudo systemctl daemon-reload'
+    )
+}
+
+<#
+.SYNOPSIS
+Configures CRI-O on a Linux node to keep its image store after an unclean shutdown.
+.PARAMETER ExecuteRemoteCommand
+Script block that runs one shell command on the node (first positional argument = command).
+#>
+function Set-CrioOfflineImageRetention {
+    param (
+        [Parameter(Mandatory = $true)]
+        [scriptblock] $ExecuteRemoteCommand
+    )
+    Write-Log '[CrioRetention] Disabling CRI-O internal repair and installing pre-start storage check'
+    foreach ($command in (Get-CrioOfflineImageRetentionCommands)) {
+        & $ExecuteRemoteCommand $command
+    }
+}
+
+# Returns the image reference with the highest version tag per repository, e.g. kube-apiserver:v1.37.2 over v1.36.4.
+function Select-NewestImageRefs {
+    param (
+        [string[]] $ImageRefs
+    )
+    $versionKey = {
+        param([string] $tag)
+        $numbers = @(if ($tag -match '^v?(\d+(?:\.\d+)*)') { @($Matches[1].Split('.') | ForEach-Object { [long]$_ }) } else { @() })
+        while ($numbers.Count -lt 4) { $numbers += 0 }
+        ($numbers[0..3] | ForEach-Object { $_.ToString('D10') }) -join '.'
+    }
+    $ImageRefs | Group-Object { $_.Substring(0, $_.LastIndexOf(':')) } | ForEach-Object {
+        $_.Group | Sort-Object -Property @{ Expression = { & $versionKey $_.Substring($_.LastIndexOf(':') + 1) } }, @{ Expression = { $_ } } | Select-Object -Last 1
+    }
+}
+
+<#
+.SYNOPSIS
+Exports the K2s system images (control plane, flannel, clusterip-webhook) present on the control plane node as OCI archives to the Windows host.
+.DESCRIPTION
+Image references are read from the node (crictl images), not hardcoded. All cached tags are kept so images referenced
+by the active cluster configuration remain recoverable. Only archives that are missing are written; other system
+archives are removed so the folder matches the images present on the node.
+.PARAMETER TargetPath
+The folder on the Windows host receiving the archives (normally bin\linuxnode\images).
+#>
+function Export-SystemImageArchivesToWindowsHost {
+    param (
+        [string] $TargetPath = $(throw 'Argument missing: TargetPath')
+    )
+
+    # no double quotes: Windows PowerShell drops them when passing the command to ssh.exe
+    $listCmd = 'sudo crictl images | grep -E ''registry.k8s.io/|docker.io/flannel|clusterip-webhook'' | grep -v ''<none>'' | awk -v OFS=: ''{ print $1, $2 }'''
+    $listResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute $listCmd -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+    if (!$listResult.Success) {
+        throw '[ImageArchive] Could not list system images on the control plane node'
+    }
+    $imageRefs = @($listResult.Output | ForEach-Object { "$_".Trim() } | Where-Object { $_ -match '^[^\s]+/[^\s]+:[^\s]+$' } | Select-Object -Unique)
+    if ($imageRefs.Count -eq 0) {
+        throw '[ImageArchive] No system images found on the control plane node'
+    }
+
+    if (!(Test-Path -Path $TargetPath)) {
+        New-Item -Path $TargetPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    }
+
+    $expectedFiles = @{}
+    foreach ($imageRef in $imageRefs) {
+        $fileName = "$($imageRef.Replace('/','_').Replace(':', '__')).tar"
+        $expectedFiles[$fileName] = $true
+        $finalPath = Join-Path $TargetPath $fileName
+        if (Test-Path -Path $finalPath) {
+            Write-Log "[ImageArchive] Archive for '$imageRef' already present"
+            continue
+        }
+        $remotePath = "/tmp/$fileName"
+        $partialPath = "$finalPath.partial"
+        Write-Log "[ImageArchive] Exporting '$imageRef'"
+        $pushResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo buildah push $imageRef oci-archive:${remotePath}:$imageRef 2>&1" -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+        $pushResult.Output | Write-Log
+        if (!$pushResult.Success) {
+            throw "[ImageArchive] Could not export '$imageRef' on the control plane node"
+        }
+        # publish only complete archives; an existing final archive is never re-exported
+        Remove-Item -Path $partialPath -Force -ErrorAction SilentlyContinue
+        Copy-FromRemoteComputerViaSSHKey -Source $remotePath -Target $partialPath -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
+        Move-Item -Path $partialPath -Destination $finalPath -Force
+        (Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo rm -f $remotePath" -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress -IgnoreErrors).Output | Write-Log
+    }
+
+    $systemArchivePattern = '^(registry\.k8s\.io_|docker\.io_flannel|.*clusterip-webhook)'
+    Get-ChildItem -Path $TargetPath -Filter '*.tar' -File | Where-Object { !$expectedFiles.ContainsKey($_.Name) } | ForEach-Object {
+        if ($_.Name -notmatch $systemArchivePattern) {
+            Write-Log "[ImageArchive] Keeping non-system archive '$($_.Name)'"
+            return
+        }
+        Write-Log "[ImageArchive] Removing stale system archive '$($_.Name)'"
+        Remove-Item -Path $_.FullName -Force
+    }
+}
+
 <#
 .SYNOPSIS
 Installs tools into the VM.
@@ -672,7 +924,8 @@ Function Install-Tools {
             $Command = $(throw 'Argument missing: Command'), 
             [switch]$IgnoreErrors = $false, [string]$RepairCmd = $null, [uint16]$Retries = 0
         )
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd -IgnoreErrors:$IgnoreErrors -RepairCmd $RepairCmd -Retries $Retries
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser -IgnoreErrors:$IgnoreErrors
     }
 
     Write-Log 'Start installing tools in the Linux VM'
@@ -730,13 +983,12 @@ Function Install-Tools {
     &$executeRemoteCommand 'sudo mv /tmp/auth.json /root/.config/containers/auth.json'
 
     Write-Log 'Need to update registry conf file which is added as part of buildah installation'
-    #&$executeRemoteCommand "sudo sed -i '/.*unqualified-search-registries.*/cunqualified-search-registries = [\\\""docker.io\\\"", \\\""quay.io\\\""]' /etc/containers/registries.conf"
-    if ($PSVersionTable.PSVersion.Major -gt 5) {
-        &$executeRemoteCommand 'sudo echo unqualified-search-registries = [\"docker.io\", \"quay.io\"] | sudo tee -a /etc/containers/registries.conf'
-    }
-    else {
-        &$executeRemoteCommand 'sudo echo unqualified-search-registries = [\\\"docker.io\\\", \\\"quay.io\\\"] | sudo tee -a /etc/containers/registries.conf'
-    }
+    # Encode the TOML payload so Windows native argument parsing cannot strip its quotes.
+    $registryConfig = "unqualified-search-registries = [`"docker.io`", `"quay.io`"]`n"
+    $registryConfigEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($registryConfig))
+    &$executeRemoteCommand "if ! grep -q '^[[:space:]]*unqualified-search-registries[[:space:]]*=' /etc/containers/registries.conf 2>/dev/null; then echo '$registryConfigEncoded' | base64 -d | sudo tee -a /etc/containers/registries.conf; fi"
+    Set-CrioOfflineImageRetention -ExecuteRemoteCommand $executeRemoteCommand
+    # restart crio after updating registry.conf
     &$executeRemoteCommand 'sudo systemctl daemon-reload'
     &$executeRemoteCommand 'if ! sudo systemctl restart crio; then sudo systemctl status crio --no-pager -l; sudo journalctl -u crio -b --no-pager -n 100; exit 1; fi'
     &$executeRemoteCommand 'sudo crictl --runtime-endpoint unix:///var/run/crio/crio.sock info'
@@ -792,7 +1044,8 @@ function Get-FlannelImages {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command'))
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log 'Get images used by flannel'
@@ -963,7 +1216,8 @@ function Get-ClusterIPWebhookImages {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command'))
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log 'Get images used by clusterip-webhook'
@@ -984,21 +1238,27 @@ function AddRegistryMirrors {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command')) 
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log "Add mirrors to registry for VM with ip address: $IpAddress"
     $mirrorRegistries = Get-MirrorRegistries
+    if ($null -eq $mirrorRegistries -or @($mirrorRegistries).Count -eq 0) {
+        Write-Log "[RegistryMirror] No mirrorRegistries configured in config.json, skipping mirror setup on VM $IpAddress."
+        return
+    }
+
+    &$executeRemoteCommand 'mkdir -p /etc/containers/registries.conf.d'
     foreach ($registry in $mirrorRegistries) {
         $Name = $registry.registry
         $Mirror = $registry.mirror
         $fileName = $Name -replace ':', ''
-        &$executeRemoteCommand 'mkdir -p /etc/containers/registries.conf.d'
         &$executeRemoteCommand "echo -e `'[[registry]]\nlocation=\""$Name\""\ninsecure=true`' | sudo tee /etc/containers/registries.conf.d/$fileName.conf"
         &$executeRemoteCommand "echo -e `'[[registry.mirror]]\nlocation=\""$Mirror\""\ninsecure=true`' | sudo tee -a /etc/containers/registries.conf.d/$fileName.conf" 
-        &$executeRemoteCommand 'sudo systemctl daemon-reload'
-        &$executeRemoteCommand 'sudo systemctl restart crio'
     } 
+    &$executeRemoteCommand 'sudo systemctl daemon-reload'
+    &$executeRemoteCommand 'if ! sudo systemctl restart crio; then sudo systemctl reset-failed crio; if ! sudo systemctl restart crio; then sudo systemctl status crio --no-pager -l; sudo journalctl -u crio -b --no-pager -n 100; exit 1; fi; fi'
 }
 
 function Get-KubernetesImages {
@@ -1015,7 +1275,8 @@ function Get-KubernetesImages {
     $remoteUserPwd = $UserPwd
 
     $executeRemoteCommand = { param($Command = $(throw 'Argument missing: Command')) 
-        (Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser "$remoteUser" -RemoteUserPwd "$remoteUserPwd").Output | Write-Log
+        $result = Invoke-CmdOnControlPlaneViaUserAndPwd -CmdToExecute $Command -RemoteUser $remoteUser -RemoteUserPwd $remoteUserPwd
+        Assert-ProvisioningCommandResult -Result $result -RemoteUser $remoteUser
     }
 
     Write-Log 'Pull images used by K8s'
@@ -2267,7 +2528,7 @@ function Set-ProxySettingsForContainerRuntime {
     # Container runtime
     if ($removeProxySettings) {
         Write-Log 'Delete proxy settings for container runtime'
-        (Invoke-CmdOnVmWithSSHPwd -Command 'sudo rm -fr /etc/systemd/system/crio.service.d' -UserName $UserName -IpAddress $IpAddress -UserPwd $UserPwd -ExecutionTimeoutSeconds $CommandExecutionTimeoutSeconds).Output | Write-Log
+        (Invoke-CmdOnVmWithSSHPwd -Command 'sudo rm -f /etc/systemd/system/crio.service.d/http-proxy.conf' -UserName $UserName -IpAddress $IpAddress -UserPwd $UserPwd -ExecutionTimeoutSeconds $CommandExecutionTimeoutSeconds).Output | Write-Log
     }
     else {
         Write-Log 'Set proxy settings for container runtime'
@@ -2324,7 +2585,11 @@ function Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost {
 }
 
 function Get-DirectoryOfKubenodeImagesOnWindowsHost {
-    return $directoryOfKubenodeImagesOnWindowsHost
+    param([string] $Architecture = '')
+    if ([string]::IsNullOrWhiteSpace($Architecture)) {
+        return $directoryOfKubenodeImagesOnWindowsHost
+    }
+    return Join-Path $directoryOfKubenodeImagesOnWindowsHost $Architecture
 }
 
 function Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost {
@@ -2571,6 +2836,7 @@ Install-BuildahDebPackages,
 Set-UpComputerBeforeProvisioning,
 Copy-DebPackagesFromControlPlaneToWindowsHost,
 Get-InstalledDistribution,
+Get-RemoteArchitecture,
 Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost,
 Get-DirectoryOfKubenodeImagesOnWindowsHost,
 Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost,
@@ -2584,4 +2850,7 @@ Get-LinuxScriptPath,
 Invoke-Debian13NodeHardening,
 Invoke-RemoteScript,
 Get-KubernetesPackageCachePath,
-Get-BuildahPackageCachePath
+Get-BuildahPackageCachePath,
+Get-CrioOfflineImageRetentionCommands,
+Set-CrioOfflineImageRetention,
+Export-SystemImageArchivesToWindowsHost

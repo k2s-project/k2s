@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package image
 
@@ -58,6 +58,10 @@ func (m *mockImageProvider) Push(config provider.ImagePushConfig) error {
 }
 
 func (m *mockImageProvider) Clean(config provider.ImageCleanConfig) error {
+	return m.Called(config).Error(0)
+}
+
+func (m *mockImageProvider) Repair(config provider.ImageRepairConfig) error {
 	return m.Called(config).Error(0)
 }
 

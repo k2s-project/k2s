@@ -5,7 +5,10 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -48,7 +51,18 @@ func getListenInterfaceWhitelist(allowedNetInterfaces []*net.IPNet) *whitelist.B
 	return wl
 }
 
-func newProxyHttpHandler(proxyConfig *proxyConfig) http.Handler {
+// newProxyHttpHandler returns the proxy handler wrapped in a source address whitelist.
+// It fails closed: without at least one allowed CIDR the proxy is not served at all,
+// because an unrestricted forward proxy on the host would be reachable from every network.
+func newProxyHttpHandler(proxyConfig *proxyConfig) (http.Handler, error) {
+	if len(proxyConfig.AllowedCidrs) == 0 {
+		return nil, errors.New("no allowed CIDR configured, refusing to serve the proxy without a source address whitelist")
+	}
+	allowedCidrs, err := proxyConfig.AllowedCidrs.ToIPNet()
+	if err != nil {
+		return nil, fmt.Errorf("invalid allowed CIDR: %w", err)
+	}
+
 	proxy := goproxy.NewProxyHttpServer()
 
 	//if forward proxy is configured, use it
@@ -61,16 +75,15 @@ func newProxyHttpHandler(proxyConfig *proxyConfig) http.Handler {
 
 	proxy.Verbose = *proxyConfig.VerboseLogging
 
-	//restrict http proxy access on certain interfaces
-	if len(proxyConfig.AllowedCidrs) > 0 {
-		log.Printf("Http Proxy available on network interfaces : %s", proxyConfig.AllowedCidrs.String())
-		allowedCidrs, _ := proxyConfig.AllowedCidrs.ToIPNet()
-		listenInterfaceWhitelist := getListenInterfaceWhitelist(allowedCidrs)
-		newProxy, _ := whitelist.NewHandler(proxy, nil, listenInterfaceWhitelist)
-		return newProxy
-	} else {
-		log.Printf("Http Proxy available on ALL network interfaces")
-	}
+	//restrict http proxy access to clients from certain networks
+	log.Printf("Http Proxy available for clients from networks: %s", proxyConfig.AllowedCidrs.String())
+	listenInterfaceWhitelist := getListenInterfaceWhitelist(allowedCidrs)
+	return whitelist.NewHandler(proxy, http.HandlerFunc(rejectProxyRequest), listenInterfaceWhitelist)
+}
 
-	return proxy
+// rejectProxyRequest logs and denies a request whose source address is outside the allowed CIDRs.
+func rejectProxyRequest(w http.ResponseWriter, req *http.Request) {
+	slog.Warn("Rejected proxy request from source outside the allowed CIDRs", "source", req.RemoteAddr, "method", req.Method, "host", req.Host)
+	status := http.StatusForbidden
+	http.Error(w, http.StatusText(status), status)
 }

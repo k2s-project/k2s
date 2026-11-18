@@ -1,6 +1,6 @@
 <!--
-SPDX-FileCopyrightText: © 2024 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: © 2026 The K2s Authors
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Getting K2s
@@ -41,7 +41,7 @@ Go-built binaries (including `k2s.exe`) are **not committed** to the git reposit
 
 === "Linux"
     ```console
-    ./bin/bgol
+    bash ./build.sh
     ```
 
 !!! warning

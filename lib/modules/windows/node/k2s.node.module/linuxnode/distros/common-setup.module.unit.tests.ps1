@@ -7,6 +7,134 @@ BeforeAll {
     $moduleName = (Import-Module $modulePath -PassThru -Force).Name
 }
 
+Describe 'Linux worker artifacts by architecture' -Tag 'unit', 'ci' {
+    BeforeEach {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Copy-DebPackagesFromWindowsHostToRemoteComputer {}
+            Mock Get-KubernetesArtifactsFromInternet {}
+            Mock Get-BuildahDebPackagesFromInternet {}
+            Mock Test-DebPackageArchitecture { $false }
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $true; Output = '' } }
+            Mock Assert-ProvisioningCommandResult {}
+            Mock Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost {}
+        }
+    }
+
+    It 'downloads Kubernetes and buildah packages for an architecture that differs from the control plane' {
+        InModuleScope $moduleName {
+            Add-KubernetesArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/kubernetes' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64
+            Add-BuildahArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/buildah' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64
+
+            Should -Invoke Copy-DebPackagesFromWindowsHostToRemoteComputer -Times 0 -Exactly
+            Should -Invoke Get-KubernetesArtifactsFromInternet -Times 1 -Exactly
+            Should -Invoke Get-BuildahDebPackagesFromInternet -Times 1 -Exactly
+        }
+    }
+
+    It 'uses the explicitly supplied node package for its worker architecture' {
+        InModuleScope $moduleName {
+            Mock Test-Path { $true }
+            Mock Test-DebPackageArchitecture { $true }
+            Add-KubernetesArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/kubernetes' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+            Add-BuildahArtifactsToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -SourcePath 'C:\linuxnode\packages\debian13' -TargetPath '/tmp/buildah' -InstalledDistribution debian13 -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+
+            Should -Invoke Copy-DebPackagesFromWindowsHostToRemoteComputer -Times 2 -Exactly
+            Should -Invoke Get-KubernetesArtifactsFromInternet -Times 0 -Exactly
+            Should -Invoke Get-BuildahDebPackagesFromInternet -Times 0 -Exactly
+        }
+    }
+
+    It 'pulls Kubernetes and flannel images on a worker with a different architecture' {
+        InModuleScope $moduleName {
+            Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 3 -Exactly
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*--cri-socket unix:///run/crio/crio.sock*'
+            }
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 2 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*--runtime-endpoint unix:///run/crio/crio.sock*'
+            }
+            Should -Invoke Assert-ProvisioningCommandResult -Times 3 -Exactly
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+
+    It 'imports the supplied node package images instead of pulling for a different architecture' {
+        InModuleScope $moduleName {
+            Mock Get-DirectoryOfKubenodeImagesOnWindowsHost { 'C:\linuxnode\images\arm64' }
+            Mock Get-ChildItem { @([pscustomobject]@{ FullName = 'C:\linuxnode\images\arm64\kube-apiserver.tar' }) }
+            Mock Copy-ToRemoteComputerViaSshKey {}
+
+            Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+
+            Should -Invoke Copy-ToRemoteComputerViaSshKey -Times 1 -Exactly -ParameterFilter {
+                $Source -eq 'C:\linuxnode\images\arm64\kube-apiserver.tar' -and $Target -eq '/tmp/import.tar'
+            }
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 2 -Exactly -ParameterFilter {
+                $CmdToExecute -like '*buildah pull oci-archive:/tmp/import.tar*' -or
+                $CmdToExecute -eq 'cd /tmp && sudo rm -rf import.tar'
+            }
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+
+    It 'fails rather than falling back online when an explicit node package has no images' {
+        InModuleScope $moduleName {
+            Mock Get-DirectoryOfKubenodeImagesOnWindowsHost { 'C:\linuxnode\images\arm64' }
+            Mock Get-ChildItem { @() }
+
+            {
+                Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName worker -IpAddress '172.19.1.101' -Architecture arm64 -ControlPlaneArchitecture amd64 -UseNodePackageArtifacts
+            } | Should -Throw '*Explicit node package contains no usable images*'
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 0 -Exactly
+            Should -Invoke Copy-KubernetesImagesFromControlPlaneNodeToWindowsHost -Times 0 -Exactly
+        }
+    }
+}
+
+Describe 'Worker image cache paths' -Tag 'unit', 'ci' {
+    It 'returns an architecture-specific path when requested and the shared path otherwise' {
+        $basePath = Join-Path $TestDrive 'images'
+        InModuleScope $moduleName -Parameters @{ BasePath = $basePath } {
+            param($BasePath)
+            $directoryOfKubenodeImagesOnWindowsHost = $BasePath
+
+            Get-DirectoryOfKubenodeImagesOnWindowsHost -Architecture arm64 | Should -Be (Join-Path $BasePath 'arm64')
+            Get-DirectoryOfKubenodeImagesOnWindowsHost | Should -Be $BasePath
+        }
+    }
+}
+
+Describe 'Get-RemoteArchitecture' -Tag 'unit', 'ci' {
+    It 'reports failed SSH architecture lookups instead of treating output as an architecture' {
+        InModuleScope $moduleName {
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = 'SSH unavailable' } }
+            {
+                Get-RemoteArchitecture -UserName worker -IpAddress '172.19.1.101'
+            } | Should -Throw '*SSH unavailable*'
+        }
+    }
+}
+
+Describe 'Deb package cache architecture validation' -Tag 'unit', 'ci' {
+    It 'rejects incompatible packages but accepts architecture-independent packages' {
+        $packageCache = Join-Path $TestDrive 'deb-cache'
+        New-Item -Path $packageCache -ItemType Directory -Force | Out-Null
+        New-Item -Path (Join-Path $packageCache 'kubelet_1.37.2_amd64.deb') -ItemType File -Force | Out-Null
+        New-Item -Path (Join-Path $packageCache 'ca-certificates_2025.1_all.deb') -ItemType File -Force | Out-Null
+
+        InModuleScope $moduleName -Parameters @{ PackageCache = $packageCache } {
+            param($PackageCache)
+            Test-DebPackageArchitecture -SourcePath $PackageCache -Architecture arm64 | Should -BeFalse
+            Remove-Item -Path (Join-Path $PackageCache 'kubelet_1.37.2_amd64.deb') -Force
+            Test-DebPackageArchitecture -SourcePath $PackageCache -Architecture arm64 | Should -BeTrue
+        }
+    }
+}
+
 Describe 'Invoke-Debian13NodeHardening' -Tag 'unit', 'ci' {
     BeforeEach {
         InModuleScope $moduleName {
@@ -318,5 +446,160 @@ Describe 'Invoke-RemoteScript' -Tag 'unit', 'ci', 'provisioning' {
                 $CmdToExecute -eq 'chmod +x /tmp/setproxy.sh && /tmp/setproxy.sh '
             }
         }
+    }
+}
+
+Describe 'Get-CrioOfflineImageRetentionCommands' -Tag 'unit', 'ci' {
+    It 'disables internal repair and installs a non-wiping pre-start hook' {
+        InModuleScope $moduleName {
+            $commands = @(Get-CrioOfflineImageRetentionCommands)
+            $decode = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) }
+            $payloads = $commands | Where-Object { $_ -match "^echo '([^']+)' \| base64 -d" } | ForEach-Object {
+                $null = $_ -match "^echo '([^']+)'"
+                & $decode $Matches[1]
+            }
+
+            $payloads.Count | Should -Be 3
+            ($payloads -join "`n") | Should -Not -Match "`r"
+            $payloads[0] | Should -Match 'crio check --quick --repair --force'
+            $payloads[0] | Should -Not -Match '--wipe'
+            $payloads[0] | Should -Match 'exit 0'
+            $payloads[1] | Should -Match 'internal_repair = false'
+            $payloads[2] | Should -Match 'ExecStartPre=/usr/local/sbin/k2s-crio-precheck'
+            $commands[-1] | Should -Be 'sudo systemctl daemon-reload'
+        }
+    }
+}
+
+Describe 'Set-CrioOfflineImageRetention' -Tag 'unit', 'ci' {
+    It 'runs every retention command through the given script block' {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            $script:executed = [System.Collections.Generic.List[string]]::new()
+            Set-CrioOfflineImageRetention -ExecuteRemoteCommand { param($Command) $script:executed.Add($Command) }
+
+            $script:executed.Count | Should -Be @(Get-CrioOfflineImageRetentionCommands).Count
+        }
+    }
+}
+
+Describe 'Select-NewestImageRefs' -Tag 'unit', 'ci' {
+    It 'keeps the highest version tag per image and handles tags without version components' {
+        InModuleScope $moduleName {
+            $refs = @(
+                'docker.io/flannel/flannel:0.28.9', 'docker.io/flannel/flannel:v0.28.10',
+                'docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3',
+                'registry.k8s.io/etcd:3.6.8-0', 'registry.k8s.io/etcd:3.7.0-0',
+                'registry.k8s.io/kube-apiserver:v1.37.2', 'registry.k8s.io/kube-apiserver:v1.36.4',
+                'registry.k8s.io/pause:3.9', 'registry.k8s.io/pause:3.10.2',
+                'registry.k8s.io/test:latest', 'registry.k8s.io/other:v1'
+            )
+
+            $expected = @(
+                'docker.io/flannel/flannel-cni-plugin:v1.9.1-flannel3',
+                'docker.io/flannel/flannel:v0.28.10',
+                'registry.k8s.io/etcd:3.7.0-0',
+                'registry.k8s.io/kube-apiserver:v1.37.2',
+                'registry.k8s.io/pause:3.10.2',
+                'registry.k8s.io/test:latest',
+                'registry.k8s.io/other:v1'
+            ) | Sort-Object
+
+            @(Select-NewestImageRefs -ImageRefs $refs | Sort-Object) | Should -Be $expected
+        }
+    }
+}
+
+Describe 'Export-SystemImageArchivesToWindowsHost' -Tag 'unit', 'ci' {
+    BeforeEach {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Copy-FromRemoteComputerViaSSHKey { 'x' | Set-Content $Target }
+        }
+    }
+
+    It 'exports missing archives and removes only stale system archives' {
+        $target = Join-Path $TestDrive 'images'
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        'x' | Set-Content (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.34.0.tar')
+        'x' | Set-Content (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.33.0.tar')
+        'x' | Set-Content (Join-Path $target 'docker.io_myapp__1.0.tar')
+
+        InModuleScope $moduleName -Parameters @{ Target = $target } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey {
+                if ($CmdToExecute -like 'sudo crictl images*') {
+                    return [pscustomobject]@{ Success = $true; Output = @('registry.k8s.io/kube-apiserver:v1.34.0', 'docker.io/flannel/flannel:v0.27.0') }
+                }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+
+            Export-SystemImageArchivesToWindowsHost -TargetPath $Target
+
+            Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $CmdToExecute -like 'sudo crictl images*' -and $CmdToExecute -notmatch '"'
+            }
+
+            Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 1 -Exactly -ParameterFilter {
+                $Target -like '*docker.io_flannel_flannel__v0.27.0.tar.partial'
+            }
+        }
+
+        Test-Path (Join-Path $target 'docker.io_flannel_flannel__v0.27.0.tar') | Should -BeTrue
+        Test-Path (Join-Path $target 'docker.io_flannel_flannel__v0.27.0.tar.partial') | Should -BeFalse
+        Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.34.0.tar') | Should -BeTrue
+        Test-Path (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.33.0.tar') | Should -BeFalse
+        Test-Path (Join-Path $target 'docker.io_myapp__1.0.tar') | Should -BeTrue
+    }
+
+    It 'archives every cached tag when old images remain on the node after an update' {
+        $target = Join-Path $TestDrive 'images-after-update'
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        'x' | Set-Content (Join-Path $target 'registry.k8s.io_kube-apiserver__v1.36.4.tar')
+
+        InModuleScope $moduleName -Parameters @{ Target = $target } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey {
+                if ($CmdToExecute -like 'sudo crictl images*') {
+                    return [pscustomobject]@{ Success = $true; Output = @('registry.k8s.io/kube-apiserver:v1.36.4', 'registry.k8s.io/kube-apiserver:v1.37.2') }
+                }
+                return [pscustomobject]@{ Success = $true; Output = '' }
+            }
+
+            Export-SystemImageArchivesToWindowsHost -TargetPath $Target
+
+            Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 1 -Exactly
+        }
+
+        @(Get-ChildItem -Path $target -Filter '*.tar' | Select-Object -ExpandProperty Name | Sort-Object) | Should -Be @(
+            'registry.k8s.io_kube-apiserver__v1.36.4.tar',
+            'registry.k8s.io_kube-apiserver__v1.37.2.tar'
+        )
+    }
+
+    It 'throws when the image list cannot be read' {
+        InModuleScope $moduleName -Parameters @{ Target = (Join-Path $TestDrive 'none') } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey { [pscustomobject]@{ Success = $false; Output = '' } }
+            { Export-SystemImageArchivesToWindowsHost -TargetPath $Target } | Should -Throw '*Could not list system images*'
+        }
+    }
+
+    It 'publishes no archive when the image export fails' {
+        $target = Join-Path $TestDrive 'images-pushfail'
+        InModuleScope $moduleName -Parameters @{ Target = $target } {
+            param($Target)
+            Mock Invoke-CmdOnVmViaSSHKey {
+                if ($CmdToExecute -like 'sudo crictl images*') {
+                    return [pscustomobject]@{ Success = $true; Output = @('registry.k8s.io/pause:3.10') }
+                }
+                return [pscustomobject]@{ Success = $false; Output = 'push failed' }
+            }
+
+            { Export-SystemImageArchivesToWindowsHost -TargetPath $Target } | Should -Throw '*Could not export*'
+            Should -Invoke Copy-FromRemoteComputerViaSSHKey -Times 0 -Exactly
+        }
+
+        @(Get-ChildItem -Path $target -File -ErrorAction SilentlyContinue).Count | Should -Be 0
     }
 }

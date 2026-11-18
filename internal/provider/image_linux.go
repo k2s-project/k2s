@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -11,16 +11,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
-	kjson "github.com/k2s-project/k2s/internal/json"
+	kJson "github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/output"
+	"github.com/k2s-project/k2s/internal/providers/bash"
 )
 
 const (
@@ -31,13 +35,23 @@ const (
 type linuxImageProvider struct {
 	installDir string
 	configDir  string
+	stdWriter  output.StreamWriter
 }
 
 func newLinuxImageProvider(cfg ProviderConfig) *linuxImageProvider {
 	return &linuxImageProvider{
 		installDir: cfg.InstallDir,
 		configDir:  cfg.ConfigDir,
+		stdWriter:  cfg.StdWriter,
 	}
+}
+
+func (p *linuxImageProvider) runScript(script string, showOutput bool, args ...string) error {
+	return bash.NewScript(script).
+		WithArgs(args...).
+		WithShowLogs(showOutput).
+		WithStdWriter(p.stdWriter).
+		Exec()
 }
 
 func (p *linuxImageProvider) scriptPath(script string) string {
@@ -45,15 +59,23 @@ func (p *linuxImageProvider) scriptPath(script string) string {
 }
 
 // sshCmd executes a command on the Windows VM via SSH.
+// Uses cmd.Output() intentionally so only stdout is captured on success;
+// callers (e.g. crictl images -o json) require clean stdout without SSH banners or warnings.
+// On failure, stderr from ExitError is captured and returned in the error message.
 func sshCmd(command string) (string, error) {
-	out, err := exec.Command("ssh",
+	cmd := exec.Command("ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ConnectTimeout=10",
 		fmt.Sprintf("%s@%s", sshUser, winVMIP),
 		command,
-	).CombinedOutput()
+	)
+	out, err := cmd.Output()
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(exitErr.Stderr))
+		}
 		return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(out))
 	}
 	return string(out), nil
@@ -107,12 +129,7 @@ func (p *linuxImageProvider) Pull(cfg ImagePullConfig) error {
 
 	script := p.scriptPath("Pull-Image.sh")
 	if _, err := os.Stat(script); err == nil {
-		cmd := exec.Command(script, "-n", cfg.ImageName)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return p.runScript(script, cfg.ShowOutput, "-n", cfg.ImageName)
 	}
 
 	cmd := exec.Command("crictl", "pull", cfg.ImageName)
@@ -146,12 +163,7 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 		if cfg.Force {
 			args = append(args, "--force")
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	if _, err := exec.LookPath("buildah"); err == nil {
@@ -246,12 +258,7 @@ func (p *linuxImageProvider) Build(cfg ImageBuildConfig) error {
 		for k, v := range cfg.BuildArgs {
 			args = append(args, "--build-arg", k+"="+v)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	args := []string{"build"}
@@ -316,17 +323,7 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 		if cfg.DirPath != "" {
 			args = append(args, "-d", cfg.DirPath)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "import", path)
@@ -364,17 +361,7 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		if cfg.DockerArchive {
 			args = append(args, "--docker-archive")
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	if cfg.DockerArchive {
@@ -427,12 +414,7 @@ func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
 		if target != "" {
 			args = append(args, "-t", target)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "tag", ref, target)
@@ -459,12 +441,7 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 		if cfg.ImageName != "" {
 			args = append(args, "-n", cfg.ImageName)
 		}
-		cmd := exec.Command(script, args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
 	cmd := exec.Command("nerdctl", "push", ref)
@@ -475,17 +452,16 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 	return cmd.Run()
 }
 
+func (p *linuxImageProvider) Repair(cfg ImageRepairConfig) error {
+	return errors.New("image repair is not supported on Linux hosts")
+}
+
 func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {
 	slog.Info("[Image] Cleaning non-K8s images")
 
 	script := p.scriptPath("Clean-Images.sh")
 	if _, err := os.Stat(script); err == nil {
-		cmd := exec.Command(script)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		return cmd.Run()
+		return p.runScript(script, cfg.ShowOutput)
 	}
 
 	if _, err := exec.LookPath("buildah"); err == nil {
@@ -547,12 +523,7 @@ func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 		args = append(args, "--plain-http")
 	}
 
-	cmd := exec.Command(script, args...)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
+	if err := p.runScript(script, cfg.ShowOutput, args...); err != nil {
 		return fmt.Errorf("failed to add registry '%s': %w", cfg.RegistryName, err)
 	}
 
@@ -562,12 +533,7 @@ func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 
 func (p *linuxImageProvider) RegistryRemove(cfg ImageRegistryRemoveConfig) error {
 	script := p.scriptPath(filepath.Join("registry", "Remove-Registry.sh"))
-	cmd := exec.Command(script, "--registry", cfg.RegistryName)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
+	if err := p.runScript(script, cfg.ShowOutput, "--registry", cfg.RegistryName); err != nil {
 		return fmt.Errorf("failed to remove registry '%s': %w", cfg.RegistryName, err)
 	}
 
@@ -580,7 +546,7 @@ func (p *linuxImageProvider) addRegistryToConfig(registry string) error {
 		return nil
 	}
 	configPath := filepath.Join(p.configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := kJson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -607,7 +573,7 @@ func (p *linuxImageProvider) addRegistryToConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return kjson.ToFile(configPath, cfgMap)
+	return kJson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
@@ -615,7 +581,7 @@ func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
 		return nil
 	}
 	configPath := filepath.Join(p.configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := kJson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -636,7 +602,7 @@ func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return kjson.ToFile(configPath, cfgMap)
+	return kJson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxImageProvider) isLinuxOnly() bool {
@@ -646,7 +612,7 @@ func (p *linuxImageProvider) isLinuxOnly() bool {
 	}
 	if configDir != "" {
 		configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-		cfgMap, err := kjson.FromFile[map[string]any](configPath)
+		cfgMap, err := kJson.FromFile[map[string]any](configPath)
 		if err == nil {
 			if val, ok := (*cfgMap)["LinuxOnly"]; ok {
 				if b, ok := val.(bool); ok {
@@ -727,6 +693,49 @@ func listLinuxImages() ([]ContainerImage, error) {
 	return deduplicated, nil
 }
 
+type flexibleSize string
+
+func (f *flexibleSize) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*f = ""
+		return nil
+	}
+
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		*f = flexibleSize(str)
+		return nil
+	}
+
+	var i int64
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = flexibleSize(strconv.FormatInt(i, 10))
+		return nil
+	}
+
+	var u uint64
+	if err := json.Unmarshal(data, &u); err == nil {
+		*f = flexibleSize(strconv.FormatUint(u, 10))
+		return nil
+	}
+
+	var fl float64
+	if err := json.Unmarshal(data, &fl); err == nil {
+		if fl >= math.MinInt64 && fl <= math.MaxInt64 && math.Trunc(fl) == fl {
+			*f = flexibleSize(strconv.FormatInt(int64(fl), 10))
+		} else {
+			*f = flexibleSize(strconv.FormatFloat(fl, 'f', -1, 64))
+		}
+		return nil
+	}
+
+	return fmt.Errorf("flexibleSize: cannot unmarshal %s", string(data))
+}
+
+func (f flexibleSize) String() string {
+	return string(f)
+}
+
 func listBuildahImages() ([]ContainerImage, error) {
 	output, err := exec.Command("buildah", "images", "--json").Output()
 	if err != nil {
@@ -734,9 +743,9 @@ func listBuildahImages() ([]ContainerImage, error) {
 	}
 
 	var rawImages []struct {
-		Id    string   `json:"id"`
-		Names []string `json:"names"`
-		Size  string   `json:"size"`
+		Id    string       `json:"id"`
+		Names []string     `json:"names"`
+		Size  flexibleSize `json:"size"`
 	}
 
 	if err := json.Unmarshal(output, &rawImages); err != nil {
@@ -772,7 +781,7 @@ func listBuildahImages() ([]ContainerImage, error) {
 				Repository: repo,
 				Tag:        tag,
 				Node:       getNodeName(),
-				Size:       img.Size,
+				Size:       string(img.Size),
 			})
 		}
 	}
@@ -788,10 +797,10 @@ func listCrictlImages() ([]ContainerImage, error) {
 
 	var result struct {
 		Images []struct {
-			Id          string   `json:"id"`
-			RepoTags    []string `json:"repoTags"`
-			RepoDigests []string `json:"repoDigests"`
-			Size        string   `json:"size"`
+			Id          string       `json:"id"`
+			RepoTags    []string     `json:"repoTags"`
+			RepoDigests []string     `json:"repoDigests"`
+			Size        flexibleSize `json:"size"`
 		} `json:"images"`
 	}
 
@@ -801,7 +810,7 @@ func listCrictlImages() ([]ContainerImage, error) {
 
 	var images []ContainerImage
 	for _, img := range result.Images {
-		shortId := img.Id
+		shortId := strings.TrimPrefix(img.Id, "sha256:")
 		if len(shortId) > 12 {
 			shortId = shortId[:12]
 		}
@@ -828,7 +837,7 @@ func listCrictlImages() ([]ContainerImage, error) {
 				Repository: repo,
 				Tag:        tag,
 				Node:       getNodeName(),
-				Size:       img.Size,
+				Size:       string(img.Size),
 			})
 		}
 	}
@@ -844,9 +853,9 @@ func listWindowsVMImages() ([]ContainerImage, error) {
 
 	var result struct {
 		Images []struct {
-			Id       string   `json:"id"`
-			RepoTags []string `json:"repoTags"`
-			Size     string   `json:"size"`
+			Id       string       `json:"id"`
+			RepoTags []string     `json:"repoTags"`
+			Size     flexibleSize `json:"size"`
 		} `json:"images"`
 	}
 
@@ -856,7 +865,7 @@ func listWindowsVMImages() ([]ContainerImage, error) {
 
 	var images []ContainerImage
 	for _, img := range result.Images {
-		shortId := img.Id
+		shortId := strings.TrimPrefix(img.Id, "sha256:")
 		if len(shortId) > 12 {
 			shortId = shortId[:12]
 		}
@@ -883,7 +892,7 @@ func listWindowsVMImages() ([]ContainerImage, error) {
 				Repository: repo,
 				Tag:        tag,
 				Node:       "windows",
-				Size:       img.Size,
+				Size:       string(img.Size),
 			})
 		}
 	}
@@ -923,7 +932,7 @@ func (p *linuxImageProvider) getRegistriesFromConfig() []string {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := kJson.FromFile[map[string]any](configPath)
 	if err != nil {
 		return nil
 	}

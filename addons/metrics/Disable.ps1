@@ -46,7 +46,8 @@ if ($systemError) {
     exit 1
 }
 
-if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'metrics' })) -ne $true) {
+$hasIncompleteIntent = Test-AddonHasIncompleteInstallationIntent -Name 'metrics'
+if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'metrics' })) -ne $true -and -not $hasIncompleteIntent) {
     $errMsg = "Addon 'metrics' is already disabled, nothing to do."
 
     if ($EncodeStructuredOutput -eq $true) {
@@ -59,8 +60,12 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'metrics' })) -ne $tr
     exit 1
 }
 
+if ($hasIncompleteIntent) {
+    Write-Log "Addon 'metrics' has an incomplete installation intent; cleaning up any partial resources" -Console
+}
+
 Write-Log 'Uninstalling Kubernetes Metrics Server' -Console
-(Invoke-Kubectl -Params 'delete', '-f', (Get-MetricsServerConfig)).Output | Write-Log
+(Invoke-Kubectl -Params 'delete', '-f', (Get-MetricsServerConfig), '--ignore-not-found').Output | Write-Log
 
 # Check if Windows Exporter is still needed by other addons
 $monitoringEnabled = Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'monitoring' })

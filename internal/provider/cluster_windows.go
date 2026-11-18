@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build windows
 
@@ -33,6 +33,9 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 	if cfg.LinuxOnly && cfg.WSL {
 		return errors.New("linux-only in combination with WSL is currently not supported")
 	}
+	if cfg.StdWriter == nil {
+		return errors.New("install requires a StdWriter")
+	}
 
 	snapshot, err := effectiveconfig.Stage(cfg.ConfigDir, cfg.EffectiveInstallConfig)
 	if err != nil {
@@ -64,7 +67,7 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
 	}
 	// RestartAfterInstallCount, K8sBinsPath, and WSL are only supported by the k2s install script,
-	// not by the linuxonly install script.
+	// not by the linux-only install script.
 	if !cfg.LinuxOnly {
 		if cfg.RestartPostInstall != "" {
 			cmd += " -RestartAfterInstallCount " + utils.EscapeWithSingleQuotes(cfg.RestartPostInstall)
@@ -93,12 +96,7 @@ func (p *windowsClusterProvider) Install(cfg ClusterInstallConfig) error {
 	}
 	cmd += " -EffectiveInstallConfigPath " + utils.EscapeWithSingleQuotes(snapshot.Path())
 
-	writer := cfg.StdWriter
-	if writer == nil {
-		writer = p.stdWriter
-	}
-
-	if err := powershell.ExecutePs(cmd, writer); err != nil {
+	if err := powershell.ExecutePs(cmd, cfg.StdWriter); err != nil {
 		if abortErr := snapshot.Abort(); abortErr != nil {
 			return fmt.Errorf("installation failed: %w; snapshot cleanup failed: %v", err, abortErr)
 		}
@@ -203,7 +201,15 @@ func (p *windowsClusterProvider) resolveSetupDir(setupName string, linuxOnly boo
 }
 
 func (p *windowsClusterProvider) Status(cfg ClusterStatusConfig) (*ClusterStatus, error) {
-	scriptPath := utils.FormatScriptFilePath(filepath.Join(p.installDir, "lib", "scripts", "windows", "host", "status", "Get-Status.ps1"))
+	scriptPath := utils.FormatScriptFilePath(filepath.Join(
+		p.installDir,
+		"lib",
+		"scripts",
+		"windows",
+		"host",
+		"status",
+		"Get-Status.ps1",
+	))
 
 	type psStatus struct {
 		RunningState *struct {

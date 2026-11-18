@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: © 2024 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
-name: Release a version
+name: Release - Version
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
 #      - 'v1.*'
 
 env:
-  GOVERSION: "1.27.3"
+  GOVERSION: "1.27.4"
 
 permissions:
   contents: write

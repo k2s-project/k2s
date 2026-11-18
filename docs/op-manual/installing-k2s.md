@@ -1,6 +1,6 @@
 <!--
-SPDX-FileCopyrightText: © 2024 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-FileCopyrightText: © 2026 The K2s Authors
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Installing *K2s*
@@ -77,10 +77,18 @@ To inspect the different install options, run:
     ```console
     git checkout tags/v1.4.0
     ```
-    Also make sure you have built the Go binaries (`.\bin\bgow` on *Windows*, `./bin/bgol` on *Linux*) as described in the [cloning instructions](getting-k2s.md#option-1-cloning-git-repository).
+    Also make sure you have built the Go binaries (`.\bin\bgow` on *Windows*, `bash ./build.sh` on *Linux*) as described in the [cloning instructions](getting-k2s.md#option-1-cloning-git-repository).
 
 !!! note
     *K2s* will start automatically after the installation has finished.
+
+!!! note "Control-plane base-image preparation"
+    When `k2s install` prepares a new control-plane base image, Buildah is installed
+    separately from the Kubernetes packages. Registry configuration is restored
+    after the Buildah packages are installed. Preparation stops on failed registry
+    updates, CRI-O restart/readiness checks, or required image pulls instead of
+    producing an unusable base image. CRI-O restart failures include service status
+    and recent journal output in `k2s.log`.
 
 !!! note "Windows reboot recovery"
     Post-reboot networking recovery defers to an active `k2s install` or
@@ -210,6 +218,21 @@ To install the control-plane in WSL 2 instead of a dedicated *Linux* VM, run:
 <repo>\k2s.exe install --wsl
 ```
 
+Windows selects the underlying WSL HNS subnet automatically. Once WSL starts,
+K2s validates that subnet before changing the Windows WSL adapter address.
+Validation supports legacy HNS `Subnets[].AddressPrefix` and schema-v2
+`Ipams[].Subnets[].IpAddressPrefix` subnet information.
+An overlap with the configured control-plane, node pod, service slice, or
+loopback transit subnet stops installation with the conflicting CIDRs in the
+error. Overlap only with an aggregate pod or service range produces a warning.
+Missing or invalid HNS subnet information also stops installation.
+
+Changing the adapter IP alone does not renumber the HNS network. K2s does not
+delete or recreate shared WSL networks to resolve a conflict. Use a host with
+non-overlapping WSL networking, or clean up the partial installation with
+`k2s uninstall` and install using Hyper-V (omit `--wsl`). A newly provisioned
+host must still pass validation; Windows can allocate another conflicting subnet.
+
 ### \[Option 2\] Development-Only
 To build and test containers without a *K8s* cluster, run:
 ```console
@@ -232,6 +255,12 @@ sudo ./k2s install --linux-only --proxy http://proxy.example:8080 --no-proxy loc
 # Install the native control plane and a managed Windows worker from a prepared QCOW2 image.
 sudo ./k2s install --worker-cpus 4 --worker-memory 8GB --worker-disk 64GB --windows-qcow2-path /path/to/WindowsWorker-Base.qcow2
 ```
+
+The installer requires `ssh` and `ssh-keygen` (Debian package `openssh-client`) and fails
+the prerequisite check before changing the host if it is missing. It creates the
+K2s SSH key pair `~/.ssh/k2s/id_ed25519` (`.pub`) of the user running `k2s`
+(`/root/.ssh/k2s` when using `sudo`) and removes it again on uninstall. The
+public key has to be authorized on machines that are added later as nodes.
 
 The equivalent platform-first lifecycle entry point is
 `lib/scripts/linux/debian/linuxonly/Install.sh`. It validates root access,

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
 #Requires -RunAsAdministrator
@@ -51,7 +51,7 @@ function Remove-SshKey {
     )
     Write-Log 'Remove control plane ssh keys from host'
     ssh-keygen.exe -R $IpAddress 2>&1 | % { "$_" } | Out-Null
-    Remove-Item -Path ($sshConfigDir + '\k2s') -Force -Recurse -ErrorAction SilentlyContinue
+    Remove-Item -Path (Split-Path -Parent $sshKeyControlPlane) -Force -Recurse -ErrorAction SilentlyContinue
 
     # remove old folder where the ssh key was located
     Remove-Item -Path ($sshConfigDir + '\kubemaster') -Force -Recurse -ErrorAction SilentlyContinue

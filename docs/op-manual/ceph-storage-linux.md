@@ -1,7 +1,7 @@
 <!--
 SPDX-FileCopyrightText: © 2026 The K2s Authors
 
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Ceph Storage for Linux Workloads
@@ -73,7 +73,7 @@ k2s addons export "storage ceph" -d C:\exports
 3. Import it before enabling Ceph:
 
 ```console
-k2s addons import "storage ceph" --zip C:\transfer\addons.oci.tar
+k2s addons import "storage ceph" -f C:\transfer\addons.oci.tar
 ```
 
 4. If `clusterHost.node` is a Linux worker node, import with `--node` so offline Linux packages and staged files are copied to that worker:

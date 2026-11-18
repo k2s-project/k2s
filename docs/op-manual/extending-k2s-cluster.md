@@ -1,6 +1,6 @@
 <!--
 SPDX-FileCopyrightText: © 2026 The K2s Authors
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: Apache-2.0
 -->
 
 # Extending a K2s Cluster
@@ -17,11 +17,14 @@ Complete the following preparation on the K2s host and on the Debian 13 target b
 - Run the command from an elevated PowerShell or command prompt on the K2s Windows host.
 - The K2s SSH key pair exists. The public key is `%USERPROFILE%\.ssh\k2s\id_rsa.pub`.
 
+!!! note "Linux host (experimental)"
+    On a Linux host the public key is `~/.ssh/k2s/id_ed25519.pub` of the user running `k2s` (`/root/.ssh/k2s/id_ed25519.pub` when using `sudo`). The location and file names are configured in the `sshKey` section and `configDir.ssh` of `cfg/config.json`, see the [configuration reference](configuration-reference.md).
+
 ### Debian 13 target
 
 - Install Debian 13 (Trixie) on a physical machine or an existing VM. The target must not already be a member of a Kubernetes cluster.
 - Configure a stable IPv4 address, either statically or with a DHCP reservation. K2s stores the address supplied to `k2s node add` for later node operations.
-- Set a hostname containing only lowercase letters. K2s uses the remote hostname as the Kubernetes node name; if `--name` is supplied, it must match that hostname.
+- Set a hostname containing only lowercase letters. K2s uses the remote hostname as the Kubernetes node name.
 - Install and enable an SSH server, and make TCP port 22 reachable from the K2s host.
 - Use a user that can run commands with `sudo`. The K2s provisioning process uses `sudo` to install packages, configure services, and add routes.
 - Install `lsb-release`, which K2s uses to identify the Debian release:
@@ -109,6 +112,16 @@ The command must report `TcpTestSucceeded : True`.
 
 ---
 
+## Architecture Support (amd64 / arm64)
+
+`k2s node add` auto-detects the target node's CPU architecture over SSH (no `--arch` flag on `node add` itself). **arm64 is supported only for bare-metal/external Debian-family worker nodes** (not Hyper-V guests — Hyper-V on an x86 host cannot run an arm64 guest, so an arm64 control plane or an arm64 Hyper-V worker VM are out of scope). If the detected architecture is arm64 and the distribution is not Debian-family, `k2s node add` fails fast with an "unsupported architecture/distro combination" error before any provisioning starts.
+
+Only **Debian 13 arm64** is tested/validated (see the arm64 CI lanes in `k2s-project/k2s`'s `.github/workflows/`). Debian 12 arm64 runs the same code path but is untested.
+
+Building an **offline node package for arm64** (`k2s system package --node-package --arch arm64`) must run natively on a Linux arm64 host — there is no cross-build or VM path, since the existing Windows/Hyper-V build can only produce amd64 packages. See [Offline Installation of a Linux Worker Node](#offline-installation-of-a-linux-worker-node) below.
+
+---
+
 ## Online vs. Offline Node Add
 
 `k2s node add` supports two installation modes for Linux worker nodes on either physical hosts or virtual machines:
@@ -140,6 +153,9 @@ scp -o StrictHostKeyChecking=no "$env:USERPROFILE\.ssh\k2s\id_rsa.pub" <username
 
 !!! hint "scp"
     The target user's password may be requested for this initial copy. The password is not needed by K2s after the public key is installed.
+
+!!! note "Linux host (experimental)"
+    Copy `~/.ssh/k2s/id_ed25519.pub` (`/root/.ssh/k2s/id_ed25519.pub` when using `sudo`) instead, e.g. `scp -o StrictHostKeyChecking=no ~/.ssh/k2s/id_ed25519.pub <usernameOfNode>@<IpAddressOfNode>:/tmp/temp_k2s.pub`. K2s does not install the key on the node for you; it has to be authorized before `k2s node add`.
 
 On the Debian 13 target, append the key and verify it:
 
@@ -213,6 +229,17 @@ k2s system package --node-package --os debian13 --target-dir "C:\out" --name "de
 !!! note
     The same workflow applies whether the target Linux node is a physical host or an existing VM.
 
+### arm64 node packages
+
+An arm64 node package must be built **on a Linux arm64 host** with `sudo`/root privileges — not on the Windows K2s host, and not cross-compiled. There is no Hyper-V VM involved; the build host's own `apt` is used directly:
+
+```console
+sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
+```
+
+!!! note
+    Unlike the amd64 package built on Windows, the arm64 package built this way does **not** pre-stage container images as offline OCI archives — only the `.deb` packages are bundled offline. `k2s node add` with this package still needs network access to pull Kubernetes/flannel/GPU container images at join time. This is a known, deliberate gap for the initial arm64 support, not an oversight.
+
 ### GPU Support for Offline Nodes
 
 To add a GPU-capable worker node offline, create the node package with the `--include-gpu` flag:
@@ -270,7 +297,7 @@ Recommended handling:
 
 ```console
 k2s node remove --name <NodeName>
-k2s node add --ip-addr <NewIpAddress> --username <UserNameForRemoteConnection> --name <NodeName>
+k2s node add --ip-addr <NewIpAddress> --username <UserNameForRemoteConnection>
 ```
 
 If you use offline installation, include `--node-package <PathToNodePackageZip>` again during the re-add operation.

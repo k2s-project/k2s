@@ -1,5 +1,5 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //go:build linux
 
@@ -20,17 +20,10 @@ import (
 
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
-	kjson "github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/providers/bash"
 	"gopkg.in/yaml.v3"
 )
-
-func init() {
-	if os.Getenv("KUBECONFIG") == "" {
-		if _, err := os.Stat("/etc/kubernetes/admin.conf"); err == nil {
-			_ = os.Setenv("KUBECONFIG", "/etc/kubernetes/admin.conf")
-		}
-	}
-}
 
 type linuxAddonProvider struct {
 	installDir string
@@ -52,6 +45,19 @@ type addonManifest struct {
 	} `yaml:"metadata"`
 }
 
+const (
+	addRegistryScript    = "Add-Registry.sh"
+	removeRegistryScript = "Remove-Registry.sh"
+)
+
+func init() {
+	if os.Getenv("KUBECONFIG") == "" {
+		if _, err := os.Stat("/etc/kubernetes/admin.conf"); err == nil {
+			_ = os.Setenv("KUBECONFIG", "/etc/kubernetes/admin.conf")
+		}
+	}
+}
+
 func (p *linuxAddonProvider) loadManifest(addonName string) (*addonManifest, error) {
 	manifestPath := filepath.Join(p.installDir, "addons", addonName, "addon.manifest.yaml")
 	data, err := os.ReadFile(manifestPath)
@@ -67,6 +73,10 @@ func (p *linuxAddonProvider) loadManifest(addonName string) (*addonManifest, err
 
 func (p *linuxAddonProvider) Enable(cfg AddonEnableConfig) error {
 	slog.Info("[Addon] Enabling addon", "name", cfg.Name, "implementation", cfg.Implementation)
+
+	if err := rejectInfraNodeSelector(cfg.Params, nil); err != nil {
+		return err
+	}
 
 	if cfg.Name == "registry" {
 		return p.enableRegistry(cfg)
@@ -164,7 +174,7 @@ func (p *linuxAddonProvider) enableRegistry(cfg AddonEnableConfig) error {
 		if entry.Name() == "persistent-volume.yaml" {
 			data = []byte(strings.Replace(string(data), "__STORAGE_NODE__", storageNode, 1))
 		}
-		if err := os.WriteFile(dstPath, data, 0644); err != nil {
+		if err := os.WriteFile(dstPath, data, 0o644); err != nil {
 			return fmt.Errorf("writing rendered %s: %w", entry.Name(), err)
 		}
 	}
@@ -439,10 +449,9 @@ func (p *linuxAddonProvider) disableRegistry(cfg AddonDisableConfig) error {
 	removeHostEntry("k2s.registry.local")
 
 	// Remove registries via Remove-Registry.sh
-	rmRegScript := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "image", "registry", "Remove-Registry.sh")
-	if _, err := os.Stat(rmRegScript); err == nil {
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local").Run()
+	if _, err := os.Stat(p.registryScript(removeRegistryScript)); err == nil {
+		p.runRegistryScript(removeRegistryScript, "--registry", "k2s.registry.local:30500")
+		p.runRegistryScript(removeRegistryScript, "--registry", "k2s.registry.local")
 	}
 
 	// Update setup.json
@@ -509,13 +518,21 @@ func (p *linuxAddonProvider) disableIngress(cfg AddonDisableConfig) error {
 	return nil
 }
 
+func (p *linuxAddonProvider) registryScript(name string) string {
+	return filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "image", "registry", name)
+}
+
+// runRegistryScript is best-effort: the script logs to the K2s log file itself, so only the failure is noted here.
+func (p *linuxAddonProvider) runRegistryScript(name string, args ...string) {
+	if err := bash.NewScript(p.registryScript(name)).WithArgs(args...).Exec(); err != nil {
+		slog.Warn("[Addon] Registry script failed", "script", name, "error", err)
+	}
+}
+
 func (p *linuxAddonProvider) updateRegistryIngress() error {
 	if !p.isAddonEnabledInConfig("registry") && !isAddonDeployed("registry") {
 		return nil
 	}
-
-	addRegScript := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "image", "registry", "Add-Registry.sh")
-	rmRegScript := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "image", "registry", "Remove-Registry.sh")
 
 	if p.isAddonEnabledInConfig("ingress", "nginx") {
 		_ = exec.Command("kubectl", "delete", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-traefik"), "--ignore-not-found").Run()
@@ -524,8 +541,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-nginx")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local", "--plain-http").Run()
+		p.runRegistryScript(removeRegistryScript, "--registry", "k2s.registry.local:30500")
+		p.runRegistryScript(addRegistryScript, "--registry", "k2s.registry.local", "--plain-http")
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local:30500")
 		_ = p.addRegistryToConfig("k2s.registry.local")
@@ -536,8 +553,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-traefik")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local", "--plain-http").Run()
+		p.runRegistryScript(removeRegistryScript, "--registry", "k2s.registry.local:30500")
+		p.runRegistryScript(addRegistryScript, "--registry", "k2s.registry.local", "--plain-http")
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local:30500")
 		_ = p.addRegistryToConfig("k2s.registry.local")
@@ -554,8 +571,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-k", filepath.Join(p.installDir, "addons", "registry", "manifests", "ingress-nginx-gw")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local:30500").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local", "--plain-http").Run()
+		p.runRegistryScript(removeRegistryScript, "--registry", "k2s.registry.local:30500")
+		p.runRegistryScript(addRegistryScript, "--registry", "k2s.registry.local", "--plain-http")
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local:30500")
 		_ = p.addRegistryToConfig("k2s.registry.local")
@@ -566,8 +583,8 @@ func (p *linuxAddonProvider) updateRegistryIngress() error {
 
 		_ = exec.Command("kubectl", "apply", "-f", filepath.Join(p.installDir, "addons", "registry", "manifests", "registry", "service-nodeport.yaml")).Run()
 
-		_ = exec.Command(rmRegScript, "--registry", "k2s.registry.local").Run()
-		_ = exec.Command(addRegScript, "--registry", "k2s.registry.local:30500", "--plain-http").Run()
+		p.runRegistryScript(removeRegistryScript, "--registry", "k2s.registry.local")
+		p.runRegistryScript(addRegistryScript, "--registry", "k2s.registry.local:30500", "--plain-http")
 
 		_ = p.removeRegistryFromConfig("k2s.registry.local")
 		_ = p.addRegistryToConfig("k2s.registry.local:30500")
@@ -983,6 +1000,9 @@ func (p *linuxAddonProvider) Import(_ AddonImportConfig) error {
 
 func (p *linuxAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {
 	params := parsePsParams(cfg.Params)
+	if err := rejectInfraNodeSelector(params, cfg.ParameterValues); err != nil {
+		return err
+	}
 	switch cfg.CommandName {
 	case "enable":
 		return p.Enable(AddonEnableConfig{
@@ -1002,6 +1022,15 @@ func (p *linuxAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {
 		return NotSupportedError(fmt.Sprintf("addon %s", cfg.CommandName),
 			fmt.Sprintf("addon '%s' command on Linux hosts is not yet implemented", cfg.CommandName))
 	}
+}
+
+// rejectInfraNodeSelector fails before any side effect because selector placement is Windows-hosted only.
+func rejectInfraNodeSelector(params, parameterValues map[string]string) error {
+	if params["infranodeselector"] == "" && parameterValues["InfraNodeSelector"] == "" {
+		return nil
+	}
+	return NotSupportedError("infra-node-selector",
+		"infrastructure node selector placement is supported on Windows-hosted clusters only; remove --infra-node-selector")
 }
 
 func parsePsParams(params []string) map[string]string {
@@ -1048,7 +1077,7 @@ func (p *linuxAddonProvider) addAddonToConfig(addonName string, impl ...string) 
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := json.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1091,7 +1120,7 @@ func (p *linuxAddonProvider) addAddonToConfig(addonName string, impl ...string) 
 	}
 
 	(*cfgMap)["EnabledAddons"] = addons
-	return kjson.ToFile(configPath, cfgMap)
+	return json.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...string) error {
@@ -1100,7 +1129,7 @@ func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...str
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := json.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1134,7 +1163,7 @@ func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...str
 	}
 
 	(*cfgMap)["EnabledAddons"] = addons
-	return kjson.ToFile(configPath, cfgMap)
+	return json.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
@@ -1143,7 +1172,7 @@ func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := json.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1170,7 +1199,7 @@ func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return kjson.ToFile(configPath, cfgMap)
+	return json.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
@@ -1179,7 +1208,7 @@ func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := json.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1200,7 +1229,7 @@ func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return kjson.ToFile(configPath, cfgMap)
+	return json.ToFile(configPath, cfgMap)
 }
 
 func updateHostsContent(content, hostname, ip string) string {
@@ -1282,7 +1311,7 @@ func setHostEntry(hostname, ip string) {
 		return
 	}
 	newContent := updateHostsContent(string(content), hostname, ip)
-	if err := os.WriteFile("/etc/hosts", []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile("/etc/hosts", []byte(newContent), 0o644); err != nil {
 		cmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("printf '%%s\n' %q > /etc/hosts", newContent))
 		_ = cmd.Run()
 	}
@@ -1294,7 +1323,7 @@ func removeHostEntry(hostname string) {
 		return
 	}
 	newContent := removeHostsContent(string(content), hostname)
-	if err := os.WriteFile("/etc/hosts", []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile("/etc/hosts", []byte(newContent), 0o644); err != nil {
 		cmd := exec.Command("sudo", "sh", "-c", fmt.Sprintf("printf '%%s\n' %q > /etc/hosts", newContent))
 		_ = cmd.Run()
 	}
@@ -1314,7 +1343,7 @@ func (p *linuxAddonProvider) isAddonEnabledInConfig(addonName string, impl ...st
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := kjson.FromFile[map[string]any](configPath)
+	cfgMap, err := json.FromFile[map[string]any](configPath)
 	if err != nil {
 		return false
 	}

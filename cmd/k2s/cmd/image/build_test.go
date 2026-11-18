@@ -1,5 +1,5 @@
 //// SPDX-FileCopyrightText:  © 2024 The K2s Authors
-//// SPDX-License-Identifier:   MIT
+//// SPDX-License-Identifier: Apache-2.0
 
 package image
 
@@ -101,6 +101,20 @@ var _ = Describe("build", Ordered, func() {
 
 				Expect(err).ToNot(HaveOccurred())
 				Expect(actual.BuildArgs).To(Equal(expected))
+			})
+		})
+
+		When("build args contain '=' in values", func() {
+			It("preserves '=' in value", func() {
+				testCommand := createTestCobraCommand()
+				testCommand.Flags().Set(buildArgsFlagName, "CONN_STR=server=localhost;port=1234")
+
+				actual, err := extractBuildOptions(testCommand)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(actual.BuildArgs).To(Equal(map[string]string{
+					"CONN_STR": "server=localhost;port=1234",
+				}))
 			})
 		})
 

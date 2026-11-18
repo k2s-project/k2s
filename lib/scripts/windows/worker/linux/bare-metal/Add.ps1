@@ -7,15 +7,12 @@
 Param(
     [string] $UserName = $(throw 'Argument missing: UserName'),
     [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
-    [string] $NodeName,
     [string] $WindowsHostIpAddress = '',
     [string] $Proxy = '',
     [string] $NodePackagePath = '',
     [switch] $ShowLogs = $false
 )
-
 $durationStopwatch = [system.diagnostics.stopwatch]::StartNew()
-
 
 $linuxWorkerCommon = "$PSScriptRoot\..\common\LinuxWorkerNode.Common.ps1"
 . $linuxWorkerCommon
@@ -55,10 +52,11 @@ Write-Log "[NodeAdd] IP address '$IpAddress' validated - belongs to a physical n
 Assert-LinuxWorkerNodeSshConnectivity -UserName $UserName -IpAddress $IpAddress -LogPrefix '[NodeAdd]' -TargetDescription 'node'
 Assert-LinuxWorkerNodeAuthorizedKey -UserName $UserName -IpAddress $IpAddress -LogPrefix '[NodeAdd]'
 
-$provisioningContext = Get-LinuxWorkerNodeProvisioningContext -UserName $UserName -IpAddress $IpAddress -NodeName $NodeName -LogPrefix '[NodeAdd]' -TargetDescription 'computer'
+$provisioningContext = Get-LinuxWorkerNodeProvisioningContext -UserName $UserName -IpAddress $IpAddress -LogPrefix '[NodeAdd]' -TargetDescription 'computer'
 $NodeName = $provisioningContext.ActualHostname
 $k8sFormattedNodeName = $provisioningContext.KubernetesNodeName
 $installedDistributionOnRemoteComputer = $provisioningContext.InstalledDistribution
+$architecture = $provisioningContext.Architecture
 
 Write-Log "Adding node with hostname '$k8sFormattedNodeName'"
 
@@ -85,6 +83,7 @@ $workerNodeParams = @{
     Proxy = $Proxy
     AdditionalHooksDir = $AdditionalHooksDir
     installedDistributionOnRemoteComputer = $installedDistributionOnRemoteComputer
+    Architecture = $architecture
     NodePackagePath = $NodePackagePath
     NodeType = 'HOST'
 }

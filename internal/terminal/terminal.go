@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText:  © 2024 The K2s Authors
-// SPDX-License-Identifier:   MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package terminal
 
@@ -94,6 +94,10 @@ func (tp TerminalPrinter) PrintRedFg(text string) string {
 
 func (tp TerminalPrinter) PrintGreenFg(text string) string {
 	return pterm.FgGreen.Sprint(text)
+}
+
+func (tp TerminalPrinter) PrintYellowFg(text string) string {
+	return pterm.FgYellow.Sprint(text)
 }
 
 func (tp TerminalPrinter) PrintCyanFg(text string) string {

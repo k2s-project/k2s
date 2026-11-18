@@ -228,6 +228,13 @@ function Invoke-DownloadFile($destination, $source, $forceDownload,
         Write-Error "Download '$source' failed"
         exit 1
     }
+
+    # Windows' bundled curl.exe applies Mark-of-the-Web (Zone.Identifier) via the Attachment
+    # Execution Service, same as a browser download would. Harmless for non-executables; for
+    # anything later run directly (plink.exe/pscp.exe here - k2s's own SSH/SCP client for
+    # every control-plane VM operation), it's what triggers a blocking SmartScreen
+    # reputation-check prompt with no interactive user to dismiss it.
+    Unblock-File -Path $destination
 }
 
 <#

@@ -105,6 +105,10 @@ $manifest = [pscustomobject]@{
     ingress       = $ingress
     enableMetrics = $metricsEnabled
 }
+$backupSelector = Get-AddonEffectiveInfrastructureSelector -Name 'dashboard'
+if (-not [string]::IsNullOrWhiteSpace($backupSelector)) {
+    $manifest | Add-Member -NotePropertyName infraNodeSelector -NotePropertyValue $backupSelector
+}
 
 $manifestPath = Join-Path $BackupDir 'backup.json'
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8 -Force

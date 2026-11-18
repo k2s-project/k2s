@@ -17,6 +17,7 @@ Each node inside the cluster can connect to the registry.
 powershell <installation folder>\addons\registry\Enable.ps1
 #>
 Param(
+    [string] $InfraNodeSelector = '',
     [parameter(Mandatory = $false, HelpMessage = 'Show all logs in terminal')]
     [switch] $ShowLogs = $false,
     [parameter(Mandatory = $false, HelpMessage = 'Enable ingress addon')]
@@ -38,6 +39,11 @@ $registryModule = "$PSScriptRoot\registry.module.psm1"
 Import-Module $infraModule, $clusterModule, $nodeModule, $addonsModule, $registryModule
 
 Initialize-Logging -ShowLogs:$ShowLogs
+trap { if ($EncodeStructuredOutput) { Send-ToCli -MessageType $MessageType -Message @{Error = (New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $_.Exception.Message)}; return }; throw }
+$ownerOptions = Get-AddonPlacementOwnerOptions -Name 'registry' -BoundParameters $PSBoundParameters -Defaults @{StorageNode = $StorageNode; Ingress = $Ingress}
+$StorageNode = $ownerOptions.StorageNode
+$Ingress = $ownerOptions.Ingress
+$InfraNodeSelector = Get-AddonEffectiveInfrastructureSelector -Name 'registry' -Selector $InfraNodeSelector
 
 Write-Log 'Checking cluster status' -Console
 
@@ -72,6 +78,7 @@ if ((Test-IsAddonEnabled -Addon ([pscustomobject] @{Name = 'registry' })) -eq $t
     exit 1
 }
 
+if ($InfraNodeSelector -and $Ingress -ne 'none') { throw 'Enable ingress separately before enabling registry with infrastructure placement.' }
 if ($Ingress -ne 'none') {
     Enable-IngressAddon -Ingress:$Ingress
 }
@@ -79,6 +86,13 @@ if ($Ingress -ne 'none') {
 # Inject storage node hostname into PV manifest
 if ([string]::IsNullOrEmpty($StorageNode)) {
     $StorageNode = Get-ConfigControlPlaneNodeHostname
+}
+$placement = $null
+if ($InfraNodeSelector) {
+    Assert-AddonPlacementHost -Selector $InfraNodeSelector -NodeName $StorageNode -Reason 'registry local PV and authentication directory'
+    Assert-AddonStoragePlacement -Namespace 'registry' -VolumeNames 'registry-pv' -NodeName $StorageNode
+    $placement = New-AddonPlacementInput -AddonName 'registry' -Path "$PSScriptRoot\manifests\registry" -Selector $InfraNodeSelector -StorageNode $StorageNode -Kustomize
+    Set-AddonPlacementIntent -Addon ([pscustomobject]@{Name = 'registry'; InfraNodeSelector = $InfraNodeSelector; StorageNode = $StorageNode; Ingress = $Ingress})
 }
 
 # Create folder structure for certificates and authentication files
@@ -98,15 +112,21 @@ if ($StorageNode -eq $controlPlaneHostname) {
 
 $pvFile = "$PSScriptRoot\manifests\registry\persistent-volume.yaml"
 $pvOrig = [System.IO.File]::ReadAllText($pvFile)
-[System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode))
+if (-not $placement) { [System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode)) }
 try {
     # Apply registry pod with persistent volume
     Write-Log 'Creating local registry' -Console
-    (Invoke-Kubectl -Params 'apply', '-k', "$PSScriptRoot\manifests\registry").Output | Write-Log
+    $applyResult = if ($placement) { Invoke-Kubectl -Params 'apply', '-f', $placement.Path } else { Invoke-Kubectl -Params 'apply', '-k', "$PSScriptRoot\manifests\registry" }
+    $applyResult.Output | Write-Log
+    if (-not $applyResult.Success) {
+        if ($placement) { throw "Registry apply failed: $($applyResult.Output)" }
+        Write-Log "[Registry] WARNING apply failed, continuing: $($applyResult.Output)"
+    }
 }
 finally {
     # Restore PV manifest placeholder
-    [System.IO.File]::WriteAllText($pvFile, $pvOrig)
+    if (-not $placement) { [System.IO.File]::WriteAllText($pvFile, $pvOrig) }
+    if ($placement) { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue }
 }
 
 $kubectlCmd = (Invoke-Kubectl -Params 'rollout', 'status', 'statefulsets', '-n', 'registry', '--timeout=300s')
@@ -129,7 +149,14 @@ Add-CoreDNSHostEntry -Hostname 'k2s.registry.local'
 
 &"$PSScriptRoot\Update.ps1"
 
-Add-AddonToSetupJson -Addon ([pscustomobject] @{Name = 'registry' })
+$addonConfig = [pscustomobject]@{Name = 'registry'}
+if ($InfraNodeSelector) {
+    $addonConfig | Add-Member -NotePropertyName StorageNode -NotePropertyValue $StorageNode
+    $addonConfig | Add-Member -NotePropertyName Ingress -NotePropertyValue $Ingress
+    $addonConfig | Add-Member -NotePropertyName InfraNodeSelector -NotePropertyValue $InfraNodeSelector
+}
+Add-AddonToSetupJson -Addon $addonConfig
+if ($InfraNodeSelector) { Set-AddonPlacementIntent -Addon $addonConfig -Clear }
 
 Write-RegistryUsageForUser
 

@@ -106,6 +106,7 @@ See `.github/workflows/` for canonical pipelines:
 - `build-docs-next.yml` builds MkDocs site.
 - `ci-reuse-checks.yml` SPDX/license compliance.
 - `ci-unit-tests.yml` runs test suites (PowerShell / Go where applicable).
+- Naming: workflow files use a category prefix (`build-`, `ci-`, `release-`, `repo-` for repository housekeeping). Keep the `name:` field in sync (e.g. `CI - Commitlint`).
 When modifying build steps, mirror variables & caching patterns used in existing workflows.
 
 ## 8. Testing Strategy

@@ -275,11 +275,16 @@ function Add-LinuxWorkerNode {
         [string] $Proxy = '',
         [string] $AdditionalHooksDir = '',
         [string] $installedDistributionOnRemoteComputer = $(throw 'Argument missing: installedDistributionOnRemoteComputer'),
+        [string] $Architecture = 'amd64',
         [string] $NodePackagePath = '',
         [ValidateSet('HOST', 'VM-EXISTING')]
         [string] $NodeType = 'HOST',
         [string] $VmName = ''  # Hyper-V VM name (for VM-EXISTING nodes)
     )
+
+    if ($Architecture -notin @('amd64', 'arm64')) {
+        throw "[NodeAdd] Unsupported worker architecture '$Architecture'"
+    }
 
     $nodeParams = @{
         Name = $NodeName
@@ -326,7 +331,7 @@ function Add-LinuxWorkerNode {
             Write-Log "[GPU] GPU detection failed: $_ - GPU packages will be skipped" -Console
         }
 
-        Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -InstalledDistribution $installedDistributionOnRemoteComputer -NodePackagePath $NodePackagePath -SkipGpuPackages:(!$gpuDetected)
+        Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -NodePackagePath $NodePackagePath -SkipGpuPackages:(!$gpuDetected)
 
         Invoke-Debian13NodeHardening -Stage cleanup -InstalledDistribution $installedDistributionOnRemoteComputer -UserName $UserName -IpAddress $IpAddress
 
@@ -383,10 +388,10 @@ function Add-LinuxWorkerNode {
                 $offline = ![string]::IsNullOrWhiteSpace($NodePackagePath)
                 if ($offline) {
                     Write-Log "[GPU] Initializing GPU support (offline mode) for node $k8sFormattedNodeName" -Console
-                    Initialize-GpuWorkerNode -UserName $UserName -IpAddress $IpAddress -NodeName $k8sFormattedNodeName -Proxy $Proxy -Offline -OsName $installedDistributionOnRemoteComputer
+                    Initialize-GpuWorkerNode -UserName $UserName -IpAddress $IpAddress -NodeName $k8sFormattedNodeName -Proxy $Proxy -Offline -OsName $installedDistributionOnRemoteComputer -Architecture $Architecture
                 } else {
                     Write-Log "[GPU] Initializing GPU support (online mode) for node $k8sFormattedNodeName" -Console
-                    Initialize-GpuWorkerNode -UserName $UserName -IpAddress $IpAddress -NodeName $k8sFormattedNodeName -Proxy $Proxy
+                    Initialize-GpuWorkerNode -UserName $UserName -IpAddress $IpAddress -NodeName $k8sFormattedNodeName -Proxy $Proxy -Architecture $Architecture
                 }
             } catch {
                 Write-Log "[GPU] GPU initialization failed: $_ - node will be added without GPU support" -Console
@@ -580,9 +585,14 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
         [string] $Proxy = '',
         [string] $installedDistributionOnRemoteComputer = $(throw 'Argument missing: InstalledDistribution'),
+        [string] $Architecture = 'amd64',
         [string] $NodePackagePath = '',
         [switch] $SkipGpuPackages = $false
     )
+
+    if ($Architecture -notin @('amd64', 'arm64')) {
+        throw "[NodeAdd] Unsupported worker architecture '$Architecture'"
+    }
 
     # ---------------------------------------------------------------------------
     # Offline path: node package zip supplied → extract into 'linuxnode' folder
@@ -629,8 +639,8 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
         }
 
         $linuxNodePackagesPath = Join-Path $linuxNodeDir 'packages'
-        $linuxNodePackagesByOsPath = Join-Path $linuxNodePackagesPath $installedDistributionOnRemoteComputer
-        $linuxNodeImagesPath = Join-Path $linuxNodeDir 'images'
+        $linuxNodePackagesByOsPath = Join-Path (Join-Path $linuxNodePackagesPath $installedDistributionOnRemoteComputer) $Architecture
+        $linuxNodeImagesPath = Join-Path (Join-Path $linuxNodeDir 'images') $Architecture
 
         if (Test-Path $linuxNodePackagesByOsPath) {
             Write-Log "[NodeAdd] Overwriting existing packages content in '$linuxNodePackagesByOsPath'" -Console
@@ -702,8 +712,9 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
                     Write-Log "[NodeAdd] Copied images from node package into '$linuxNodeImagesPath'" -Console
                 }
             } else {
-                Write-Log "[NodeAdd] Copying images from node package into '$linuxNodeDir\images'" -Console
-                Copy-Item -Path $zipImagesPath -Destination $linuxNodeDir -Recurse -Force
+                Write-Log "[NodeAdd] Copying images from node package into '$linuxNodeImagesPath'" -Console
+                New-Item -Path $linuxNodeImagesPath -ItemType Directory -Force | Out-Null
+                Copy-Item -Path "$zipImagesPath\*" -Destination $linuxNodeImagesPath -Recurse -Force
             }
         } else {
             Write-Log "[NodeAdd] WARNING: 'images' folder not found in node package. Skipping image copy." -Console
@@ -718,12 +729,14 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
     # ---------------------------------------------------------------------------
     $controlPlaneUserName = Get-DefaultUserNameControlPlane
     $controlPlaneIpAddress = Get-ConfiguredIPControlPlane
+    $controlPlaneArchitecture = Get-RemoteArchitecture -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
     $installedDistributionOnControlPlane = Get-InstalledDistribution -UserName $controlPlaneUserName -IpAddress $controlPlaneIpAddress
     Write-Log "Installed distribution in the control plane: $installedDistributionOnControlPlane"
     Write-Log "Installed distribution in the machine with IP '$IpAddress': $installedDistributionOnRemoteComputer"
    
     $baseDirectoryOfKubenodeDebPackagesOnWindowsHost = Get-BaseDirectoryOfKubenodeDebPackagesOnWindowsHost
-    $windowsHostDebPackagesSourcePath = "$baseDirectoryOfKubenodeDebPackagesOnWindowsHost\$installedDistributionOnRemoteComputer"
+    $distributionPackagesPath = Join-Path $baseDirectoryOfKubenodeDebPackagesOnWindowsHost $installedDistributionOnRemoteComputer
+    $windowsHostDebPackagesSourcePath = Join-Path $distributionPackagesPath $Architecture
 
     $linuxNodeArtifactsPackagePath = Get-PathOfLinuxNodeArtifactsPackageOnWindowsHost
     $linuxNodeArtifactsPath = Get-DirectoryOfLinuxNodeArtifactsOnWindowsHost
@@ -741,6 +754,10 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
         Expand-Archive -LiteralPath $linuxNodeArtifactsPackagePath -DestinationPath $linuxNodeArtifactsPath
     } 
 
+    if (!(Test-Path $windowsHostDebPackagesSourcePath) -and $Architecture -eq $controlPlaneArchitecture) {
+        $windowsHostDebPackagesSourcePath = $distributionPackagesPath
+    }
+
     $distributionDebPackagesSourcePathExists = $(Test-Path -Path $windowsHostDebPackagesSourcePath)
     Write-Log "Folder with deb packages '$windowsHostDebPackagesSourcePath' exists?: $distributionDebPackagesSourcePathExists"
     if ($distributionDebPackagesSourcePathExists) {
@@ -748,14 +765,14 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
     } 
     
     $kubernetesDebPackagesTargetPath = Get-KubernetesDebPackagesPath -UserName $UserName
-    Add-KubernetesArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $kubernetesDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
+    Add-KubernetesArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $kubernetesDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
     Install-KubernetesArtifacts -UserName $UserName -IpAddress $IpAddress -Proxy $Proxy -SourcePath $kubernetesDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
 
     $buildahDebPackagesTargetPath = Get-BuildahDebPackagesPath -UserName $UserName
-    Add-BuildahArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
+    Add-BuildahArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
     Install-BuildahDebPackages -UserName $UserName -IpAddress $IpAddress -SourcePath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
 
-    Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName $UserName -IpAddress $IpAddress
+    Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
 }
 
 function Test-SupportedWorkerOS {

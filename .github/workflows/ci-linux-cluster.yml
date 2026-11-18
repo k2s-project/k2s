@@ -240,16 +240,13 @@ jobs:
             printf 'export K2S_TEST_PROXY=%q\n' "${K2S_CONFIG_HTTP_PROXY:-}"
             cat <<'EOF'
           set -euo pipefail
+          export PATH="/usr/local/go/bin:$PATH"
           cd ~/k2s
-          # Same kubeconfig choice as the CI service: kubeadm's super-admin.conf, copied to a
-          # user-readable file. test/execute_all_tests.sh uses KUBECONFIG when it is set.
-          sudo cp /etc/kubernetes/super-admin.conf ~/k2s-super-admin.conf
-          sudo chown "$(id -u):$(id -g)" ~/k2s-super-admin.conf
-          chmod 600 ~/k2s-super-admin.conf
-          export KUBECONFIG="$HOME/k2s-super-admin.conf"
+          # The core suite reads /var/lib/k2s/setup.json, which is root-only, so the tests run as
+          # root. The CI service does the same, with kubeadm's super-admin.conf as KUBECONFIG.
           proxy_args=()
           if [ -n "$K2S_TEST_PROXY" ]; then proxy_args=(--proxy "$K2S_TEST_PROXY"); fi
-          bash ./test/execute_all_tests.sh -v --tags sanity --test-result-path "$HOME/k2s-test-results" "${proxy_args[@]}"
+          sudo env "PATH=$PATH"             "GOMODCACHE=$(go env GOMODCACHE)" "GOCACHE=$(go env GOCACHE)"             KUBECONFIG=/etc/kubernetes/super-admin.conf             bash ./test/execute_all_tests.sh -v --tags sanity --test-result-path "$HOME/k2s-test-results" "${proxy_args[@]}"
           EOF
           } | $VM exec
 
@@ -262,13 +259,12 @@ jobs:
           $VM exec <<'EOF'
           set -uo pipefail
           mkdir -p ~/k2s-results-export
-          if [ -d ~/k2s-test-results ]; then cp -r ~/k2s-test-results/. ~/k2s-results-export/; fi
-          if [ -f ~/k2s-super-admin.conf ]; then export KUBECONFIG=~/k2s-super-admin.conf; fi
+          if [ -d ~/k2s-test-results ]; then sudo cp -r ~/k2s-test-results/. ~/k2s-results-export/ && sudo chown -R "$(id -u):$(id -g)" ~/k2s-results-export; fi
           sudo cat /var/log/k2s.log > ~/k2s-results-export/k2s.log 2>/dev/null || echo 'no /var/log/k2s.log found'
           cd ~/k2s 2>/dev/null && sudo ./k2s status --output wide > ~/k2s-results-export/k2s-status.txt 2>&1
-          kubectl get nodes -o wide > ~/k2s-results-export/cluster-diagnostics.txt 2>&1
-          kubectl get pods -A -o wide >> ~/k2s-results-export/cluster-diagnostics.txt 2>&1
-          kubectl get events -A --sort-by=.lastTimestamp >> ~/k2s-results-export/cluster-diagnostics.txt 2>&1
+          sudo env KUBECONFIG=/etc/kubernetes/super-admin.conf kubectl get nodes -o wide > ~/k2s-results-export/cluster-diagnostics.txt 2>&1
+          sudo env KUBECONFIG=/etc/kubernetes/super-admin.conf kubectl get pods -A -o wide >> ~/k2s-results-export/cluster-diagnostics.txt 2>&1
+          sudo env KUBECONFIG=/etc/kubernetes/super-admin.conf kubectl get events -A --sort-by=.lastTimestamp >> ~/k2s-results-export/cluster-diagnostics.txt 2>&1
           exit 0
           EOF
           mkdir -p "$RUNNER_TEMP"

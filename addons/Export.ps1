@@ -190,14 +190,18 @@ try {
              $configStaging = Join-Path $artifactPath 'config-staging'
              $manifestsStaging = Join-Path $artifactPath 'manifests-staging'
              $scriptsStaging = Join-Path $artifactPath 'scripts-staging'
+             $sharedScriptsStaging = Join-Path $artifactPath 'shared-scripts-staging'
              $packagesStaging = Join-Path $artifactPath 'packages-staging'
              $imagesStaging = Join-Path $artifactPath 'images-staging'
              
              New-Item -ItemType Directory -Path $configStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $manifestsStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $scriptsStaging -Force | Out-Null
+             New-Item -ItemType Directory -Path $sharedScriptsStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $packagesStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $imagesStaging -Force | Out-Null
+
+             Copy-AddonSharedScripts -AddonPath $manifest.dir.path -ImplementationPath $dirPath -DestinationPath $sharedScriptsStaging
 
              $sourceManifestsDir = Join-Path $dirPath 'manifests'
              if (Test-Path $sourceManifestsDir) {
@@ -775,6 +779,21 @@ try {
                 }
             }
             
+            if (@(Get-ChildItem -LiteralPath $sharedScriptsStaging -File -ErrorAction Stop).Count -gt 0) {
+                $sharedScriptsTarPath = Join-Path $artifactPath 'shared-scripts.tar.gz'
+                if (-not (New-TarGzArchive -SourcePath $sharedScriptsStaging -DestinationPath $sharedScriptsTarPath -ArchiveContents)) {
+                    throw "Failed to archive shared scripts for addon '$addonName'."
+                }
+                $blobResult = Add-ContentToBlobs -BlobsDir $blobsDir -SourcePath $sharedScriptsTarPath -Move
+                $ociLayerDescriptors += @{
+                    mediaType = $ociMediaTypes.SharedScripts
+                    size = $blobResult.Size
+                    digest = $blobResult.Digest
+                    annotations = @{ 'org.opencontainers.image.title' = 'shared-scripts.tar.gz' }
+                }
+                Write-Log "[Export] Created shared scripts layer: $($blobResult.Digest)"
+            }
+
             # Layer 4: Linux Images - store in blobs
             $linuxImagesLayer = Join-Path $artifactPath 'images-linux.tar'
             if (Test-Path $linuxImagesLayer) {
@@ -900,6 +919,7 @@ try {
             Remove-Item -Path $configStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $manifestsStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $scriptsStaging -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $sharedScriptsStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $packagesStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $imagesStaging -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -991,6 +1011,7 @@ Write-Log "  Layer 0: config.tar.gz       (application/vnd.k2s.addon.configfiles
 Write-Log "  Layer 1: manifests.tar.gz    (application/vnd.k2s.addon.manifests.v1.tar+gzip)" -Console
 Write-Log "  Layer 2: charts.tar.gz       (application/vnd.cncf.helm.chart.content.v1.tar+gzip) [if helm-based]" -Console
 Write-Log "  Layer 3: scripts.tar.gz      (application/vnd.k2s.addon.scripts.v1.tar+gzip)" -Console
+Write-Log "  Shared: shared-scripts.tar.gz (addon-root scripts, when present)" -Console
 if ($OmitImages) {
     Write-Log "  Layer 4: images-linux.tar    (application/vnd.oci.image.layer.v1.tar) [SKIPPED]" -Console
     Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar) [SKIPPED]" -Console

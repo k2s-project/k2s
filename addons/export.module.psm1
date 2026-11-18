@@ -19,3 +19,29 @@ function Get-NerdctlExe {
 function Get-CrictlExe {
     return $crictlExe    
 }
+
+function Copy-AddonSharedScripts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $AddonPath,
+        [Parameter(Mandatory = $true)]
+        [string] $ImplementationPath,
+        [Parameter(Mandatory = $true)]
+        [string] $DestinationPath
+    )
+
+    if ($AddonPath -eq $ImplementationPath -or (Split-Path -Path $AddonPath -Leaf) -ne 'storage') {
+        return
+    }
+
+    $modulePath = Join-Path $AddonPath 'storage-validation.module.psm1'
+    if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
+        throw "Cannot export storage addon: shared module '$modulePath' is missing."
+    }
+
+    Copy-Item -LiteralPath $modulePath -Destination $DestinationPath -Force -ErrorAction Stop
+    $licensePath = "$modulePath.license"
+    if (Test-Path -LiteralPath $licensePath -PathType Leaf) {
+        Copy-Item -LiteralPath $licensePath -Destination $DestinationPath -Force -ErrorAction Stop
+    }
+}

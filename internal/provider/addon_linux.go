@@ -1095,6 +1095,7 @@ const (
 	manifestsLayer
 	chartsLayer
 	scriptsLayer
+	sharedScriptsLayer
 	windowsImagesLayer
 	linuxImagesLayer
 	packagesLayer
@@ -1112,6 +1113,7 @@ var (
 		{"configfiles", configLayer},
 		{"manifests", manifestsLayer},
 		{"helm.chart", chartsLayer},
+		{"shared-scripts", sharedScriptsLayer},
 		{"scripts", scriptsLayer},
 		{"images-windows", windowsImagesLayer},
 		{"image.layer", linuxImagesLayer},
@@ -1351,6 +1353,8 @@ func (p *linuxAddonProvider) stageExportedAddon(addon exportedAddon, blobsDir, w
 			err = extractTar(blobPath, filepath.Join(implementationPath, "manifests", "chart"), true)
 		case scriptsLayer:
 			err = extractTar(blobPath, implementationPath, true)
+		case sharedScriptsLayer:
+			err = extractTar(blobPath, destination, true)
 		case linuxImagesLayer:
 			imagesLayerPath = blobPath
 		}

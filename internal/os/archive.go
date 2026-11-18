@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: © 2026 Siemens Healthineers AG
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Apache-2.0
 
 package os
 

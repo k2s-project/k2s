@@ -40,8 +40,10 @@ function Copy-AddonSharedScripts {
     }
 
     Copy-Item -LiteralPath $modulePath -Destination $DestinationPath -Force -ErrorAction Stop
-    $licensePath = "$modulePath.license"
-    if (Test-Path -LiteralPath $licensePath -PathType Leaf) {
-        Copy-Item -LiteralPath $licensePath -Destination $DestinationPath -Force -ErrorAction Stop
+    foreach ($optionalFile in @('storage-validation.module.psm1.license', 'README.md', 'README.md.license')) {
+        $optionalPath = Join-Path $AddonPath $optionalFile
+        if (Test-Path -LiteralPath $optionalPath -PathType Leaf) {
+            Copy-Item -LiteralPath $optionalPath -Destination $DestinationPath -Force -ErrorAction Stop
+        }
     }
 }

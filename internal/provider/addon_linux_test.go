@@ -288,9 +288,12 @@ func TestImport_StagesSharedScriptsAtAddonRoot(t *testing.T) {
 		t.Run(implementation, func(t *testing.T) {
 			fixture := newImportFixture(t)
 			artifact := writeArtifact(t, testAddon{name: "storage", implementation: implementation, layers: []testLayer{
-				{mediaType: scriptsMediaType, content: tarGzOf(t, tarEntry{"./Enable.ps1", "enable"})},
+				{mediaType: scriptsMediaType, content: tarGzOf(t,
+					tarEntry{"./Enable.ps1", "enable"}, tarEntry{"./README.md", "implementation documentation"})},
 				{mediaType: "application/vnd.k2s.addon.shared-scripts.v1.tar+gzip", content: tarGzOf(t,
-					tarEntry{"./storage-validation.module.psm1", "shared validation"})},
+					tarEntry{"./storage-validation.module.psm1", "shared validation"},
+					tarEntry{"./README.md", "shared storage documentation"},
+					tarEntry{"./README.md.license", "readme license"})},
 			}})
 
 			if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact}); err != nil {
@@ -299,7 +302,10 @@ func TestImport_StagesSharedScriptsAtAddonRoot(t *testing.T) {
 
 			addonDir := filepath.Join(fixture.addonsDir(), "storage")
 			assertFile(t, "shared validation", addonDir, "storage-validation.module.psm1")
+			assertFile(t, "shared storage documentation", addonDir, "README.md")
+			assertFile(t, "readme license", addonDir, "README.md.license")
 			assertFile(t, "enable", addonDir, implementation, "Enable.ps1")
+			assertFile(t, "implementation documentation", addonDir, implementation, "README.md")
 			if _, err := os.Stat(filepath.Join(addonDir, implementation, "storage-validation.module.psm1")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("shared module must not be placed in the implementation directory: %v", err)
 			}

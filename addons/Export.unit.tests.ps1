@@ -56,6 +56,8 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
         New-Item -ItemType Directory -Path $addonPath, $sharedScriptsStaging -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $addonPath 'storage-validation.module.psm1') -Value 'shared validation'
         Set-Content -LiteralPath (Join-Path $addonPath 'storage-validation.module.psm1.license') -Value 'license'
+        Set-Content -LiteralPath (Join-Path $addonPath 'README.md') -Value 'shared storage documentation'
+        Set-Content -LiteralPath (Join-Path $addonPath 'README.md.license') -Value 'readme license'
         Mock Add-ContentToBlobs {
             @{ Digest = 'sha256:test'; Size = (Get-Item -LiteralPath $SourcePath).Length }
         }
@@ -88,11 +90,15 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
             $destinationPath = Join-Path $caseRoot "$consumer\storage"
             $implementationPath = Join-Path $destinationPath $Implementation
             New-Item -ItemType Directory -Path $implementationPath -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $implementationPath 'README.md') -Value 'implementation documentation'
             if ($consumer -eq 'import') { . $script:importLayer }
             else { . $script:syncLayer }
 
             Get-Content -LiteralPath (Join-Path $destinationPath 'storage-validation.module.psm1') | Should -Be 'shared validation'
             Get-Content -LiteralPath (Join-Path $destinationPath 'storage-validation.module.psm1.license') | Should -Be 'license'
+            Get-Content -LiteralPath (Join-Path $destinationPath 'README.md') | Should -Be 'shared storage documentation'
+            Get-Content -LiteralPath (Join-Path $destinationPath 'README.md.license') | Should -Be 'readme license'
+            Get-Content -LiteralPath (Join-Path $implementationPath 'README.md') | Should -Be 'implementation documentation'
             Test-Path (Join-Path $implementationPath 'storage-validation.module.psm1') | Should -BeFalse
         }
     }
@@ -117,6 +123,7 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
         $otherAddon = Join-Path $caseRoot $Addon
         New-Item -ItemType Directory -Path $otherAddon -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $otherAddon 'common.module.psm1') -Value 'unrelated helper'
+        Set-Content -LiteralPath (Join-Path $otherAddon 'README.md') -Value 'unrelated documentation'
         Copy-AddonSharedScripts -AddonPath $otherAddon -ImplementationPath (Join-Path $otherAddon $Implementation) -DestinationPath $sharedScriptsStaging
 
         @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 0
@@ -130,7 +137,7 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
         Set-Content -LiteralPath (Join-Path $addonPath 'unrelated.ps1') -Value 'unrelated script'
         Copy-AddonSharedScripts -AddonPath $addonPath -ImplementationPath (Join-Path $addonPath 'smb') -DestinationPath $sharedScriptsStaging
 
-        @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 2
+        @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 4
         Test-Path (Join-Path $sharedScriptsStaging 'unrelated.ps1') | Should -BeFalse
     }
 

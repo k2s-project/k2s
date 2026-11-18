@@ -653,12 +653,8 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 			if err != nil {
 				return err
 			}
-			if filepath.IsAbs(linkTarget) || filepath.VolumeName(linkTarget) != "" {
-				return fmt.Errorf("PV symlink '%s' has an absolute target that cannot be restored safely", relPath)
-			}
-			resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(relPath), linkTarget))
-			if relative, err := filepath.Rel(".", resolvedTarget); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("PV symlink '%s' escapes the backed-up volume", relPath)
+			if strings.Contains(linkTarget, "\\") || !filepath.IsLocal(linkTarget) {
+				return fmt.Errorf("PV symlink '%s' has a target that cannot be restored safely", relPath)
 			}
 			header.Linkname = linkTarget
 			return tw.WriteHeader(header)

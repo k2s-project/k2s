@@ -240,7 +240,9 @@ jobs:
             printf 'export K2S_TEST_PROXY=%q\n' "${K2S_CONFIG_HTTP_PROXY:-}"
             cat <<'EOF'
           set -euo pipefail
-          export PATH="/usr/local/go/bin:$PATH"
+          # Same PATH as the CI service (ci/service/ci/platform_linux.go): the SSH login PATH has no
+          # /usr/sbin, so iptables and other sbin tools used by k2s system reset were not found.
+          export PATH="/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
           cd ~/k2s
           # The core suite reads /var/lib/k2s/setup.json, which is root-only, so the tests run as
           # root. The CI service does the same, with kubeadm's super-admin.conf as KUBECONFIG.

@@ -349,6 +349,12 @@ func TestRestore_RejectsUnsupportedInputsBeforeEnablingTheAddon(t *testing.T) {
 	missingFileBackup := t.TempDir()
 	writeTestFile(t, filepath.Join(missingFileBackup, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"registry","files":["registry-repository.tar.gz"]}`)
 
+	directoryEntryBackup := t.TempDir()
+	writeTestFile(t, filepath.Join(directoryEntryBackup, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"ingress","files":["manifests"]}`)
+	if err := os.Mkdir(filepath.Join(directoryEntryBackup, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	for name, tc := range map[string]struct {
 		cfg     AddonRestoreConfig
 		want    string
@@ -371,6 +377,10 @@ func TestRestore_RejectsUnsupportedInputsBeforeEnablingTheAddon(t *testing.T) {
 		"missing backup file": {
 			cfg:  AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: missingFileBackup},
 			want: "backup file 'registry-repository.tar.gz' not found",
+		},
+		"directory entry": {
+			cfg:  AddonRestoreConfig{AddonName: "ingress", Implementation: "traefik", BackupDir: directoryEntryBackup},
+			want: "is not a regular file",
 		},
 		"missing backup.json": {
 			cfg:  AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: t.TempDir()},

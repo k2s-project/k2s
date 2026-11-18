@@ -214,7 +214,7 @@ func configImplementation(addonName, implementation string) string {
 }
 
 // readAddonBackupFiles returns the file list of backup.json and makes sure
-// every entry is a plain file name that exists in the backup directory.
+// every entry is a plain file name of a regular file in the backup directory.
 func readAddonBackupFiles(backupDir string) ([]string, error) {
 	data, err := os.ReadFile(filepath.Join(backupDir, addonBackupManifestFileName))
 	if err != nil {
@@ -230,8 +230,12 @@ func readAddonBackupFiles(backupDir string) ([]string, error) {
 		if file == "" || file != filepath.Base(file) || file == "." || file == ".." {
 			return nil, fmt.Errorf("invalid %s: file entry '%s' is not a plain file name", addonBackupManifestFileName, file)
 		}
-		if _, err := os.Stat(filepath.Join(backupDir, file)); err != nil {
+		info, err := os.Lstat(filepath.Join(backupDir, file))
+		if err != nil {
 			return nil, fmt.Errorf("backup file '%s' not found: %w", file, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("invalid %s: file entry '%s' is not a regular file", addonBackupManifestFileName, file)
 		}
 	}
 	return manifest.Files, nil

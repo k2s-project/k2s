@@ -14,7 +14,6 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,13 +33,8 @@ import (
 	"github.com/k2s-project/k2s/internal/core/clusterconfig"
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
-<<<<<<< HEAD
-	kjson "github.com/k2s-project/k2s/internal/json"
-	sshprovider "github.com/k2s-project/k2s/internal/providers/ssh"
-=======
 	"github.com/k2s-project/k2s/internal/json"
 	"github.com/k2s-project/k2s/internal/providers/bash"
->>>>>>> origin/main
 	"gopkg.in/yaml.v3"
 )
 

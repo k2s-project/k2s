@@ -12,6 +12,9 @@
 # GitHub-hosted runners have no Debian host image. The job therefore boots a Debian 13 amd64 KVM
 # guest on the GitHub-hosted runner (.github/scripts/linux-cluster-vm.sh) and runs K2s inside it.
 #
+# GitHub-hosted runners do not always expose /dev/kvm. The first step checks for it and, if it is
+# missing, re-dispatches this workflow (new run, new runner) up to KVM_MAX_ATTEMPTS times.
+#
 # Addon tests are not available on this variant yet. The addon input is kept for parity with the
 # Windows workflow; any value other than "none" fails the run before anything is provisioned.
 
@@ -43,6 +46,11 @@ on:
           - storage/smb
           - viewer
           - windows-exporter
+      kvm_attempt:
+        description: 'Internal: attempt number when this run was re-dispatched to find a runner with KVM. Leave at 1.'
+        type: number
+        required: false
+        default: 1
 
 permissions:
   contents: read
@@ -56,6 +64,9 @@ jobs:
     name: Install and test Linux-host cluster (Debian 13 amd64 guest)
     runs-on: ubuntu-24.04
     timeout-minutes: 300
+    permissions:
+      contents: read
+      actions: write # re-dispatch this workflow when the runner has no usable /dev/kvm
     defaults:
       run:
         shell: bash
@@ -63,6 +74,7 @@ jobs:
       K2S_CONFIG_HTTP_PROXY: ${{ vars.K2S_HTTP_PROXY }}
       K2S_CONFIG_NO_PROXY: ${{ vars.K2S_NO_PROXY }}
       K2S_ADDON_SELECTION: ${{ inputs.addon }}
+      KVM_MAX_ATTEMPTS: 5
       # Invoked through bash: the script is committed without the executable bit.
       VM: bash .github/scripts/linux-cluster-vm.sh
     steps:
@@ -74,24 +86,51 @@ jobs:
             exit 1
           fi
 
+      - name: Check KVM (re-dispatch on a new runner if missing)
+        id: kvm
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
+        run: |
+          set -uo pipefail
+          echo "KVM attempt ${KVM_ATTEMPT} of ${KVM_MAX_ATTEMPTS}"
+          uname -m | grep -qx x86_64 || { echo "::error::Runner is not amd64: $(uname -m)"; exit 1; }
+          echo "cpu vmx/svm flags: $(grep -cE 'vmx|svm' /proc/cpuinfo)"
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            sudo chmod 666 /dev/kvm
+            ls -la /dev/kvm
+          else
+            echo "/dev/kvm does not exist on this runner"
+          fi
+          if test -r /dev/kvm && test -w /dev/kvm; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "KVM is usable on this runner."
+            exit 0
+          fi
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          if [ "$KVM_ATTEMPT" -ge "$KVM_MAX_ATTEMPTS" ]; then
+            echo "::error::No usable /dev/kvm after ${KVM_ATTEMPT} attempts; giving up."
+            exit 1
+          fi
+          next=$((KVM_ATTEMPT + 1))
+          echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
+          gh workflow run ci-linux-cluster.yml --ref "$GITHUB_REF_NAME" \
+            -f addon="$K2S_ADDON_SELECTION" -f kvm_attempt="$next"
+          echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         uses: actions/checkout@v4
         timeout-minutes: 10
         with:
           persist-credentials: false
 
-      - name: Check runner and enable KVM
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          uname -m | grep -qx x86_64 || { echo "::error::Runner is not amd64: $(uname -m)"; exit 1; }
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          test -r /dev/kvm && test -w /dev/kvm || { echo "::error::/dev/kvm is not usable on this runner"; exit 1; }
-
       - name: Free runner disk space for the guest image
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -101,6 +140,7 @@ jobs:
           df -h /
 
       - name: Set up Go
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         uses: actions/setup-go@v5
         timeout-minutes: 10
         with:
@@ -108,6 +148,7 @@ jobs:
           cache: false
 
       - name: Build K2s executables (linux/amd64)
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 30
         run: |
           set -euo pipefail
@@ -122,6 +163,7 @@ jobs:
 
       - name: Start Debian 13 guest
         id: vm
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 30
         run: |
           set -euo pipefail
@@ -130,6 +172,7 @@ jobs:
           $VM wait-ssh
 
       - name: Prepare guest (Go toolchain and source tree)
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 30
         run: |
           set -euo pipefail
@@ -155,6 +198,7 @@ jobs:
 
       - name: Install K2s (Linux host, Linux-only, no Windows worker)
         id: install
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 120
         run: |
           set -euo pipefail
@@ -167,6 +211,7 @@ jobs:
           } | $VM exec
 
       - name: Verify node and system pods
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 25
         run: |
           set -euo pipefail
@@ -187,6 +232,7 @@ jobs:
 
       - name: Run sanity acceptance tests (CI service parity)
         id: tests
+        if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 100
         run: |
           set -euo pipefail
@@ -208,7 +254,7 @@ jobs:
           } | $VM exec
 
       - name: Collect guest logs and results
-        if: ${{ always() && steps.install.outcome != 'skipped' }}
+        if: ${{ always() && steps.kvm.outputs.available == 'true' && steps.install.outcome != 'skipped' }}
         continue-on-error: true
         timeout-minutes: 10
         run: |
@@ -229,7 +275,7 @@ jobs:
           $VM pull k2s-results-export "$RUNNER_TEMP"
 
       - name: Uninstall K2s
-        if: ${{ always() && steps.install.outcome != 'skipped' }}
+        if: ${{ always() && steps.kvm.outputs.available == 'true' && steps.install.outcome != 'skipped' }}
         timeout-minutes: 20
         run: |
           set -euo pipefail
@@ -240,7 +286,7 @@ jobs:
           EOF
 
       - name: Upload test results
-        if: ${{ always() && steps.install.outcome != 'skipped' }}
+        if: ${{ always() && steps.kvm.outputs.available == 'true' && steps.install.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
@@ -250,6 +296,6 @@ jobs:
           retention-days: 7
 
       - name: Stop guest
-        if: ${{ always() && steps.vm.outcome != 'skipped' }}
+        if: ${{ always() && steps.kvm.outputs.available == 'true' && steps.vm.outcome != 'skipped' }}
         timeout-minutes: 5
         run: $VM stop

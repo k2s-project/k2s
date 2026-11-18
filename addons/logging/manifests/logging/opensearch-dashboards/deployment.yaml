@@ -39,7 +39,7 @@ spec:
                 - ALL
             runAsNonRoot: true
             runAsUser: 1000
-          image: "docker.io/opensearchproject/opensearch-dashboards:3.9.0"
+          image: "docker.io/opensearchproject/opensearch-dashboards:3.10.0"
           imagePullPolicy: "IfNotPresent"
           readinessProbe:
             failureThreshold: 10

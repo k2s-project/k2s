@@ -76,6 +76,7 @@ packages:
   - e2fsprogs
   - curl
   - ca-certificates
+  - git
 EOF
   printf 'instance-id: k2s-linux-ci\nlocal-hostname: k2s-linux-ci\n' > "$VM_DIR/meta-data"
   cloud-localds "$VM_DIR/seed.img" "$VM_DIR/user-data" "$VM_DIR/meta-data"

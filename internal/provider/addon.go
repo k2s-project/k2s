@@ -100,11 +100,16 @@ type AddonExportConfig struct {
 	ShowOutput bool
 }
 
-// AddonImportConfig holds parameters for importing addon state.
+// AddonImportConfig holds parameters for importing addons from an exported OCI artifact.
 type AddonImportConfig struct {
-	InputDir   string
-	Name       string // Empty means all
-	ShowOutput bool
+	ArtifactFile string   // Absolute path of the '.oci.tar' artifact
+	Names        []string // Addons to import; empty means all addons of the artifact
+	Nodes        string   // Comma-separated target nodes for the images; empty means the default targets
+	Omit         []string // Omit options whose images are not imported
+	ShowOutput   bool
+
+	// SshPrivateKeyPath is the key used to reach additional Linux worker nodes (Linux host only).
+	SshPrivateKeyPath string
 }
 
 // AddonRunCommandConfig holds parameters for executing an arbitrary addon

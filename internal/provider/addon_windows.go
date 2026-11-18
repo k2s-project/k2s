@@ -180,22 +180,29 @@ func (p *windowsAddonProvider) Export(cfg AddonExportConfig) error {
 func (p *windowsAddonProvider) Import(cfg AddonImportConfig) error {
 	scriptPath := utils.FormatScriptFilePath(filepath.Join(p.installDir, "addons", "Import.ps1"))
 
-	var params string
-	if cfg.InputDir != "" {
-		params += fmt.Sprintf(" -ImportDir '%s'", cfg.InputDir)
-	}
-	if cfg.Name != "" {
-		params += " -Name " + cfg.Name
-	}
-	if cfg.ShowOutput {
-		params += " -ShowLogs"
-	}
-
-	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](scriptPath+params, "CmdResult", p.stdWriter)
+	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](scriptPath, "CmdResult", p.stdWriter, buildAddonImportParams(cfg)...)
 	if err != nil {
 		return err
 	}
 	return result.checkFailure()
+}
+
+func buildAddonImportParams(cfg AddonImportConfig) []string {
+	var params []string
+	if len(cfg.Names) > 0 {
+		params = append(params, " -Names "+utils.EscapeArrayWithSingleQuotes(cfg.Names))
+	}
+	params = append(params, " -ArtifactFile "+utils.EscapeWithSingleQuotes(cfg.ArtifactFile))
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+	if cfg.Nodes != "" {
+		params = append(params, " -Nodes "+utils.EscapeWithSingleQuotes(cfg.Nodes))
+	}
+	if len(cfg.Omit) > 0 {
+		params = append(params, " -Omit "+utils.EscapeArrayWithSingleQuotes(cfg.Omit))
+	}
+	return params
 }
 
 func (p *windowsAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {

@@ -433,10 +433,18 @@ k2s addons import <addon> [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--file` | `-f` | Path to the OCI artifact tar file |
-| `--node` | | Target node name for addon image import (e.g. `worker-1`); defaults to control-plane and local Windows host when omitted |
+| `--node` | | Target node name for addon image import (e.g. `worker-1`); defaults to the nodes described below |
 | `--nodes` | | Target node names (comma-separated) for addon image import (e.g. `worker-1,worker-2`) |
 
-By default the addon images are imported onto the control-plane node and the local Windows host. Use `--node` to import them onto a specific worker node, control-plane, or local Windows host, or `--nodes` to import them onto multiple nodes. When both `--node` and `--nodes` are provided, `--nodes` takes precedence. Target nodes must exist and be in the `Ready` state; otherwise the command fails without importing anything.
+Addon import supports Windows-hosted mixed clusters, Windows-hosted `--linux-only` installations, and native Linux installations (experimental). Default image targets depend on the setup:
+
+| Setup | Default image targets |
+|-------|-----------------------|
+| Windows host with Linux and Windows nodes | Linux images on the control-plane; Windows images on the local Windows worker |
+| Windows host installed with `--linux-only` | Linux images on the control-plane; Windows images are skipped |
+| Native Linux host | Linux images on the local host; Windows images are skipped |
+
+Use `--node` to import images onto a specific worker node, control-plane, or local Windows worker, or `--nodes` to import them onto multiple nodes. Only select nodes present in your installation; native Linux import supports Linux targets only. When both `--node` and `--nodes` are provided, `--nodes` takes precedence. Target nodes must exist and be in the `Ready` state; otherwise the command fails without importing anything.
 
 ```console
 # Import an addon and distribute its images to a specific worker node
@@ -445,6 +453,13 @@ k2s addons import registry -f C:\tmp\addons.oci.tar --node worker-1
 # Import an addon and distribute its images to multiple worker nodes
 k2s addons import registry -f C:\tmp\addons.oci.tar --nodes worker-1,worker-2
 ```
+
+!!! note "Linux host"
+    On a Linux host the addon files are staged into the `addons` directory and the Linux images are imported into the container runtime of the host. `--omit` works as described above. Without `--node`/`--nodes` the images go to the local host only. With `--node`/`--nodes` they go exactly to the selected nodes: the local host node (its node name or `linux`) is imported directly, and an additional Linux worker is reached over SSH (archive copy to `/tmp`, `sudo buildah pull`, cleanup). A worker must be listed in the cluster descriptor (`cluster.json`) with IP address and user, and must be `Ready`. Windows nodes are rejected, and the Windows images and offline packages of the artifact are not imported. All nodes are checked before anything is imported.
+
+    ```console
+    k2s addons import registry -f /tmp/addons.oci.tar
+    ```
 
 ### addons backup
 

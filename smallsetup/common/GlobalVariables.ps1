@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -73,8 +73,9 @@ $global:VMPwd = 'admin'
 $configDir = $clusterConfig.psobject.properties['configDir'].value
 
 $global:SshConfigDir = Force-Resolve-Path $configDir.psobject.properties['ssh'].value
-$global:keyFileName = 'id_rsa'
-$global:LinuxVMKey = $global:SshConfigDir + "\k2s\$global:keyFileName"
+$sshKeyConfig = $clusterConfig.psobject.properties['sshKey'].value
+$global:keyFileName = $sshKeyConfig.psobject.properties['fileName'].value.psobject.properties['windows'].value
+$global:LinuxVMKey = $global:SshConfigDir + "\" + $sshKeyConfig.psobject.properties['subDir'].value + "\$global:keyFileName"
 $global:WindowsVMKey = $global:SshConfigDir + "\windowsvm\$global:keyFileName"
 
 $global:K2sConfigDir = Force-Resolve-Path $configDir.psobject.properties['k2s'].value

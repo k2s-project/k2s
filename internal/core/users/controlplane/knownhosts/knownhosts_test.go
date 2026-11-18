@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  © 2025 The K2s Authors
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
 package knownhosts_test
@@ -12,11 +12,11 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/contracts/users"
 	"github.com/k2s-project/k2s/internal/core/users/controlplane/knownhosts"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func TestPkg(t *testing.T) {
@@ -39,7 +39,7 @@ var _ = Describe("KnownHostsCopier", func() {
 
 			It("returns error", func() {
 				const host = "my-host"
-				config := config.NewSshConfig(tempDir, "", "")
+				config := config.NewSshConfig(tempDir, "", "", "")
 				user := users.NewOSUser("", "", "")
 
 				sut := knownhosts.NewKnownHostsCopier(config)
@@ -65,7 +65,7 @@ var _ = Describe("KnownHostsCopier", func() {
 
 			It("returns error", func() {
 				const host = "my-host"
-				config := config.NewSshConfig(tempDir, "", "")
+				config := config.NewSshConfig(tempDir, "", "", "")
 				user := users.NewOSUser("", "", "")
 
 				sut := knownhosts.NewKnownHostsCopier(config)
@@ -112,7 +112,7 @@ var _ = Describe("KnownHostsCopier", func() {
 
 			It("updates host entries in existing file", func() {
 				const host = "my-host"
-				config := config.NewSshConfig(sourceSshDir, "~/ssh-dir", "")
+				config := config.NewSshConfig(sourceSshDir, "~/ssh-dir", "", "")
 				user := users.NewOSUser("", "", targetHomeDir)
 
 				sut := knownhosts.NewKnownHostsCopier(config)
@@ -165,7 +165,7 @@ var _ = Describe("KnownHostsCopier", func() {
 
 			It("creates target knownhosts file", func() {
 				const host = "my-host"
-				config := config.NewSshConfig(sourceSshDir, "~/ssh-dir", "")
+				config := config.NewSshConfig(sourceSshDir, "~/ssh-dir", "", "")
 				user := users.NewOSUser("", "", targetHomeDir)
 
 				sut := knownhosts.NewKnownHostsCopier(config)

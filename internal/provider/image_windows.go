@@ -288,6 +288,17 @@ func (p *windowsImageProvider) Clean(cfg ImageCleanConfig) error {
 	return p.execPS(psCmd, params...)
 }
 
+func (p *windowsImageProvider) Repair(cfg ImageRepairConfig) error {
+	psCmd := p.scriptPath("Repair-Image.ps1")
+
+	var params []string
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+
+	return p.execPS(psCmd, params...)
+}
+
 func (p *windowsImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
 	psCmd := p.scriptPath(filepath.Join("registry", "Add-Registry.ps1"))
 	var params []string

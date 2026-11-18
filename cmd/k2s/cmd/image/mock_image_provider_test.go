@@ -61,6 +61,10 @@ func (m *mockImageProvider) Clean(config provider.ImageCleanConfig) error {
 	return m.Called(config).Error(0)
 }
 
+func (m *mockImageProvider) Repair(config provider.ImageRepairConfig) error {
+	return m.Called(config).Error(0)
+}
+
 func (m *mockImageProvider) RegistryAdd(config provider.ImageRegistryAddConfig) error {
 	return m.Called(config).Error(0)
 }

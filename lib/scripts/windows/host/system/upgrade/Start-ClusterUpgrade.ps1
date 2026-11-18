@@ -127,6 +127,7 @@ function Start-ClusterUpgrade {
 	$logFilePathBeforeUninstall = [ref]''
 	$imagesBackupPath = [ref]''
 	$pvBackupPath = [ref]''
+	$resourceRestoreErrors = [ref]@()
 
 	if ($BackupDir -eq '') {
 		$BackupDir = Get-TempPath
@@ -153,7 +154,7 @@ function Start-ClusterUpgrade {
 	$forwardInstallConfig = Resolve-UpgradeInstallConfig -RequestedConfig $Config -PreviousConfig $previousInstallConfig
 	$installedFolder = Get-ClusterInstalledFolder
 	try {
-		PerformClusterUpgrade -ExecuteHooks:$true -ShowProgress:$ShowProgress -DeleteFiles:$DeleteFiles -ShowLogs:$ShowLogs -Config $forwardInstallConfig -Proxy $Proxy -BackupDir $BackupDir -AdditionalHooksDir $AdditionalHooksDir -memoryVM $memoryVM.Value -coresVM $coresVM.Value -storageVM $storageVM.Value -enabledAddonsList $enabledAddonsList.Value -hooksBackupPath $hooksBackupPath.Value -logFilePathBeforeUninstall $logFilePathBeforeUninstall.Value -imagesBackupPath $imagesBackupPath.Value -pvBackupPath $pvBackupPath.Value -SkipImages:$SkipImages -skipResources:$SkipResources
+		PerformClusterUpgrade -ExecuteHooks:$true -ShowProgress:$ShowProgress -DeleteFiles:$DeleteFiles -ShowLogs:$ShowLogs -Config $forwardInstallConfig -Proxy $Proxy -BackupDir $BackupDir -AdditionalHooksDir $AdditionalHooksDir -memoryVM $memoryVM.Value -coresVM $coresVM.Value -storageVM $storageVM.Value -enabledAddonsList $enabledAddonsList.Value -hooksBackupPath $hooksBackupPath.Value -logFilePathBeforeUninstall $logFilePathBeforeUninstall.Value -imagesBackupPath $imagesBackupPath.Value -pvBackupPath $pvBackupPath.Value -SkipImages:$SkipImages -skipResources:$SkipResources -resourceRestoreErrors $resourceRestoreErrors
 	}
 	catch {
 		Write-Log 'System upgrade failed, will rollback to previous state !'
@@ -163,7 +164,7 @@ function Start-ClusterUpgrade {
 			Backup-LogFile -LogFile $logFilePathBeforeUninstall.Value
 			$rollbackInstallConfig = Resolve-UpgradeInstallConfig -RequestedConfig $Config -PreviousConfig $previousInstallConfig -Rollback
 			# Execute the upgrade without executing the upgrade hooks and from the installed folder (folder used before upgrade)
-			PerformClusterUpgrade -ExecuteHooks:$false -K2sPathToInstallFrom $installedFolder -ShowProgress:$ShowProgress -DeleteFiles:$DeleteFiles -ShowLogs:$ShowLogs -Config $rollbackInstallConfig -Proxy $Proxy -BackupDir $BackupDir -AdditionalHooksDir $AdditionalHooksDir -memoryVM $memoryVM.Value -coresVM $coresVM.Value -storageVM $storageVM.Value -enabledAddonsList $enabledAddonsList.Value -hooksBackupPath $hooksBackupPath.Value -logFilePathBeforeUninstall $logFilePathBeforeUninstall.Value -imagesBackupPath $imagesBackupPath.Value -pvBackupPath $pvBackupPath.Value -SkipImages:$SkipImages -skipResources:$SkipResources
+			PerformClusterUpgrade -ExecuteHooks:$false -K2sPathToInstallFrom $installedFolder -ShowProgress:$ShowProgress -DeleteFiles:$DeleteFiles -ShowLogs:$ShowLogs -Config $rollbackInstallConfig -Proxy $Proxy -BackupDir $BackupDir -AdditionalHooksDir $AdditionalHooksDir -memoryVM $memoryVM.Value -coresVM $coresVM.Value -storageVM $storageVM.Value -enabledAddonsList $enabledAddonsList.Value -hooksBackupPath $hooksBackupPath.Value -logFilePathBeforeUninstall $logFilePathBeforeUninstall.Value -imagesBackupPath $imagesBackupPath.Value -pvBackupPath $pvBackupPath.Value -SkipImages:$SkipImages -skipResources:$SkipResources -resourceRestoreErrors $resourceRestoreErrors
 		}
 		catch {
 			Write-Log 'An ERROR occurred:' -Console
@@ -178,8 +179,13 @@ function Start-ClusterUpgrade {
 			Write-Progress -Activity 'Remove exported resources..' -Id 1 -Status '5/8' -PercentComplete 50 -CurrentOperation 'Remove exported resources, please wait..'
 		}
 		if (-not $errUpgrade) {
-			# remove temp cluster resources
-			Remove-ExportedClusterResources -PathResources $BackupDir -DeleteFiles:$true
+			if (@($resourceRestoreErrors.Value).Count -gt 0) {
+				Write-Log "Keeping backup directory '$BackupDir' because some backed-up resources could not be restored" -Console
+			}
+			else {
+				# remove temp cluster resources
+				Remove-ExportedClusterResources -PathResources $BackupDir -DeleteFiles:$true
+			}
 		}
 	}
 	if ( $errUpgrade ) {

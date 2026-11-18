@@ -85,18 +85,22 @@ var protectedVolumeRoots = []string{
 }
 
 type pvRestoreMetadata struct {
-	Version        string `json:"version"`
-	BackupType     string `json:"backupType"`
-	PVName         string `json:"pvName"`
-	VolumeType     string `json:"volumeType"`
-	VolumePath     string `json:"volumePath"`
-	VolumeKind     string `json:"volumeKind"`
-	Capacity       string `json:"capacity"`
-	CreatedAt      string `json:"createdAt"`
-	BackupFile     string `json:"backupFile"`
-	ClaimNamespace string `json:"claimNamespace"`
-	ClaimName      string `json:"claimName"`
-	ReclaimPolicy  string `json:"reclaimPolicy"`
+	Version            string `json:"version"`
+	BackupType         string `json:"backupType"`
+	PVName             string `json:"pvName"`
+	VolumeType         string `json:"volumeType"`
+	VolumePath         string `json:"volumePath"`
+	VolumeKind         string `json:"volumeKind"`
+	Capacity           string `json:"capacity"`
+	CreatedAt          string `json:"createdAt"`
+	BackupFile         string `json:"backupFile"`
+	ClaimNamespace     string `json:"claimNamespace"`
+	ClaimName          string `json:"claimName"`
+	ReclaimPolicy      string `json:"reclaimPolicy"`
+	VolumeRootMetadata bool   `json:"volumeRootMetadata"`
+	VolumeRootMode     uint32 `json:"volumeRootMode"`
+	VolumeRootUID      uint32 `json:"volumeRootUID"`
+	VolumeRootGID      uint32 `json:"volumeRootGID"`
 }
 
 type imageRestoreManifest struct {
@@ -223,6 +227,116 @@ func isDangerousVolumePath(volumePath string) bool {
 	return err != nil
 }
 
+func isMountPoint(volumePath string) (bool, error) {
+	mountInfo, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false, err
+	}
+	canonical, err := canonicalizePath(volumePath)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(mountInfo), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		mountPath := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`).Replace(fields[4])
+		if filepath.Clean(mountPath) == canonical {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func getLivePVClaim(pvName, fallbackNamespace, fallbackName string) (string, string, error) {
+	out, err := runRestoreKubectl(defaultKubeTimeout, "get", "pv", pvName, "-o", "json")
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") {
+			return fallbackNamespace, fallbackName, nil
+		}
+		return "", "", err
+	}
+	var pv struct {
+		Spec struct {
+			ClaimRef *struct {
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+			} `json:"claimRef"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal([]byte(out), &pv); err != nil {
+		return "", "", err
+	}
+	if pv.Spec.ClaimRef == nil {
+		return "", "", nil
+	}
+	return pv.Spec.ClaimRef.Namespace, pv.Spec.ClaimRef.Name, nil
+}
+
+func resolveVolumeKind(meta pvRestoreMetadata, stagingDir, targetPath string) (string, error) {
+	if meta.VolumeKind != "" {
+		if meta.VolumeKind != "file" && meta.VolumeKind != "directory" {
+			return "", fmt.Errorf("unsupported volumeKind %q", meta.VolumeKind)
+		}
+		return meta.VolumeKind, nil
+	}
+	if info, err := os.Lstat(targetPath); err == nil {
+		switch {
+		case info.Mode().IsRegular():
+			return "file", nil
+		case info.IsDir():
+			return "directory", nil
+		default:
+			return "", fmt.Errorf("existing destination is neither a regular file nor a directory")
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+
+	pvFile := filepath.Join(stagingDir, "NotNamespaced", "persistentvolumes.yaml")
+	data, err := os.ReadFile(pvFile)
+	if err != nil {
+		return "", fmt.Errorf("legacy backup has no volumeKind and PV definition is unavailable")
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Spec struct {
+				HostPath *struct {
+					Type string `yaml:"type"`
+				} `yaml:"hostPath"`
+				Local *struct {
+					Path string `yaml:"path"`
+				} `yaml:"local"`
+			} `yaml:"spec"`
+		} `yaml:"items"`
+	}
+	if err := yaml.Unmarshal(data, &list); err != nil {
+		return "", fmt.Errorf("failed to parse PV definitions: %w", err)
+	}
+	for _, pv := range list.Items {
+		if pv.Metadata.Name != meta.PVName {
+			continue
+		}
+		if pv.Spec.Local != nil {
+			return "directory", nil
+		}
+		if pv.Spec.HostPath != nil {
+			switch pv.Spec.HostPath.Type {
+			case "File", "FileOrCreate":
+				return "file", nil
+			case "Directory", "DirectoryOrCreate":
+				return "directory", nil
+			}
+		}
+		return "", fmt.Errorf("legacy PV definition does not identify a file or directory volume")
+	}
+	return "", fmt.Errorf("legacy PV definition for %q was not found", meta.PVName)
+}
+
 // resolveInDir joins a name from untrusted input to dir and verifies the result stays beneath dir.
 func resolveInDir(dir, name string) (string, bool) {
 	name = strings.ReplaceAll(name, "\\", "/")
@@ -253,7 +367,7 @@ func restoreKubectlCmd(ctx context.Context, args ...string) *exec.Cmd {
 }
 
 // runRestoreKubectl returns the standard output of kubectl; standard error is part of the returned error.
-func runRestoreKubectl(timeout time.Duration, args ...string) (string, error) {
+var restoreKubectlRunner = func(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -265,6 +379,10 @@ func runRestoreKubectl(timeout time.Duration, args ...string) (string, error) {
 		return stdout.String(), fmt.Errorf("kubectl %s failed: %w: %s", args[0], err, strings.TrimSpace(stderr.String()+stdout.String()))
 	}
 	return stdout.String(), nil
+}
+
+func runRestoreKubectl(timeout time.Duration, args ...string) (string, error) {
+	return restoreKubectlRunner(timeout, args...)
 }
 
 // selectLocalKubeconfig binds the restore to the kubeconfig of the local K2s cluster and verifies that it is reachable.
@@ -283,6 +401,10 @@ func selectLocalKubeconfig() error {
 }
 
 func runLinuxSystemRestore(installDir string, cfg SystemRestoreConfig) error {
+	return runLinuxSystemRestoreWithProviderConfig(installDir, ProviderConfig{InstallDir: installDir}, cfg)
+}
+
+func runLinuxSystemRestoreWithProviderConfig(installDir string, providerCfg ProviderConfig, cfg SystemRestoreConfig) error {
 	slog.Info("[System Restore] Starting K2s system restore...")
 
 	if cfg.BackupFile == "" {
@@ -342,9 +464,9 @@ func runLinuxSystemRestore(installDir string, cfg SystemRestoreConfig) error {
 	var allErrors []string
 
 	// Step 4: Restore user workload container images
-	imageProvider := newLinuxImageProvider(ProviderConfig{InstallDir: installDir})
-	importImage := func(tarPath string) error {
-		return imageProvider.Import(ImageImportConfig{TarPath: tarPath, ShowOutput: cfg.ShowOutput})
+	imageProvider := newLinuxImageProvider(providerCfg)
+	importImage := func(tarPath string, windows bool) error {
+		return imageProvider.Import(ImageImportConfig{TarPath: tarPath, Windows: windows, ShowOutput: cfg.ShowOutput})
 	}
 	if errs := restoreContainerImages(stagingDir, importImage); len(errs) > 0 {
 		allErrors = append(allErrors, errs...)
@@ -441,7 +563,7 @@ func validateBackupManifest(stagingDir string) (*backupManifest, error) {
 	return &manifest, nil
 }
 
-func restoreContainerImages(stagingDir string, importImage func(tarPath string) error) []string {
+func restoreContainerImages(stagingDir string, importImage func(tarPath string, windows bool) error) []string {
 	imagesDir := filepath.Join(stagingDir, "images")
 	stat, err := os.Stat(imagesDir)
 	if err != nil || !stat.IsDir() {
@@ -452,7 +574,7 @@ func restoreContainerImages(stagingDir string, importImage func(tarPath string) 
 	slog.Info("[System Restore] Restoring container images...")
 
 	var errorsList []string
-	tarSet := make(map[string]struct{})
+	tarSet := make(map[string]bool)
 
 	// Check for manifest.json
 	manifestPath := filepath.Join(imagesDir, "manifest.json")
@@ -466,7 +588,7 @@ func restoreContainerImages(stagingDir string, importImage func(tarPath string) 
 					continue
 				}
 				if found, ok := findManifestImageArchive(stagingDir, imagesDir, item.TarFile); ok {
-					tarSet[found] = struct{}{}
+					tarSet[found] = tarSet[found] || isWindowsImageNode(item.Node)
 				} else {
 					errorsList = append(errorsList, fmt.Sprintf("image archive '%s' referenced in the image manifest was not found in the backup", item.TarFile))
 				}
@@ -483,7 +605,9 @@ func restoreContainerImages(stagingDir string, importImage func(tarPath string) 
 			return nil
 		}
 		if !d.IsDir() && d.Type().IsRegular() && strings.HasSuffix(strings.ToLower(d.Name()), ".tar") {
-			tarSet[p] = struct{}{}
+			if _, exists := tarSet[p]; !exists {
+				tarSet[p] = false
+			}
 		}
 		return nil
 	})
@@ -504,7 +628,7 @@ func restoreContainerImages(stagingDir string, importImage func(tarPath string) 
 	failedCount := 0
 	for _, tarPath := range tarPaths {
 		slog.Info("[System Restore] Importing container image archive", "tar", tarPath)
-		if err := importImage(tarPath); err != nil {
+		if err := importImage(tarPath, tarSet[tarPath]); err != nil {
 			errMsg := fmt.Sprintf("failed to import image archive '%s': %v", filepath.Base(tarPath), err)
 			slog.Warn("[System Restore] " + errMsg)
 			errorsList = append(errorsList, errMsg)
@@ -516,6 +640,10 @@ func restoreContainerImages(stagingDir string, importImage func(tarPath string) 
 
 	slog.Info("[System Restore] Image restore finished", "restored", restoredCount, "failed", failedCount)
 	return errorsList
+}
+
+func isWindowsImageNode(node string) bool {
+	return node != "" && !strings.EqualFold(node, "kubemaster")
 }
 
 // findManifestImageArchive resolves an archive path of the image manifest (which may use Windows separators and is
@@ -614,7 +742,7 @@ func runRestoreHook(scriptPath, hooksDir string) error {
 	return nil
 }
 
-func restorePersistentVolumes(stagingDir string) []string {
+func restorePersistentVolumes(stagingDir string) (errorsList []string) {
 	pvDir := filepath.Join(stagingDir, "pv")
 	stat, err := os.Stat(pvDir)
 	if err != nil || !stat.IsDir() {
@@ -629,8 +757,13 @@ func restorePersistentVolumes(stagingDir string) []string {
 		return []string{fmt.Sprintf("failed to read pv directory: %v", err)}
 	}
 
-	var errorsList []string
 	restoredCount := 0
+	var quiescedConsumers []*consumerQuiesce
+	defer func() {
+		for i := len(quiescedConsumers) - 1; i >= 0; i-- {
+			errorsList = append(errorsList, quiescedConsumers[i].resume()...)
+		}
+	}()
 
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -657,6 +790,15 @@ func restorePersistentVolumes(stagingDir string) []string {
 			errorsList = append(errorsList, errMsg)
 			continue
 		}
+		mountPoint, err := isMountPoint(targetPath)
+		if err != nil {
+			errorsList = append(errorsList, fmt.Sprintf("failed to inspect PV destination '%s': %v", targetPath, err))
+			continue
+		}
+		if mountPoint {
+			errorsList = append(errorsList, fmt.Sprintf("PV '%s' destination '%s' is a mount point and cannot be safely replaced", meta.PVName, targetPath))
+			continue
+		}
 
 		tarGzPath := ""
 		candidates := []string{meta.BackupFile, meta.PVName + "-backup.tar.gz", strings.TrimSuffix(entry.Name(), "-metadata.json") + ".tar.gz"}
@@ -673,21 +815,31 @@ func restorePersistentVolumes(stagingDir string) []string {
 			continue
 		}
 
+		volumeKind, kindErr := resolveVolumeKind(meta, stagingDir, targetPath)
+		if kindErr != nil {
+			errorsList = append(errorsList, fmt.Sprintf("failed to determine volume type for PV '%s': %v", meta.PVName, kindErr))
+			continue
+		}
+		claimNamespace, claimName, err := getLivePVClaim(meta.PVName, meta.ClaimNamespace, meta.ClaimName)
+		if err != nil {
+			errorsList = append(errorsList, fmt.Sprintf("failed to inspect live claim binding for PV '%s': %v", meta.PVName, err))
+			continue
+		}
 		var quiesced *consumerQuiesce
-		if meta.ClaimNamespace != "" && meta.ClaimName != "" {
+		if claimNamespace != "" && claimName != "" {
 			var qErr error
-			quiesced, qErr = quiescePVCConsumers(meta.ClaimNamespace, meta.ClaimName)
+			quiesced, qErr = quiescePVCConsumers(claimNamespace, claimName)
+			quiescedConsumers = append(quiescedConsumers, quiesced)
 			if qErr != nil {
-				errMsg := fmt.Sprintf("failed to stop consumers of PVC '%s/%s' for PV '%s': %v", meta.ClaimNamespace, meta.ClaimName, meta.PVName, qErr)
+				errMsg := fmt.Sprintf("failed to stop consumers of PVC '%s/%s' for PV '%s': %v", claimNamespace, claimName, meta.PVName, qErr)
 				slog.Warn("[System Restore] " + errMsg)
 				errorsList = append(errorsList, errMsg)
-				errorsList = append(errorsList, quiesced.resume()...)
 				continue
 			}
 		}
 
 		slog.Info("[System Restore] Extracting persistent volume data", "pv", meta.PVName, "target", targetPath)
-		installErr := installVolumeData(tarGzPath, targetPath, meta.VolumeKind)
+		installErr := installVolumeData(tarGzPath, targetPath, volumeKind, meta)
 		if installErr != nil {
 			errMsg := fmt.Sprintf("failed to restore PV archive '%s' to '%s': %v", tarGzPath, targetPath, installErr)
 			slog.Warn("[System Restore] " + errMsg)
@@ -696,9 +848,6 @@ func restorePersistentVolumes(stagingDir string) []string {
 			restoredCount++
 		}
 
-		if quiesced != nil {
-			errorsList = append(errorsList, quiesced.resume()...)
-		}
 	}
 
 	slog.Info("[System Restore] Persistent volume restore finished", "restored", restoredCount, "failed", len(errorsList))
@@ -707,7 +856,7 @@ func restorePersistentVolumes(stagingDir string) []string {
 
 // installVolumeData extracts the archive into a clean sibling location and then swaps it with the current volume
 // data. The previous data is kept until the swap succeeded and is moved back if it fails.
-func installVolumeData(tarGzPath, targetPath, volumeKind string) error {
+func installVolumeData(tarGzPath, targetPath, volumeKind string, meta pvRestoreMetadata) error {
 	parent := filepath.Dir(targetPath)
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		return fmt.Errorf("failed to create parent directory '%s': %w", parent, err)
@@ -719,13 +868,18 @@ func installVolumeData(tarGzPath, targetPath, volumeKind string) error {
 		return fmt.Errorf("failed to inspect '%s': %w", targetPath, oldErr)
 	}
 
-	isFile := volumeKind == "file" || (volumeKind == "" && oldExists && oldInfo.Mode().IsRegular())
+	isFile := volumeKind == "file"
 
 	stageDir, err := os.MkdirTemp(parent, pvRestoreTempPrefix)
 	if err != nil {
 		return fmt.Errorf("failed to create staging directory beneath '%s': %w", parent, err)
 	}
-	defer func() { _ = os.RemoveAll(stageDir) }()
+	preserveStage := false
+	defer func() {
+		if !preserveStage {
+			_ = os.RemoveAll(stageDir)
+		}
+	}()
 
 	extractDir := filepath.Join(stageDir, "data")
 	if err := kos.ExtractTarGz(tarGzPath, extractDir); err != nil {
@@ -742,8 +896,25 @@ func installVolumeData(tarGzPath, targetPath, volumeKind string) error {
 			return fmt.Errorf("archive of file volume must contain exactly one regular file")
 		}
 		newData = filepath.Join(extractDir, entries[0].Name())
-	} else if oldExists && oldInfo.IsDir() {
-		if err := copyDirectoryMetadata(oldInfo, extractDir); err != nil {
+	} else {
+		rootInfo, err := os.Lstat(extractDir)
+		if err != nil {
+			return err
+		}
+		rootMetadata := volumeRootMetadataFromInfo(rootInfo)
+		if meta.VolumeRootMetadata {
+			rootMetadata = volumeRootMetadata{
+				mode: meta.VolumeRootMode,
+				uid:  meta.VolumeRootUID,
+				gid:  meta.VolumeRootGID,
+			}
+		} else if oldExists && oldInfo.IsDir() {
+			rootMetadata = volumeRootMetadataFromInfo(oldInfo)
+		}
+		if err := os.Chmod(extractDir, 0700); err != nil {
+			return fmt.Errorf("failed to make staged volume root accessible: %w", err)
+		}
+		if err := applyVolumeRootMetadata(extractDir, rootMetadata); err != nil {
 			return err
 		}
 	}
@@ -757,6 +928,7 @@ func installVolumeData(tarGzPath, targetPath, volumeKind string) error {
 	if err := os.Rename(newData, targetPath); err != nil {
 		if oldExists {
 			if rbErr := os.Rename(previous, targetPath); rbErr != nil {
+				preserveStage = true
 				return fmt.Errorf("failed to install restored data: %v; ROLLBACK FAILED, previous data is kept in '%s': %w", err, previous, rbErr)
 			}
 		}
@@ -765,16 +937,44 @@ func installVolumeData(tarGzPath, targetPath, volumeKind string) error {
 	return nil
 }
 
-func copyDirectoryMetadata(info os.FileInfo, dir string) error {
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && os.Geteuid() == 0 {
-		if err := os.Lchown(dir, int(st.Uid), int(st.Gid)); err != nil {
+type volumeRootMetadata struct {
+	mode uint32
+	uid  uint32
+	gid  uint32
+}
+
+func volumeRootMetadataFromInfo(info os.FileInfo) volumeRootMetadata {
+	meta := volumeRootMetadata{mode: unixFileMode(info.Mode())}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		meta.uid, meta.gid = st.Uid, st.Gid
+	}
+	return meta
+}
+
+func applyVolumeRootMetadata(dir string, meta volumeRootMetadata) error {
+	if os.Geteuid() == 0 {
+		if err := os.Chown(dir, int(meta.uid), int(meta.gid)); err != nil {
 			return fmt.Errorf("failed to restore ownership of '%s': %w", dir, err)
 		}
 	}
-	if err := os.Chmod(dir, info.Mode()&(os.ModePerm|os.ModeSetuid|os.ModeSetgid|os.ModeSticky)); err != nil {
+	if err := os.Chmod(dir, fileModeFromUnix(meta.mode)); err != nil {
 		return fmt.Errorf("failed to restore permissions of '%s': %w", dir, err)
 	}
 	return nil
+}
+
+func fileModeFromUnix(raw uint32) os.FileMode {
+	mode := os.FileMode(raw & 0777)
+	if raw&04000 != 0 {
+		mode |= os.ModeSetuid
+	}
+	if raw&02000 != 0 {
+		mode |= os.ModeSetgid
+	}
+	if raw&01000 != 0 {
+		mode |= os.ModeSticky
+	}
+	return mode
 }
 
 func fileExists(path string) bool {
@@ -791,9 +991,8 @@ type quiescedWorkload struct {
 
 // consumerQuiesce remembers what was stopped so that it can be resumed after the volume data was replaced.
 type consumerQuiesce struct {
-	namespace   string
-	workloads   []quiescedWorkload
-	deletedPods []string
+	namespace string
+	workloads []quiescedWorkload
 }
 
 type consumerPod struct {
@@ -877,13 +1076,14 @@ func quiescePVCConsumers(namespace, claimName string) (*consumerQuiesce, error) 
 		return q, nil
 	}
 
-	seen := make(map[string]bool)
-	var standalone []string
 	for _, pod := range pods {
 		if pod.owner == nil {
-			standalone = append(standalone, pod.name)
-			continue
+			return q, fmt.Errorf("standalone pod '%s' uses PVC '%s/%s'; refusing to delete a pod that cannot be recreated safely", pod.name, namespace, claimName)
 		}
+	}
+
+	seen := make(map[string]bool)
+	for _, pod := range pods {
 		kind, name, err := resolveTopLevelWorkload(namespace, *pod.owner)
 		if err != nil {
 			return q, err
@@ -909,6 +1109,16 @@ func quiescePVCConsumers(namespace, claimName string) (*consumerQuiesce, error) 
 			continue
 		}
 
+		if kind == "statefulset" {
+			retention, err := runRestoreKubectl(defaultKubeTimeout, "get", "statefulset", name, "-n", namespace, "-o", "jsonpath={.spec.persistentVolumeClaimRetentionPolicy.whenScaled}")
+			if err != nil {
+				return q, err
+			}
+			if strings.EqualFold(strings.TrimSpace(retention), "Delete") {
+				return q, fmt.Errorf("StatefulSet '%s/%s' deletes PVCs when scaled down; refusing to risk deleting PV data", namespace, name)
+			}
+		}
+
 		out, err := runRestoreKubectl(defaultKubeTimeout, "get", kind, name, "-n", namespace, "-o", "jsonpath={.spec.replicas}")
 		if err != nil {
 			return q, err
@@ -924,14 +1134,6 @@ func quiescePVCConsumers(namespace, claimName string) (*consumerQuiesce, error) 
 		if _, err := runRestoreKubectl(defaultKubeTimeout, "scale", kind, name, "-n", namespace, "--replicas=0"); err != nil {
 			return q, err
 		}
-	}
-
-	for _, podName := range standalone {
-		slog.Info("[System Restore] Deleting standalone pod using PVC", "namespace", namespace, "pod", podName)
-		if _, err := runRestoreKubectl(defaultKubeTimeout, "delete", "pod", podName, "-n", namespace, "--wait=false", "--ignore-not-found"); err != nil {
-			return q, err
-		}
-		q.deletedPods = append(q.deletedPods, podName)
 	}
 
 	deadline := time.Now().Add(consumerStopTimeout)
@@ -979,9 +1181,6 @@ func (q *consumerQuiesce) resume() []string {
 				errorsList = append(errorsList, fmt.Sprintf("%s in namespace '%s' did not become ready after restore: %v", ref, q.namespace, err))
 			}
 		}
-	}
-	for _, podName := range q.deletedPods {
-		slog.Info("[System Restore] Standalone pod was deleted and is recreated from the restored resources", "namespace", q.namespace, "pod", podName)
 	}
 	return errorsList
 }
@@ -1162,7 +1361,10 @@ func restoreNamespacedResources(stagingDir string) []string {
 		nsDir := filepath.Join(namespacedDir, ns)
 		slog.Info("[System Restore] Restoring namespace", "namespace", ns)
 
-		ensureNamespaceExists(ns)
+		if err := ensureNamespaceExists(ns); err != nil {
+			errorsList = append(errorsList, fmt.Sprintf("failed to ensure namespace '%s' exists: %v", ns, err))
+			continue
+		}
 
 		applied := make(map[string]bool)
 
@@ -1200,19 +1402,19 @@ func restoreNamespacedResources(stagingDir string) []string {
 	return errorsList
 }
 
-func ensureNamespaceExists(ns string) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultKubeTimeout)
-	defer cancel()
-
-	cmd := restoreKubectlCmd(ctx, "get", "namespace", ns)
-	if err := cmd.Run(); err != nil {
-		slog.Info("[System Restore] Creating namespace", "namespace", ns)
-		ctxCreate, cancelCreate := context.WithTimeout(context.Background(), defaultKubeTimeout)
-		defer cancelCreate()
-		if out, err := restoreKubectlCmd(ctxCreate, "create", "namespace", ns).CombinedOutput(); err != nil {
-			slog.Warn("[System Restore] Failed to create namespace", "namespace", ns, "error", err, "output", string(out))
-		}
+func ensureNamespaceExists(ns string) error {
+	if _, err := runRestoreKubectl(defaultKubeTimeout, "get", "namespace", ns); err == nil {
+		return nil
+	} else if !strings.Contains(err.Error(), "NotFound") {
+		return err
 	}
+
+	slog.Info("[System Restore] Creating namespace", "namespace", ns)
+	out, err := runRestoreKubectl(defaultKubeTimeout, "create", "namespace", ns)
+	if err != nil && !strings.Contains(err.Error(), "AlreadyExists") {
+		return fmt.Errorf("%w: %s", err, out)
+	}
+	return nil
 }
 
 func applyResourceYaml(yamlFile, namespace string) error {

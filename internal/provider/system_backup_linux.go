@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/k2s-project/k2s/internal/version"
@@ -225,23 +226,15 @@ func loadBackupConfig(installDir string) *backupConfig {
 	cfg := &backupConfig{
 		ExcludedNamespaces: []string{
 			"kube-flannel", "kube-node-lease", "kube-public", "kube-system",
-			"k2s-webhook", "kubernetes-dashboard", "nginx-gw", "gpu-node",
-			"ingress-nginx", "kubevirt", "monitoring", "registry", "dicom",
-			"ingress-traefik", "logging", "security", "viewer", "storage-smb",
-			"linkerd", "cert-manager", "dashboard", "autoscaling", "metrics", "rollout",
 		},
 		ExcludedNamespacedResources: []string{
 			"endpoints", "endpointslices", "events",
 		},
 		ExcludedClusterResources: []string{
 			"componentstatuses", "nodes", "csinodes", "ipaddresses",
-			"certificatesigningrequests", "storageclasses", "servicecidrs",
+			"certificatesigningrequests", "servicecidrs",
 			"apiservices", "flowschemas", "prioritylevelconfigurations",
 			"ingressclasses", "runtimeclasses", "mutatingwebhookconfigurations",
-		},
-		ExcludedAddonPersistentVolumes: []string{
-			"postgresql-pv-volume", "dicom-pv-volume", "orthanc-pv",
-			"registry-pv", "smb-static-pv", "opensearch-cluster-master-pv",
 		},
 		ClusterName: "k2s-cluster",
 	}
@@ -441,10 +434,10 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 func cleanResourceMap(data map[string]any) {
 	if items, ok := data["items"].([]any); ok {
 		kept := make([]any, 0, len(items))
+		resourceKind := strings.TrimSuffix(fmt.Sprint(data["kind"]), "List")
 		for _, item := range items {
 			if itemMap, ok := item.(map[string]any); ok {
-				// objects created by a controller are recreated by it and must not be restored as standalone objects
-				if isControllerOwned(itemMap) {
+				if (resourceKind == "Pod" || resourceKind == "ReplicaSet") && isControllerOwned(itemMap) {
 					continue
 				}
 				cleanSingleResource(itemMap)
@@ -593,6 +586,14 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 			"claimName":      claimName,
 			"reclaimPolicy":  pv.Spec.PersistentVolumeReclaimPolicy,
 		}
+		if stat.IsDir() {
+			metadata["volumeRootMetadata"] = true
+			metadata["volumeRootMode"] = unixFileMode(stat.Mode())
+			if st, ok := stat.Sys().(*syscall.Stat_t); ok {
+				metadata["volumeRootUID"] = st.Uid
+				metadata["volumeRootGID"] = st.Gid
+			}
+		}
 
 		metaJSON, _ := json.MarshalIndent(metadata, "", "  ")
 		_ = os.WriteFile(filepath.Join(pvDir, pvName+"-backup-metadata.json"), metaJSON, 0644)
@@ -633,15 +634,14 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 		if err != nil {
 			return err
 		}
-		if relPath == "." {
-			return nil
-		}
-
 		header, err := tar.FileInfoHeader(info, info.Name())
 		if err != nil {
 			return err
 		}
 		header.Name = filepath.ToSlash(relPath)
+		if relPath == "." {
+			header.Name = "."
+		}
 
 		if info.IsDir() {
 			header.Name += "/"
@@ -652,6 +652,13 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 			linkTarget, err := os.Readlink(path)
 			if err != nil {
 				return err
+			}
+			if filepath.IsAbs(linkTarget) || filepath.VolumeName(linkTarget) != "" {
+				return fmt.Errorf("PV symlink '%s' has an absolute target that cannot be restored safely", relPath)
+			}
+			resolvedTarget := filepath.Clean(filepath.Join(filepath.Dir(relPath), linkTarget))
+			if relative, err := filepath.Rel(".", resolvedTarget); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("PV symlink '%s' escapes the backed-up volume", relPath)
 			}
 			header.Linkname = linkTarget
 			return tw.WriteHeader(header)
@@ -691,6 +698,20 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 	success = true
 
 	return nil
+}
+
+func unixFileMode(mode os.FileMode) uint32 {
+	raw := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		raw |= 04000
+	}
+	if mode&os.ModeSetgid != 0 {
+		raw |= 02000
+	}
+	if mode&os.ModeSticky != 0 {
+		raw |= 01000
+	}
+	return raw
 }
 
 func tarGzSingleFile(srcFile, destTarGz string) error {

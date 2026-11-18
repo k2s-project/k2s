@@ -9,10 +9,11 @@ import (
 	"compress/gzip"
 	bos "os"
 	"path/filepath"
+	"runtime"
 
+	"github.com/k2s-project/k2s/internal/os"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/k2s-project/k2s/internal/os"
 )
 
 var _ = Describe("Archive Utilities", func() {
@@ -90,6 +91,26 @@ var _ = Describe("Archive Utilities", func() {
 			err = os.ExtractZip(zipPath, destDir)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("Zip-Slip"))
+		})
+
+		It("rejects extraction through a destination symlink", func() {
+			outside := GinkgoT().TempDir()
+			destDir := filepath.Join(tempDir, "extracted")
+			Expect(bos.MkdirAll(destDir, 0755)).To(Succeed())
+			Expect(bos.Symlink(outside, filepath.Join(destDir, "link"))).To(Succeed())
+
+			zipPath := filepath.Join(tempDir, "symlink.zip")
+			zf, err := bos.Create(zipPath)
+			Expect(err).ToNot(HaveOccurred())
+			zw := zip.NewWriter(zf)
+			w, err := zw.Create("link/subdir/outside.txt")
+			Expect(err).ToNot(HaveOccurred())
+			_, _ = w.Write([]byte("outside"))
+			Expect(zw.Close()).To(Succeed())
+			Expect(zf.Close()).To(Succeed())
+
+			Expect(os.ExtractZip(zipPath, destDir)).ToNot(Succeed())
+			Expect(filepath.Join(outside, "subdir")).ToNot(BeADirectory())
 		})
 	})
 
@@ -242,6 +263,9 @@ var _ = Describe("Archive Utilities", func() {
 	})
 	Describe("ExtractTarGz metadata and directory entries", func() {
 		It("accepts a root directory entry and restores exact modes including 000", func() {
+			if runtime.GOOS == "windows" {
+				Skip("POSIX permission bits are not preserved on Windows")
+			}
 			archive := filepath.Join(tempDir, "m.tar.gz")
 			f, err := bos.Create(archive)
 			Expect(err).ToNot(HaveOccurred())

@@ -136,7 +136,11 @@ func (p *linuxSystemProvider) Backup(cfg SystemBackupConfig) error {
 }
 
 func (p *linuxSystemProvider) Restore(cfg SystemRestoreConfig) error {
-	return runLinuxSystemRestore(p.installDir, cfg)
+	return runLinuxSystemRestoreWithProviderConfig(p.installDir, ProviderConfig{
+		InstallDir: p.installDir,
+		ConfigDir:  p.configDir,
+		StdWriter:  p.stdWriter,
+	}, cfg)
 }
 
 func (p *linuxSystemProvider) CertificateRenew(_ SystemCertRenewConfig) error {

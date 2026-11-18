@@ -40,6 +40,9 @@ func ExtractZip(srcZip, destDir string) error {
 		}
 
 		if f.FileInfo().IsDir() {
+			if err := ensureNoSymlinkEscape(cleanDestDir, cleanDestPath); err != nil {
+				return fmt.Errorf("illegal path in zip archive (%s): %w", f.Name, err)
+			}
 			// owner rwx is required to populate the directory; some ZIP writers report 0666 for directories
 			if err := bos.MkdirAll(cleanDestPath, f.Mode().Perm()|0700); err != nil {
 				return fmt.Errorf("failed to create directory '%s': %w", cleanDestPath, err)
@@ -47,8 +50,14 @@ func ExtractZip(srcZip, destDir string) error {
 			continue
 		}
 
+		if err := ensureNoSymlinkEscape(cleanDestDir, filepath.Dir(cleanDestPath)); err != nil {
+			return fmt.Errorf("illegal path in zip archive (%s): %w", f.Name, err)
+		}
 		if err := bos.MkdirAll(filepath.Dir(cleanDestPath), 0755); err != nil {
 			return fmt.Errorf("failed to create parent directory for '%s': %w", cleanDestPath, err)
+		}
+		if err := ensureNoSymlinkEscape(cleanDestDir, filepath.Dir(cleanDestPath)); err != nil {
+			return fmt.Errorf("illegal path in zip archive (%s): %w", f.Name, err)
 		}
 
 		if err := extractZipFile(f, cleanDestPath); err != nil {
@@ -71,7 +80,7 @@ func extractZipFile(f *zip.File, destPath string) error {
 		mode = 0644
 	}
 
-	outFile, err := bos.OpenFile(destPath, bos.O_CREATE|bos.O_TRUNC|bos.O_WRONLY, mode)
+	outFile, err := bos.OpenFile(destPath, bos.O_CREATE|bos.O_EXCL|bos.O_WRONLY, mode)
 	if err != nil {
 		return fmt.Errorf("failed to create file '%s': %w", destPath, err)
 	}

@@ -649,16 +649,16 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/oras-project/oras/releases/download/v1.3.6/oras_1.3.6_windows_amd64.zip",
+      "group": "https://github.com/oras-project/oras/releases/download/v1.4.0/oras_1.4.0_windows_amd64.zip",
       "name": "oras",
-      "version": "v1.3.6",
+      "version": "v1.4.0",
       "description": "",
       "scope": "required",
       "licenses": [
         {
           "license": {
             "id": "Apache-2.0",
-            "url": "https://github.com/oras-project/oras/blob/v1.3.6/LICENSE"
+            "url": "https://github.com/oras-project/oras/blob/v1.4.0/LICENSE"
           }
         }
       ],
@@ -668,7 +668,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/oras-project/oras@v1.3.6",
+      "purl": "pkg:github/oras-project/oras@v1.4.0",
       "type": "application"
     }
   ],

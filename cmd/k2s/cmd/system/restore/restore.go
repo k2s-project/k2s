@@ -30,9 +30,9 @@ func init() {
 	SystemRestoreCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
 }
 
-func runSystemRestore(cmd *cobra.Command, args []string) error {
+func runSystemRestore(cmd *cobra.Command, args []string) (err error) {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
-	defer cmdSession.Finish()
+	defer func() { cmdSession.Finish(err != nil) }()
 
 	pterm.Println("📦 Restoring K2s system backup ...")
 

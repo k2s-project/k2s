@@ -427,6 +427,10 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 
 	cleanResourceMap(data)
 
+	if items, ok := data["items"].([]any); ok && len(items) == 0 {
+		return nil, false, nil
+	}
+
 	yamlBytes, err := yaml.Marshal(data)
 	if err != nil {
 		return nil, false, err
@@ -436,15 +440,41 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 
 func cleanResourceMap(data map[string]any) {
 	if items, ok := data["items"].([]any); ok {
+		kept := make([]any, 0, len(items))
 		for _, item := range items {
 			if itemMap, ok := item.(map[string]any); ok {
+				// objects created by a controller are recreated by it and must not be restored as standalone objects
+				if isControllerOwned(itemMap) {
+					continue
+				}
 				cleanSingleResource(itemMap)
 			}
+			kept = append(kept, item)
 		}
+		data["items"] = kept
 	} else {
 		cleanSingleResource(data)
 	}
 	cleanMetadata(data)
+}
+
+func isControllerOwned(m map[string]any) bool {
+	meta, ok := m["metadata"].(map[string]any)
+	if !ok {
+		return false
+	}
+	owners, ok := meta["ownerReferences"].([]any)
+	if !ok {
+		return false
+	}
+	for _, owner := range owners {
+		if ownerMap, ok := owner.(map[string]any); ok {
+			if controller, ok := ownerMap["controller"].(bool); ok && controller {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cleanSingleResource(m map[string]any) {
@@ -522,6 +552,10 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 		}
 
 		targetTarGz := filepath.Join(pvDir, pvName+"-backup.tar.gz")
+		volumeKind := "directory"
+		if !stat.IsDir() {
+			volumeKind = "file"
+		}
 		if stat.IsDir() {
 			if err := tarGzDirectory(volumePath, targetTarGz); err != nil {
 				_ = os.Remove(targetTarGz)
@@ -551,6 +585,7 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 			"pvName":         pvName,
 			"volumeType":     volumeType,
 			"volumePath":     volumePath,
+			"volumeKind":     volumeKind,
 			"capacity":       pv.Spec.Capacity.Storage,
 			"createdAt":      time.Now().UTC().Format(time.RFC3339),
 			"backupFile":     pvName + "-backup.tar.gz",

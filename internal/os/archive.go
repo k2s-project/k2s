@@ -40,7 +40,8 @@ func ExtractZip(srcZip, destDir string) error {
 		}
 
 		if f.FileInfo().IsDir() {
-			if err := bos.MkdirAll(cleanDestPath, f.Mode().Perm()); err != nil {
+			// owner rwx is required to populate the directory; some ZIP writers report 0666 for directories
+			if err := bos.MkdirAll(cleanDestPath, f.Mode().Perm()|0700); err != nil {
 				return fmt.Errorf("failed to create directory '%s': %w", cleanDestPath, err)
 			}
 			continue
@@ -84,6 +85,8 @@ func extractZipFile(f *zip.File, destPath string) error {
 }
 
 // ExtractTarGz extracts all files from a tar.gz archive to destDir, protecting against Tar-Slip attacks.
+// Archived permissions are restored exactly (including mode 000 and setuid/setgid/sticky bits). Archived numeric
+// ownership (UID/GID) is restored when running as root on a platform that supports it.
 func ExtractTarGz(srcTarGz, destDir string) error {
 	cleanDestDir := filepath.Clean(destDir)
 	destPrefix := cleanDestDir + string(filepath.Separator)
@@ -105,6 +108,10 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 	}
 
 	tr := tar.NewReader(gzr)
+	restoreOwner := bos.Geteuid() == 0
+
+	// Directory metadata is applied after all entries are extracted, so restrictive modes (e.g. 000) do not block extraction.
+	var dirs []tarDirEntry
 
 	for {
 		hdr, err := tr.Next()
@@ -123,31 +130,28 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 			return fmt.Errorf("illegal file path in tar archive (Tar-Slip attempt): %s", hdr.Name)
 		}
 
-		if err := ensureNoSymlinkEscape(cleanDestDir, filepath.Dir(cleanDestPath)); err != nil {
+		// A directory entry is validated against the directory itself, any other entry against its parent
+		symlinkCheckPath := filepath.Dir(cleanDestPath)
+		if hdr.Typeflag == tar.TypeDir {
+			symlinkCheckPath = cleanDestPath
+		}
+		if err := ensureNoSymlinkEscape(cleanDestDir, symlinkCheckPath); err != nil {
 			return fmt.Errorf("illegal path in tar archive (%s): %w", hdr.Name, err)
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			mode := bos.FileMode(hdr.Mode).Perm()
-			if mode == 0 {
-				mode = 0755
-			}
-			if err := bos.MkdirAll(cleanDestPath, mode); err != nil {
+			if err := bos.MkdirAll(cleanDestPath, 0700); err != nil {
 				return fmt.Errorf("failed to create directory '%s': %w", cleanDestPath, err)
 			}
+			dirs = append(dirs, tarDirEntry{path: cleanDestPath, hdr: hdr})
 		case tar.TypeReg, tar.TypeRegA:
 			if err := bos.MkdirAll(filepath.Dir(cleanDestPath), 0755); err != nil {
 				return fmt.Errorf("failed to create parent directory for '%s': %w", cleanDestPath, err)
 			}
 
-			mode := bos.FileMode(hdr.Mode).Perm()
-			if mode == 0 {
-				mode = 0644
-			}
-
 			_ = bos.Remove(cleanDestPath)
-			outFile, err := bos.OpenFile(cleanDestPath, bos.O_CREATE|bos.O_EXCL|bos.O_WRONLY, mode)
+			outFile, err := bos.OpenFile(cleanDestPath, bos.O_CREATE|bos.O_EXCL|bos.O_WRONLY, 0600)
 			if err != nil {
 				return fmt.Errorf("failed to create file '%s': %w", cleanDestPath, err)
 			}
@@ -156,7 +160,21 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 				outFile.Close()
 				return fmt.Errorf("failed to write file '%s': %w", cleanDestPath, err)
 			}
-			outFile.Close()
+
+			// metadata is applied through the open descriptor, so it cannot be redirected via a symlink
+			if restoreOwner {
+				if err := outFile.Chown(hdr.Uid, hdr.Gid); err != nil {
+					outFile.Close()
+					return fmt.Errorf("failed to restore ownership of file '%s': %w", cleanDestPath, err)
+				}
+			}
+			if err := outFile.Chmod(tarFileMode(hdr.Mode)); err != nil {
+				outFile.Close()
+				return fmt.Errorf("failed to restore permissions of file '%s': %w", cleanDestPath, err)
+			}
+			if err := outFile.Close(); err != nil {
+				return fmt.Errorf("failed to close file '%s': %w", cleanDestPath, err)
+			}
 		case tar.TypeSymlink:
 			if strings.HasPrefix(hdr.Linkname, "/") || strings.HasPrefix(hdr.Linkname, "\\") || filepath.IsAbs(hdr.Linkname) || filepath.VolumeName(hdr.Linkname) != "" {
 				return fmt.Errorf("illegal symlink target in tar archive (absolute path): %s -> %s", hdr.Name, hdr.Linkname)
@@ -173,11 +191,61 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 			if err := bos.Symlink(hdr.Linkname, cleanDestPath); err != nil {
 				return fmt.Errorf("failed to create symlink '%s' -> '%s': %w", cleanDestPath, hdr.Linkname, err)
 			}
+			if restoreOwner {
+				if err := bos.Lchown(cleanDestPath, hdr.Uid, hdr.Gid); err != nil {
+					return fmt.Errorf("failed to restore ownership of symlink '%s': %w", cleanDestPath, err)
+				}
+			}
 		default:
 			// Skip unsupported header types safely
 		}
 	}
 
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := applyTarDirMetadata(dirs[i], restoreOwner); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type tarDirEntry struct {
+	path string
+	hdr  *tar.Header
+}
+
+// tarFileMode converts the raw mode bits of a tar header to a FileMode including setuid, setgid and sticky bits.
+func tarFileMode(raw int64) bos.FileMode {
+	mode := bos.FileMode(raw & 0777)
+	if raw&04000 != 0 {
+		mode |= bos.ModeSetuid
+	}
+	if raw&02000 != 0 {
+		mode |= bos.ModeSetgid
+	}
+	if raw&01000 != 0 {
+		mode |= bos.ModeSticky
+	}
+	return mode
+}
+
+func applyTarDirMetadata(dir tarDirEntry, restoreOwner bool) error {
+	info, err := bos.Lstat(dir.path)
+	if err != nil {
+		return fmt.Errorf("failed to inspect directory '%s': %w", dir.path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("illegal path in tar archive: '%s' is not a directory", dir.path)
+	}
+	if restoreOwner {
+		if err := bos.Lchown(dir.path, dir.hdr.Uid, dir.hdr.Gid); err != nil {
+			return fmt.Errorf("failed to restore ownership of directory '%s': %w", dir.path, err)
+		}
+	}
+	if err := bos.Chmod(dir.path, tarFileMode(dir.hdr.Mode)); err != nil {
+		return fmt.Errorf("failed to restore permissions of directory '%s': %w", dir.path, err)
+	}
 	return nil
 }
 

@@ -12,22 +12,20 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-func TestLinuxSystemRestore(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Linux System Restore Unit Tests", Label("unit", "ci", "linux"))
-}
 
 var _ = Describe("Linux System Restore", func() {
 	var tempDir string
 
 	BeforeEach(func() {
 		tempDir = GinkgoT().TempDir()
+
+		originalRoots := trustedVolumeRoots
+		trustedVolumeRoots = append(append([]string{}, originalRoots...), tempDir)
+		DeferCleanup(func() { trustedVolumeRoots = originalRoots })
 	})
 
 	Describe("isDangerousVolumePath", func() {
@@ -58,11 +56,32 @@ var _ = Describe("Linux System Restore", func() {
 			Expect(isDangerousVolumePath("/var/lib/kubelet/pods")).To(BeTrue())
 		})
 
-		It("accepts safe data directories", func() {
-			Expect(isDangerousVolumePath("/var/lib/k2s/pv-data")).To(BeFalse())
+		It("accepts data directories inside trusted storage roots", func() {
+			Expect(isDangerousVolumePath("/var/lib/k2s/volumes/pv-data")).To(BeFalse())
 			Expect(isDangerousVolumePath("/mnt/data/storage")).To(BeFalse())
-			Expect(isDangerousVolumePath("/opt/k2s/volumes/pv1")).To(BeFalse())
 			Expect(isDangerousVolumePath("/srv/nfs/share")).To(BeFalse())
+		})
+
+		It("rejects sensitive locations outside the trusted storage roots", func() {
+			Expect(isDangerousVolumePath("/var/spool/cron")).To(BeTrue())
+			Expect(isDangerousVolumePath("/opt/k2s/volumes/pv1")).To(BeTrue())
+			Expect(isDangerousVolumePath("/var/lib/k2s/setup.json")).To(BeTrue())
+		})
+
+		It("rejects ancestors of protected locations", func() {
+			Expect(isDangerousVolumePath("/var/lib")).To(BeTrue())
+			Expect(isDangerousVolumePath("/var")).To(BeTrue())
+		})
+
+		It("resolves a missing destination below a symlink before validating it", func() {
+			root := GinkgoT().TempDir()
+			trustedVolumeRoots = []string{root}
+			Expect(os.Symlink("/etc", filepath.Join(root, "alias"))).To(Succeed())
+
+			Expect(isDangerousVolumePath(filepath.Join(root, "alias", "missing"))).To(BeTrue())
+			resolved, err := resolveVolumePath(filepath.Join(root, "data", "missing"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(resolved).To(HaveSuffix(filepath.Join("data", "missing")))
 		})
 	})
 
@@ -249,9 +268,64 @@ var _ = Describe("Linux System Restore", func() {
 		})
 	})
 
+	Describe("validateBackupManifest with UTF-8 BOM", func() {
+		It("parses a manifest written with a byte-order mark", func() {
+			content := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"apiVersion":"k2s.backup/v1","kind":"SystemBackup"}`)...)
+			Expect(os.WriteFile(filepath.Join(tempDir, "backup.json"), content, 0644)).To(Succeed())
+
+			manifest, err := validateBackupManifest(tempDir)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(manifest.Kind).To(Equal("SystemBackup"))
+		})
+	})
+
+	Describe("restorePersistentVolumes path confinement", func() {
+		It("does not read archives outside the pv directory", func() {
+			pvDir := filepath.Join(tempDir, "pv")
+			Expect(os.MkdirAll(pvDir, 0755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(tempDir, "outside.tar.gz"), []byte("x"), 0644)).To(Succeed())
+
+			meta := pvRestoreMetadata{PVName: "../outside", VolumePath: filepath.Join(tempDir, "vol"), BackupFile: "../outside.tar.gz"}
+			metaData, err := json.Marshal(meta)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(pvDir, "x-metadata.json"), metaData, 0644)).To(Succeed())
+
+			errs := restorePersistentVolumes(tempDir)
+			Expect(errs).To(HaveLen(1))
+			Expect(errs[0]).To(ContainSubstring("backup tar.gz archive not found"))
+		})
+	})
+
+	Describe("restoreContainerImages manifest handling", func() {
+		It("resolves Windows style root-relative archive paths and reports missing archives", func() {
+			nested := filepath.Join(tempDir, "images", "images")
+			Expect(os.MkdirAll(nested, 0755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(nested, "a.tar"), []byte("x"), 0644)).To(Succeed())
+			manifest := `{"Images":[{"TarFile":"images\\images\\a.tar"},{"TarFile":"images\\images\\missing.tar"}]}`
+			Expect(os.WriteFile(filepath.Join(tempDir, "images", "manifest.json"), []byte(manifest), 0644)).To(Succeed())
+
+			var imported []string
+			errs := restoreContainerImages(tempDir, func(p string) error { imported = append(imported, p); return nil })
+			Expect(imported).To(ConsistOf(filepath.Join(nested, "a.tar")))
+			Expect(errs).To(HaveLen(1))
+			Expect(errs[0]).To(ContainSubstring("missing.tar"))
+		})
+	})
+
+	Describe("cleanAndConvertResourceJSON", func() {
+		It("drops controller-owned objects and keeps standalone ones", func() {
+			raw := `{"items":[{"metadata":{"name":"owned","ownerReferences":[{"kind":"Job","controller":true}]}},{"metadata":{"name":"standalone"}}]}`
+			out, has, err := cleanAndConvertResourceJSON([]byte(raw))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(has).To(BeTrue())
+			Expect(string(out)).To(ContainSubstring("standalone"))
+			Expect(string(out)).ToNot(ContainSubstring("owned"))
+		})
+	})
+
 	Describe("restoreContainerImages", func() {
 		It("skips gracefully when images directory does not exist", func() {
-			errs := restoreContainerImages(tempDir)
+			errs := restoreContainerImages(tempDir, func(string) error { return nil })
 			Expect(errs).To(BeEmpty())
 		})
 
@@ -259,7 +333,7 @@ var _ = Describe("Linux System Restore", func() {
 			imagesDir := filepath.Join(tempDir, "images")
 			Expect(os.MkdirAll(imagesDir, 0755)).To(Succeed())
 
-			errs := restoreContainerImages(tempDir)
+			errs := restoreContainerImages(tempDir, func(string) error { return nil })
 			Expect(errs).To(BeEmpty())
 		})
 	})

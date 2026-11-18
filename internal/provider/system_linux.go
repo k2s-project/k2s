@@ -16,7 +16,8 @@ import (
 	"strings"
 
 	kjson "github.com/k2s-project/k2s/internal/json"
-	linuxlifecycle "github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/output"
 )
 
 // linuxWindowsWorkerStateFile is written by the native lifecycle when it
@@ -30,13 +31,17 @@ type linuxWindowsWorkerState struct {
 type linuxSystemProvider struct {
 	installDir string
 	configDir  string
+	stdWriter  output.StreamWriter
 }
 
 var linuxRunCombinedOutput = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	// Tool output is matched against English text, e.g. the virsh domain state.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd.CombinedOutput()
 }
 
-var linuxExecuteLifecycle = linuxlifecycle.Execute
+var linuxExecuteLifecycle = lifecycle.Execute
 
 var linuxConfirm = func(prompt string) bool {
 	fmt.Print(prompt)
@@ -45,7 +50,11 @@ var linuxConfirm = func(prompt string) bool {
 }
 
 func newLinuxSystemProvider(cfg ProviderConfig) *linuxSystemProvider {
-	return &linuxSystemProvider{installDir: cfg.InstallDir, configDir: cfg.ConfigDir}
+	return &linuxSystemProvider{
+		installDir: cfg.InstallDir,
+		configDir:  cfg.ConfigDir,
+		stdWriter:  cfg.StdWriter,
+	}
 }
 
 func (p *linuxSystemProvider) Dump(cfg SystemDumpConfig) error {
@@ -80,11 +89,11 @@ func (p *linuxSystemProvider) Package(cfg SystemPackageConfig) error {
 func (p *linuxSystemProvider) Reset(_ SystemResetConfig) error {
 	// Resetting the cluster on Linux is done via the native uninstall process, similar to Windows system reset flow.
 	slog.Info("[System] Resetting cluster via native Linux uninstall")
-	if err := linuxlifecycle.Execute("Uninstall", linuxlifecycle.Operation{
+	if err := lifecycle.Execute("Uninstall", lifecycle.Operation{
 		InstallDir: p.installDir,
 		ConfigDir:  p.configDir,
 		LinuxOnly:  true,
-	}); err != nil {
+	}, p.stdWriter, false); err != nil {
 		return fmt.Errorf("native Linux uninstall failed: %w", err)
 	}
 	return nil
@@ -154,19 +163,19 @@ func (p *linuxSystemProvider) Compact(cfg SystemCompactConfig) error {
 	}
 
 	if !cfg.Yes {
-		output, err := linuxRunCombinedOutput("virsh", "domstate", worker.Name)
-		if err == nil && strings.TrimSpace(string(output)) == "running" &&
+		state, err := linuxRunCombinedOutput("virsh", "domstate", worker.Name)
+		if err == nil && strings.TrimSpace(string(state)) == "running" &&
 			!linuxConfirm("The cluster must be stopped to compact the Windows worker disk. Stop cluster now? (y/n) ") {
 			slog.Info("[System] Compaction cancelled by user")
 			return nil
 		}
 	}
 
-	return linuxExecuteLifecycle("Compact", linuxlifecycle.Operation{
+	return linuxExecuteLifecycle("Compact", lifecycle.Operation{
 		InstallDir: p.installDir,
 		ConfigDir:  p.configDir,
 		NoRestart:  cfg.NoRestart,
-	})
+	}, p.stdWriter, cfg.ShowOutput)
 }
 
 func readLinuxWindowsWorkerState(configDir string) (*linuxWindowsWorkerState, error) {

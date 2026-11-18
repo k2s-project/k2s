@@ -63,7 +63,7 @@ k2s addons export "storage ceph" -d C:\exports
 3. Import it before enable:
 
 ```console
-k2s addons import "storage ceph" --zip C:\transfer\addons.oci.tar
+k2s addons import "storage ceph" -f C:\transfer\addons.oci.tar
 ```
 
 4. If `clusterHost.node` is a Linux worker node, use `--node` so Ceph bootstrap prerequisites are staged on the actual Ceph host:

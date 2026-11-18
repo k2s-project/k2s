@@ -8,10 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	config_contracts "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/buildonly"
+	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/common"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/install/core"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils/tz"
@@ -243,7 +244,7 @@ func install(cmd *cobra.Command, args []string) error {
 
 	slog.Info("Installing", "kind", kind, "version", ver, "platform", utils.Platform())
 
-	outputWriter := cc.NewPtermWriter()
+	errorTracker := common.NewErrorTracker(cc.NewPtermWriter())
 
 	err = context.Providers().Cluster.Install(provider.ClusterInstallConfig{
 		SetupName:                         string(kind),
@@ -275,11 +276,10 @@ func install(cmd *cobra.Command, args []string) error {
 		ClusterName:                       "k2s-cluster",
 		ControlPlaneHostname:              hostname,
 		EffectiveInstallConfig:            effectiveInstallConfig,
-		StdWriter:                         outputWriter,
+		StdWriter:                         errorTracker,
 	})
 	if err != nil {
-		// On Windows, check for prerequisite failures in PS output
-		errorLine, found := cc.GetInstallPreRequisiteError(outputWriter.ErrorLines)
+		errorLine, found := errorTracker.PreRequisiteError()
 		if found {
 			slog.Warn("Prerequisite check failed", "detail", errorLine)
 			if delErr := os.Remove(filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)); delErr != nil {
@@ -288,11 +288,11 @@ func install(cmd *cobra.Command, args []string) error {
 			return &cc.CmdFailure{
 				Severity: cc.SeverityWarning,
 				Code:     "prereq-failed",
-				Message:  fmt.Sprintf("Prerequisite check failed: %s. See https://github.com/k2s-project/k2s/blob/main/docs/op-manual/installing-k2s.md#prerequisites", errorLine),
+				Message:  fmt.Sprintf("Prerequisite check failed: %s. See https://github.com/k2s-project/k2s/blob/main/docs/op-manual/installing-k2s.md#prerequisites", strings.TrimSuffix(errorLine, ".")),
 			}
 		}
 
-		if outputWriter.ErrorOccurred {
+		if errorTracker.ErrOccurred() {
 			if markErr := config.MarkSetupAsCorrupted(configDir); markErr != nil {
 				slog.Error("error while marking setup as corrupted", "error", markErr)
 			}

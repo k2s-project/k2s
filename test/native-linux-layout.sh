@@ -23,6 +23,7 @@ required_files=(
   "lib/modules/linux/common/logging.sh"
   "lib/modules/linux/common/command.sh"
   "lib/modules/linux/infra/proxy.sh"
+  "lib/modules/linux/infra/ssh.sh"
   "lib/modules/linux/networking/dns.sh"
   "lib/modules/linux/node/packages.sh"
   "lib/modules/linux/node/windows-worker.sh"

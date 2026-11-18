@@ -83,6 +83,13 @@
         "k2s": "C:\\ProgramData\\K2s",
         "logs": "C:\\var\\log"
     },
+    "sshKey": {
+        "subDir": "k2s",
+        "fileName": {
+            "windows": "id_rsa",
+            "linux": "id_ed25519"
+        }
+    },
     "clusterName": "k2s-cluster",
     "supportedWorkerOS": [
         {

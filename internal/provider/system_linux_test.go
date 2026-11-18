@@ -13,7 +13,8 @@ import (
 	"reflect"
 	"testing"
 
-	linuxlifecycle "github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/output"
 )
 
 type compactStubs struct {
@@ -22,7 +23,7 @@ type compactStubs struct {
 	prompted   bool
 	executed   bool
 	operation  string
-	input      linuxlifecycle.Operation
+	input      lifecycle.Operation
 	virshCalls int
 }
 
@@ -43,7 +44,7 @@ func stubCompact(t *testing.T, s *compactStubs) {
 		s.prompted = true
 		return s.confirm
 	}
-	linuxExecuteLifecycle = func(operation string, input linuxlifecycle.Operation) error {
+	linuxExecuteLifecycle = func(operation string, input lifecycle.Operation, _ output.StreamWriter, _ bool) error {
 		s.executed = true
 		s.operation = operation
 		s.input = input
@@ -121,7 +122,7 @@ func TestCompact_YesSkipsPromptAndPassesNoRestart(t *testing.T) {
 	if s.prompted || s.virshCalls != 0 {
 		t.Fatal("--yes must skip the worker state check and the prompt")
 	}
-	want := linuxlifecycle.Operation{InstallDir: "/opt/k2s", ConfigDir: p.configDir, NoRestart: true}
+	want := lifecycle.Operation{InstallDir: "/opt/k2s", ConfigDir: p.configDir, NoRestart: true}
 	if !s.executed || s.operation != "Compact" || !reflect.DeepEqual(s.input, want) {
 		t.Fatalf("unexpected lifecycle call: executed=%v operation=%q input=%+v", s.executed, s.operation, s.input)
 	}

@@ -18,7 +18,7 @@ $windowsNode_DockerDirectory = 'docker'
 
 function Invoke-DownloadDockerArtifacts($downloadsBaseDirectory, $Proxy, $windowsNodeArtifactsDirectory) {
     $dockerDownloadsDirectory = "$downloadsBaseDirectory\$windowsNode_DockerDirectory"
-    $DockerVersion = '29.9.3'
+    $DockerVersion = '29.10.0'
     $compressedDockerFile = 'docker-' + $DockerVersion + '.zip'
     $compressedFile = "$dockerDownloadsDirectory\$compressedDockerFile"
 

@@ -8,9 +8,22 @@ fi
 readonly K2S_LIFECYCLE_SH_LOADED=1
 
 k2s_load_operation() {
-  [[ "${1:-}" == '--operation-file' && -f "${2:-}" ]] || return 2
-  [[ $(stat -c '%a' "$2") == 600 ]] || return 1
-  jq -e '(.installDir | type == "string" and length > 0) and (.configDir | type == "string" and length > 0) and ((.noProxy // []) | type == "array") and ((.skipStart // false) | type == "boolean") and ((.skipPurge // false) | type == "boolean") and ((.noRestart // false) | type == "boolean")' "$2" >/dev/null || return 2
+  if [[ "${1:-}" != '--operation-file' || -z "${2:-}" ]]; then
+    printf '%s\n' 'Expected --operation-file <configuration.json>. Use the k2s CLI to generate the operation configuration.' >&2
+    return 2
+  fi
+  if [[ ! -f "$2" ]]; then
+    printf 'Lifecycle operation file does not exist: %s\n' "$2" >&2
+    return 2
+  fi
+  if [[ $(stat -c '%a' "$2") != 600 ]]; then
+    printf 'Lifecycle operation file must have permissions 0600: %s\n' "$2" >&2
+    return 1
+  fi
+  jq -e '(.installDir | type == "string" and length > 0) and (.configDir | type == "string" and length > 0) and ((.noProxy // []) | type == "array") and ((.skipStart // false) | type == "boolean") and ((.skipPurge // false) | type == "boolean") and ((.noRestart // false) | type == "boolean")' "$2" >/dev/null || {
+    printf 'Invalid lifecycle operation configuration: %s\n' "$2" >&2
+    return 2
+  }
   K2S_INSTALL_DIR=$(jq -er '.installDir' "$2") || return 2
   K2S_CONFIG_DIR=$(jq -er '.configDir' "$2") || return 2
   K2S_VERSION=$(jq -r '.version // empty' "$2") || return 2
@@ -55,14 +68,17 @@ k2s_merge_no_proxy() {
 }
 
 k2s_require_host() {
-  k2s_require_root || return 3
+  [[ ${EUID} -eq 0 ]] || { k2s_log_prereq_failure 'K2s Linux host operations must be run as root.'; return 3; }
   k2s_require_install_dir || return 1
-  [[ $(. /etc/os-release; printf '%s-%s' "$ID" "$VERSION_ID") == debian-13* ]] || return 3
+  [[ $(. /etc/os-release; printf '%s-%s' "$ID" "$VERSION_ID") == debian-13* ]] || { k2s_log_prereq_failure 'K2s native Linux hosts require Debian 13.'; return 3; }
   local tool
   for tool in jq flock systemctl apt-get dpkg modprobe sysctl chattr lsattr ip ss; do
-    k2s_require_command "$tool" || return 4
+    command -v "$tool" >/dev/null 2>&1 || { k2s_log_prereq_failure "Required command is not available: $tool"; return 4; }
   done
-  [[ $(wc -l < /proc/swaps) -le 1 ]] || return 3
+  for tool in ssh ssh-keygen; do
+    command -v "$tool" >/dev/null 2>&1 || { k2s_log_prereq_failure "Required command $tool is not available. Install the package openssh-client."; return 4; }
+  done
+  [[ $(wc -l < /proc/swaps) -le 1 ]] || { k2s_log_prereq_failure 'Swap must be disabled on the host.'; return 3; }
 }
 
 k2s_windows_worker_install() {
@@ -125,10 +141,15 @@ k2s_install_cluster() {
   k2s_require_host || return $?
   k2s_merge_no_proxy || return $?
   if [[ "$K2S_LINUX_ONLY" != true ]]; then
+    k2s_log INFO 'Preflighting managed KVM Windows worker.'
+    k2s_windows_worker_preflight_host || return $?
     k2s_windows_worker_install_host_dependencies || return $?
+    k2s_windows_worker_preflight_tools || return $?
   fi
   k2s_log INFO 'Configuring K2s proxy compatibility network.'
   k2s_proxy_network_install || return $?
+  k2s_log INFO 'Ensuring the K2s SSH key pair.'
+  k2s_ssh_ensure_key || return $?
   k2s_enable_host_ssh || return $?
   k2s_log INFO 'Configuring K2s HTTP proxy service.'
   k2s_proxy_install || return $?
@@ -147,8 +168,8 @@ k2s_install_cluster() {
   k2s_log INFO 'Waiting for Flannel CNI to become ready.'
   if ! k2s_kubectl -n kube-flannel rollout status daemonset/kube-flannel-ds --timeout=120s; then
     k2s_log ERROR 'Flannel did not become ready. Capturing pod and event diagnostics.'
-    k2s_kubectl -n kube-flannel get pods -o wide 2>&1 | tee -a "$K2S_LOG_FILE" || true
-    k2s_kubectl -n kube-flannel get events --sort-by=.lastTimestamp 2>&1 | tail -n 40 | tee -a "$K2S_LOG_FILE" || true
+    k2s_kubectl -n kube-flannel get pods -o wide 2>&1 | k2s_log_output || true
+    k2s_kubectl -n kube-flannel get events --sort-by=.lastTimestamp 2>&1 | tail -n 40 | k2s_log_output || true
     return 1
   fi
   k2s_log INFO 'Deploying ClusterIP allocation webhook.'
@@ -165,8 +186,8 @@ k2s_install_cluster() {
   rm -f "$rendered_deployment"
   if ! k2s_kubectl -n k2s-webhook rollout status deployment/clusterip-webhook --timeout=120s; then
     k2s_log ERROR 'ClusterIP webhook rollout did not complete. Capturing pod and event diagnostics.'
-    k2s_kubectl -n k2s-webhook get pods -o wide 2>&1 | tee -a "$K2S_LOG_FILE" || true
-    k2s_kubectl -n k2s-webhook get events --sort-by=.lastTimestamp 2>&1 | tail -n 40 | tee -a "$K2S_LOG_FILE" || true
+    k2s_kubectl -n k2s-webhook get pods -o wide 2>&1 | k2s_log_output || true
+    k2s_kubectl -n k2s-webhook get events --sort-by=.lastTimestamp 2>&1 | tail -n 40 | k2s_log_output || true
     return 1
   fi
   k2s_log INFO 'Installing bundled Linux control-plane tools.'
@@ -301,6 +322,7 @@ k2s_uninstall_cluster() {
   ip link delete flannel.1 2>/dev/null || true
   rm -f /etc/systemd/system/k2s-dnsproxy.service /etc/k2s/dnsproxy.yaml /etc/systemd/system/kubelet.service.d/20-k2s-logging.conf
   k2s_proxy_cleanup || return $?
+  [[ "$K2S_SKIP_PURGE" == true ]] || k2s_ssh_remove_key || true
   rm -rf "$K2S_CONFIG_DIR"
 }
 
@@ -309,10 +331,8 @@ k2s_dispatch_lifecycle() {
   shift
 
   k2s_load_operation "$@" || return $?
-  k2s_initialize_logging
+  k2s_initialize_logging --capture
   k2s_log INFO "Starting native Debian 13 lifecycle operation: $operation"
-  export K2S_LOG_STREAMED=true
-  exec > >(tee -a "$K2S_LOG_FILE") 2>&1
   trap 'exit_code=$?; k2s_log ERROR "Native Debian 13 lifecycle operation failed at shell line $LINENO (exit code $exit_code)"' ERR
   if k2s_lock_and_run "k2s_${operation}_cluster"; then
     k2s_log INFO "Completed native Debian 13 lifecycle operation: $operation"

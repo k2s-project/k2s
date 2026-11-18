@@ -23,7 +23,7 @@ spec:
           curl: []
           additionalImages:
             - shsk2s.azurecr.io/microsoft-standard-wsl2:6.18.58.1
-            - nvcr.io/nvidia/k8s-device-plugin:v0.20.1
+            - nvcr.io/nvidia/k8s-device-plugin:v0.20.2
             - nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-ubi9
         windows:
           curl: []

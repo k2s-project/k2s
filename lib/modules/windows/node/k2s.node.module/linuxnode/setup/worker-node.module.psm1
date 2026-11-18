@@ -640,7 +640,7 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
 
         $linuxNodePackagesPath = Join-Path $linuxNodeDir 'packages'
         $linuxNodePackagesByOsPath = Join-Path (Join-Path $linuxNodePackagesPath $installedDistributionOnRemoteComputer) $Architecture
-        $linuxNodeImagesPath = Join-Path $linuxNodeDir 'images'
+        $linuxNodeImagesPath = Join-Path (Join-Path $linuxNodeDir 'images') $Architecture
 
         if (Test-Path $linuxNodePackagesByOsPath) {
             Write-Log "[NodeAdd] Overwriting existing packages content in '$linuxNodePackagesByOsPath'" -Console
@@ -712,8 +712,9 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
                     Write-Log "[NodeAdd] Copied images from node package into '$linuxNodeImagesPath'" -Console
                 }
             } else {
-                Write-Log "[NodeAdd] Copying images from node package into '$linuxNodeDir\images'" -Console
-                Copy-Item -Path $zipImagesPath -Destination $linuxNodeDir -Recurse -Force
+                Write-Log "[NodeAdd] Copying images from node package into '$linuxNodeImagesPath'" -Console
+                New-Item -Path $linuxNodeImagesPath -ItemType Directory -Force | Out-Null
+                Copy-Item -Path "$zipImagesPath\*" -Destination $linuxNodeImagesPath -Recurse -Force
             }
         } else {
             Write-Log "[NodeAdd] WARNING: 'images' folder not found in node package. Skipping image copy." -Console
@@ -771,7 +772,7 @@ function Install-LinuxPackagesAndAddContainerImagesIntoRemoteComputer {
     Add-BuildahArtifactsToRemoteComputer -UserName $UserName -IpAddress $IpAddress -SourcePath $windowsHostDebPackagesSourcePath -TargetPath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
     Install-BuildahDebPackages -UserName $UserName -IpAddress $IpAddress -SourcePath $buildahDebPackagesTargetPath -InstalledDistribution $installedDistributionOnRemoteComputer
 
-    Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture
+    Copy-KubernetesImagesFromControlPlaneToRemoteComputer -UserName $UserName -IpAddress $IpAddress -Architecture $Architecture -ControlPlaneArchitecture $controlPlaneArchitecture -UseNodePackageArtifacts:(![string]::IsNullOrWhiteSpace($NodePackagePath))
 }
 
 function Test-SupportedWorkerOS {

@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,8 +34,9 @@ import (
 	"github.com/k2s-project/k2s/internal/core/clusterconfig"
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
-	"github.com/k2s-project/k2s/internal/json"
+	kjson "github.com/k2s-project/k2s/internal/json"
 	"github.com/k2s-project/k2s/internal/providers/bash"
+	sshprovider "github.com/k2s-project/k2s/internal/providers/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1204,11 +1206,18 @@ func readOciLayout(layoutDir string) (blobsDir string, addons []exportedAddon, e
 		}
 		if name := addon.manifest.Annotations[addonNameAnnotation]; name != "" {
 			addon.name = name
-			addon.implementation = addon.manifest.Annotations[addonImplAnnotation]
+		}
+		if implementation := addon.manifest.Annotations[addonImplAnnotation]; implementation != "" {
+			addon.implementation = implementation
 		}
 		if addon.name == "" {
 			return "", nil, fmt.Errorf("invalid OCI artifact format: manifest %s does not name an addon", entry.Digest)
 		}
+		baseName, _, err := resolveImportPath(addon.name, addon.implementation)
+		if err != nil {
+			return "", nil, err
+		}
+		addon.name = baseName
 		addons = append(addons, addon)
 	}
 
@@ -1765,7 +1774,11 @@ func (p *linuxAddonProvider) resolveImportTargets(nodes string) ([]importTarget,
 		}
 
 		target := local
-		if !slices.Contains(localNames, node) {
+		if slices.Contains(localNames, node) {
+			if !isNodeReady(local.name) {
+				return nil, fmt.Errorf("node '%s' is not in Ready state - run 'kubectl get nodes' to check node status", local.name)
+			}
+		} else {
 			var err error
 			if target, err = p.resolveWorker(node); err != nil {
 				return nil, err
@@ -1848,9 +1861,9 @@ func (p *linuxAddonProvider) imageImporter(targets []importTarget, cfg AddonImpo
 
 // importImageOnWorker copies an image archive to a Linux worker and loads it there with buildah, like
 // Invoke-LinuxNodeImageImport of the Windows image scripts. The copy is removed afterwards.
-func importImageOnWorker(target importTarget, archivePath, privateKeyPath string) error {
+func importImageOnWorker(target importTarget, archivePath, privateKeyPath string) (err error) {
 	// A unique name keeps concurrent imports on the same node from overwriting each other's archive.
-	remotePath := fmt.Sprintf("/tmp/k2s-image-import-%s.tar", rand.Text())
+	remotePath := fmt.Sprintf("/var/tmp/k2s-image-import-%s.tar", rand.Text())
 
 	var output bytes.Buffer
 	worker := connectWorker(sshprovider.ConnectionOptions{
@@ -1861,6 +1874,12 @@ func importImageOnWorker(target importTarget, archivePath, privateKeyPath string
 		Timeout:           definitions.SSHDefaultTimeout,
 		StdOutWriter:      &output,
 	})
+
+	defer func() {
+		if cleanupErr := worker.Exec("sudo rm -f " + remotePath); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("removing the temporary image archive %s failed: %w", remotePath, cleanupErr))
+		}
+	}()
 
 	if err := worker.CopyToNode(archivePath, remotePath); err != nil {
 		return fmt.Errorf("copying the image archive failed: %w", err)
@@ -1877,9 +1896,6 @@ func importImageOnWorker(target importTarget, archivePath, privateKeyPath string
 		importErr = fmt.Errorf("buildah pull failed: %w: %s", importErr, strings.TrimSpace(output.String()))
 	}
 
-	if cleanupErr := worker.Exec("sudo rm -f " + remotePath); cleanupErr != nil {
-		return errors.Join(importErr, fmt.Errorf("removing the temporary image archive %s failed: %w", remotePath, cleanupErr))
-	}
 	return importErr
 }
 
@@ -2057,8 +2073,8 @@ func omittedImagesForFlag(flag addons.CliFlag, baseDir string) []string {
 	return removeVersionlessImages(cleaned)
 }
 
-// imageArchiveName is the name an image gets inside an images layer ('repo/name:tag' -> 'repo_name_tag.tar').
-func imageArchiveName(image string) string {
+// addonImageArchiveName matches the addon export format, which differs from node-package archive names.
+func addonImageArchiveName(image string) string {
 	return imageNameSanitizer.ReplaceAllString(imageNameReplacer.Replace(image), "") + ".tar"
 }
 
@@ -2160,7 +2176,7 @@ func newImagePrunePlan(entries []*addonImportEntry, tokens []omitToken) *imagePr
 			for _, image := range flagImages {
 				// An exact match comes first; the identity fallback tolerates another version in the artifact.
 				var matched []string
-				if archive := imageArchiveName(image); entryFiles[archive] {
+				if archive := addonImageArchiveName(image); entryFiles[archive] {
 					matched = []string{archive}
 				} else if identity := comparableImageKey(image); identity != "" {
 					matched = filesByIdentity[identity]
@@ -2363,7 +2379,7 @@ func (p *linuxAddonProvider) addAddonToConfig(addonName string, impl ...string) 
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -2406,7 +2422,7 @@ func (p *linuxAddonProvider) addAddonToConfig(addonName string, impl ...string) 
 	}
 
 	(*cfgMap)["EnabledAddons"] = addons
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...string) error {
@@ -2415,7 +2431,7 @@ func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...str
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -2449,7 +2465,7 @@ func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...str
 	}
 
 	(*cfgMap)["EnabledAddons"] = addons
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
@@ -2458,7 +2474,7 @@ func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -2485,7 +2501,7 @@ func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
@@ -2494,7 +2510,7 @@ func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -2515,7 +2531,7 @@ func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func updateHostsContent(content, hostname, ip string) string {
@@ -2629,7 +2645,7 @@ func (p *linuxAddonProvider) isAddonEnabledInConfig(addonName string, impl ...st
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		return false
 	}

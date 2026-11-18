@@ -73,9 +73,10 @@ type testLayer struct {
 }
 
 type testAddon struct {
-	name           string
-	implementation string
-	layers         []testLayer
+	name                string
+	implementation      string
+	layers              []testLayer
+	manifestAnnotations map[string]string
 }
 
 func tarOf(t *testing.T, entries ...tarEntry) []byte {
@@ -130,7 +131,11 @@ func writeArtifact(t *testing.T, addons ...testAddon) string {
 			layers = append(layers, map[string]any{"mediaType": layer.mediaType, "digest": addBlob(layer.content, layer.corrupt)})
 		}
 		annotations := map[string]string{addonNameAnnotation: addon.name, addonImplAnnotation: addon.implementation}
-		manifestJSON, err := json.Marshal(map[string]any{"schemaVersion": 2, "layers": layers, "annotations": annotations})
+		manifestAnnotations := addon.manifestAnnotations
+		if manifestAnnotations == nil {
+			manifestAnnotations = annotations
+		}
+		manifestJSON, err := json.Marshal(map[string]any{"schemaVersion": 2, "layers": layers, "annotations": manifestAnnotations})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -308,6 +313,82 @@ func TestImport_StagesSharedScriptsAtAddonRoot(t *testing.T) {
 			assertFile(t, "implementation documentation", addonDir, implementation, "README.md")
 			if _, err := os.Stat(filepath.Join(addonDir, implementation, "storage-validation.module.psm1")); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("shared module must not be placed in the implementation directory: %v", err)
+			}
+		})
+	}
+}
+
+func TestImport_ResolvesIdentityAnnotationsIndependently(t *testing.T) {
+	for name, test := range map[string]struct {
+		annotations        map[string]string
+		wantName           string
+		wantImplementation string
+	}{
+		"index only": {
+			annotations: map[string]string{}, wantName: "ingress", wantImplementation: "nginx",
+		},
+		"manifest name only": {
+			annotations: map[string]string{addonNameAnnotation: "ingress"}, wantName: "ingress", wantImplementation: "nginx",
+		},
+		"manifest implementation only": {
+			annotations: map[string]string{addonImplAnnotation: "traefik"}, wantName: "ingress", wantImplementation: "traefik",
+		},
+		"manifest overrides both": {
+			annotations: map[string]string{addonNameAnnotation: "storage", addonImplAnnotation: "ceph"},
+			wantName:    "storage", wantImplementation: "ceph",
+		},
+		"empty manifest values preserve index": {
+			annotations: map[string]string{addonNameAnnotation: "", addonImplAnnotation: ""},
+			wantName:    "ingress", wantImplementation: "nginx",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newImportFixture(t)
+			artifact := writeArtifact(t, testAddon{
+				name: "ingress", implementation: "nginx", manifestAnnotations: test.annotations,
+				layers: []testLayer{{mediaType: scriptsMediaType, content: tarGzOf(t, tarEntry{"./Enable.ps1", "enable"})}},
+			})
+
+			if err := fixture.provider.Import(AddonImportConfig{
+				ArtifactFile: artifact, Names: []string{test.wantName, test.wantImplementation},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			assertFile(t, "enable", fixture.addonsDir(), test.wantName, test.wantImplementation, "Enable.ps1")
+			if _, err := os.Stat(filepath.Join(fixture.addonsDir(), test.wantName, "Enable.ps1")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("implementation script must not be staged at the addon root: %v", err)
+			}
+		})
+	}
+}
+
+func TestImport_NormalizesLegacyIdentityBeforeSelectionAndOmission(t *testing.T) {
+	for name, names := range map[string][]string{
+		"all addons":      nil,
+		"base addon":      {"storage"},
+		"quoted":          {"storage ceph"},
+		"separate tokens": {"storage", "ceph"},
+		"flattened":       {"storage-ceph"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, omit := range []string{"storage:omitCertMgr", "storage/ceph:omitCertMgr"} {
+				t.Run(omit, func(t *testing.T) {
+					fixture := newImportFixture(t)
+					addon := certManagerAddon(t, "storage ceph", "ceph",
+						omitManifest("storage", "ceph", nil, "quay.io/jetstack/cert-manager-controller:v1.20.2"))
+					addon.layers = append(addon.layers, testLayer{
+						mediaType: scriptsMediaType, content: tarGzOf(t, tarEntry{"./Enable.ps1", "enable"}),
+					})
+					artifact := writeArtifact(t, addon)
+
+					if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Names: names, Omit: []string{omit}}); err != nil {
+						t.Fatal(err)
+					}
+					assertFile(t, "enable", fixture.addonsDir(), "storage", "ceph", "Enable.ps1")
+					if images := fixture.importedImages(t); !slices.Equal(images, []string{nginxArchive + "=nginx"}) {
+						t.Fatalf("imported images = %q; scoped omission must still match the normalized identity", images)
+					}
+				})
 			}
 		})
 	}
@@ -603,6 +684,7 @@ type fakeWorker struct {
 	copied   []string
 	commands []string
 	fail     func(command string) bool
+	copyErr  error
 }
 
 func (w *fakeWorker) CopyToNode(source, target string) error {
@@ -611,7 +693,7 @@ func (w *fakeWorker) CopyToNode(source, target string) error {
 		return err
 	}
 	w.copied = append(w.copied, target+"="+string(content))
-	return nil
+	return w.copyErr
 }
 
 func (w *fakeWorker) Exec(command string) error {
@@ -667,6 +749,8 @@ func TestImport_RejectsNodesThatCannotReceiveImagesBeforeAnyChange(t *testing.T)
 		"invalid node name":         {nodes: "-rf", descriptor: linuxWorkerDescriptor, wantError: "not a valid node name"},
 		"worker without SSH user":   {nodes: "worker-1", descriptor: `{"Name":"worker-1","IpAddress":"172.19.1.50","OS":"linux"}`, wantError: "IpAddress or Username is missing"},
 		"worker not ready":          {nodes: "worker-1", descriptor: linuxWorkerDescriptor, notReady: true, wantError: "is not in Ready state"},
+		"local alias not ready":     {nodes: "linux", notReady: true, wantError: "is not in Ready state"},
+		"local hostname not ready":  {nodes: getNodeName(), notReady: true, wantError: "is not in Ready state"},
 		"one bad node among others": {nodes: "worker-1,winworker-1", descriptor: linuxWorkerDescriptor + "," + windowsWorkerDescriptor, wantError: "Windows node", notSupp: true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -717,7 +801,7 @@ func TestImport_ImportsOntoAdditionalLinuxWorkerOverSSH(t *testing.T) {
 	}
 	for i, wantContent := range []string{"cert-manager", "nginx"} {
 		remote, content, _ := strings.Cut(worker.copied[i], "=")
-		if !strings.HasPrefix(remote, "/tmp/k2s-image-import-") || content != wantContent {
+		if !strings.HasPrefix(remote, "/var/tmp/k2s-image-import-") || content != wantContent {
 			t.Fatalf("copied[%d] = %q", i, worker.copied[i])
 		}
 		if got, want := worker.commands[i*2], "sudo buildah pull oci-archive:"+remote+" 2>&1"; got != want {
@@ -764,7 +848,7 @@ func TestImport_WorkerFallsBackToDockerArchiveAndCleansUp(t *testing.T) {
 	}
 
 	commands := workers["172.19.1.50"].commands
-	if len(commands) != 3 || !strings.Contains(commands[0], "oci-archive:") || !strings.Contains(commands[1], "docker-archive:") || !strings.HasPrefix(commands[2], "sudo rm -f /tmp/k2s-image-import-") {
+	if len(commands) != 3 || !strings.Contains(commands[0], "oci-archive:") || !strings.Contains(commands[1], "docker-archive:") || !strings.HasPrefix(commands[2], "sudo rm -f /var/tmp/k2s-image-import-") {
 		t.Fatalf("commands = %q", commands)
 	}
 }
@@ -782,8 +866,45 @@ func TestImport_ReportsWorkerImageFailuresAndStillRemovesTheArchive(t *testing.T
 		t.Fatalf("expected an image import failure, got: %v", err)
 	}
 	commands := workers["172.19.1.50"].commands
-	if last := commands[len(commands)-1]; !strings.HasPrefix(last, "sudo rm -f /tmp/k2s-image-import-") {
+	if last := commands[len(commands)-1]; !strings.HasPrefix(last, "sudo rm -f /var/tmp/k2s-image-import-") {
 		t.Fatalf("the temporary archive was not removed: %q", commands)
+	}
+}
+
+func TestImportImageOnWorker_RemovesPartialUpload(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup failure=%t", cleanupFails), func(t *testing.T) {
+			workers := useFakeWorkers(t, true, nil)
+			copyErr := errors.New("upload interrupted")
+			worker := &fakeWorker{
+				copyErr: copyErr,
+				fail: func(command string) bool {
+					return cleanupFails && strings.HasPrefix(command, "sudo rm -f ")
+				},
+			}
+			target := importTarget{name: "worker-1", ip: "172.19.1.50", user: "worker"}
+			workers[target.ip] = worker
+			archive := filepath.Join(t.TempDir(), "image.tar")
+			if err := os.WriteFile(archive, []byte("partial image"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			err := importImageOnWorker(target, archive, "/keys/id_rsa")
+
+			if !errors.Is(err, copyErr) {
+				t.Fatalf("the upload error must be preserved, got: %v", err)
+			}
+			if strings.Contains(err.Error(), "removing the temporary image archive") != cleanupFails {
+				t.Fatalf("cleanup failure reported incorrectly: %v", err)
+			}
+			if len(worker.copied) != 1 || len(worker.commands) != 1 {
+				t.Fatalf("a failed copy must run only cleanup: copied=%q, commands=%q", worker.copied, worker.commands)
+			}
+			remote, _, _ := strings.Cut(worker.copied[0], "=")
+			if !strings.HasPrefix(remote, "/var/tmp/k2s-image-import-") || worker.commands[0] != "sudo rm -f "+remote {
+				t.Fatalf("the partial upload must be removed from disk-backed staging: %q", worker.commands)
+			}
+		})
 	}
 }
 
@@ -796,6 +917,12 @@ func TestImport_AcceptsTheLocalHostNode(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fixture := newImportFixture(t)
+			useFakeWorkers(t, true, nil)
+			var readinessChecks []string
+			isNodeReady = func(node string) bool {
+				readinessChecks = append(readinessChecks, node)
+				return node == getNodeName()
+			}
 			artifact := writeArtifact(t, certManagerAddon(t, "ingress", "nginx", ""))
 
 			if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: nodes}); err != nil {
@@ -804,6 +931,9 @@ func TestImport_AcceptsTheLocalHostNode(t *testing.T) {
 
 			if images := fixture.importedImages(t); len(images) != 2 {
 				t.Fatalf("imported images = %q", images)
+			}
+			if len(readinessChecks) == 0 || slices.Contains(readinessChecks, "linux") && getNodeName() != "linux" {
+				t.Fatalf("readiness must be checked using the actual local node name, got %q", readinessChecks)
 			}
 		})
 	}
@@ -823,8 +953,13 @@ func TestParseOmitTokens(t *testing.T) {
 }
 
 func TestImageNameHelpers(t *testing.T) {
-	if got := imageArchiveName("quay.io/keycloak/keycloak:26.7.2"); got != "quay.io_keycloak_keycloak_26.7.2.tar" {
-		t.Errorf("imageArchiveName = %q", got)
+	for image, want := range map[string]string{
+		"quay.io/keycloak/keycloak:26.7.2":       "quay.io_keycloak_keycloak_26.7.2.tar",
+		"registry.k8s.io/kube-apiserver:v1.37.2": "registry.k8s.io_kube-apiserver_v1.37.2.tar",
+	} {
+		if got := addonImageArchiveName(image); got != want {
+			t.Errorf("addonImageArchiveName(%q) = %q, want %q", image, got, want)
+		}
 	}
 	for image, want := range map[string]string{
 		"quay.io/jetstack/cert-manager-controller:v1.21.1": "quay.io_jetstack_cert-manager-controller",

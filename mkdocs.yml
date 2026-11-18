@@ -6,7 +6,7 @@ site_url: https://Siemens-Healthineers.github.io/K2s
 copyright: >-
   <strong>Copyright K2s Series of LF Projects, LLC<br><br>
   For website terms of use, trademark policy and other project policies please see
-  <a href="http://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
+  <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
 repo_url: https://github.com/Siemens-Healthineers/K2s/
 edit_uri: edit/main/docs/
 strict: true

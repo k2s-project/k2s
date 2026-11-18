@@ -77,7 +77,7 @@ To inspect the different install options, run:
     ```console
     git checkout tags/v1.4.0
     ```
-    Also make sure you have built the Go binaries (`.\bin\bgow` on *Windows*, `./bin/bgol` on *Linux*) as described in the [cloning instructions](getting-k2s.md#option-1-cloning-git-repository).
+    Also make sure you have built the Go binaries (`.\bin\bgow` on *Windows*, `bash ./build.sh` on *Linux*) as described in the [cloning instructions](getting-k2s.md#option-1-cloning-git-repository).
 
 !!! note
     *K2s* will start automatically after the installation has finished.
@@ -255,6 +255,12 @@ sudo ./k2s install --linux-only --proxy http://proxy.example:8080 --no-proxy loc
 # Install the native control plane and a managed Windows worker from a prepared QCOW2 image.
 sudo ./k2s install --worker-cpus 4 --worker-memory 8GB --worker-disk 64GB --windows-qcow2-path /path/to/WindowsWorker-Base.qcow2
 ```
+
+The installer requires `ssh` and `ssh-keygen` (Debian package `openssh-client`) and fails
+the prerequisite check before changing the host if it is missing. It creates the
+K2s SSH key pair `~/.ssh/k2s/id_ed25519` (`.pub`) of the user running `k2s`
+(`/root/.ssh/k2s` when using `sudo`) and removes it again on uninstall. The
+public key has to be authorized on machines that are added later as nodes.
 
 The equivalent platform-first lifecycle entry point is
 `lib/scripts/linux/debian/linuxonly/Install.sh`. It validates root access,

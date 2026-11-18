@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText:  © 2024 The K2s Authors
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
 package common
@@ -11,5 +11,10 @@ import (
 )
 
 type Installer interface {
-	Install(kind ic.Kind, cmd *cobra.Command, buildCmdFunc func(config *ic.InstallConfig) (cmd string, err error), cmdSession cc.CmdSession) error
+	Install(
+		kind ic.Kind,
+		cmd *cobra.Command,
+		buildCmdFunc func(config *ic.InstallConfig) (cmd string, err error),
+		cmdSession cc.CmdSession,
+	) error
 }

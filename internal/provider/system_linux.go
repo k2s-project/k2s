@@ -12,12 +12,14 @@ import (
 	"os/exec"
 	"strings"
 
-	linuxlifecycle "github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/linux/lifecycle"
+	"github.com/k2s-project/k2s/internal/output"
 )
 
 type linuxSystemProvider struct {
 	installDir string
 	configDir  string
+	stdWriter  output.StreamWriter
 }
 
 var linuxRunCombinedOutput = func(name string, args ...string) ([]byte, error) {
@@ -25,7 +27,11 @@ var linuxRunCombinedOutput = func(name string, args ...string) ([]byte, error) {
 }
 
 func newLinuxSystemProvider(cfg ProviderConfig) *linuxSystemProvider {
-	return &linuxSystemProvider{installDir: cfg.InstallDir, configDir: cfg.ConfigDir}
+	return &linuxSystemProvider{
+		installDir: cfg.InstallDir,
+		configDir:  cfg.ConfigDir,
+		stdWriter:  cfg.StdWriter,
+	}
 }
 
 func (p *linuxSystemProvider) Dump(cfg SystemDumpConfig) error {
@@ -45,7 +51,14 @@ func (p *linuxSystemProvider) Upgrade(_ SystemUpgradeConfig) error {
 		"cluster upgrade on Linux hosts is not yet implemented; use package-based reinstall instead")
 }
 
-func (p *linuxSystemProvider) Package(_ SystemPackageConfig) error {
+func (p *linuxSystemProvider) Package(cfg SystemPackageConfig) error {
+	if cfg.NodePackage {
+		if cfg.ForDeltaPackage {
+			return NotSupportedError("node package delta",
+				"node package delta creation on Linux hosts is not yet implemented")
+		}
+		return p.buildNodePackage(cfg)
+	}
 	return NotSupportedError("system package",
 		"offline packaging on Linux hosts is not yet implemented")
 }
@@ -53,11 +66,11 @@ func (p *linuxSystemProvider) Package(_ SystemPackageConfig) error {
 func (p *linuxSystemProvider) Reset(_ SystemResetConfig) error {
 	// Resetting the cluster on Linux is done via the native uninstall process, similar to Windows system reset flow.
 	slog.Info("[System] Resetting cluster via native Linux uninstall")
-	if err := linuxlifecycle.Execute("Uninstall", linuxlifecycle.Operation{
+	if err := lifecycle.Execute("Uninstall", lifecycle.Operation{
 		InstallDir: p.installDir,
 		ConfigDir:  p.configDir,
 		LinuxOnly:  true,
-	}); err != nil {
+	}, p.stdWriter, false); err != nil {
 		return fmt.Errorf("native Linux uninstall failed: %w", err)
 	}
 	return nil

@@ -216,18 +216,34 @@ else {
     # Inject storage node hostname into PV manifest
     $pvFile = "$PSScriptRoot\manifests\logging\opensearch\persistentvolume.yaml"
     $pvOrig = [System.IO.File]::ReadAllText($pvFile)
-    if (-not $placement) { [System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode)) }
+
+    if (-not $placement) {
+        [System.IO.File]::WriteAllText($pvFile, $pvOrig.Replace('__STORAGE_NODE__', $StorageNode))
+    }
+
     try {
-        $createResult = if ($placement) { Invoke-Kubectl -Params 'apply', '-f', $placement.Path } else { Invoke-Kubectl -Params 'create', '-k', "$manifestsPath\" }
+        $createResult = if ($placement) {
+            Invoke-Kubectl -Params 'apply', '-f', $placement.Path
+        }
+        else {
+            Invoke-Kubectl -Params 'apply', '-k', "$manifestsPath\"
+        }
     }
     finally {
         # Restore PV manifest placeholder
-        if (-not $placement) { [System.IO.File]::WriteAllText($pvFile, $pvOrig) }
-        if ($placement) { Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue }
-    }
-    $createResult.Output | Write-Log
-    if (!$createResult.Success) { Stop-WithError "Failed to create logging resources: $($createResult.Output)" }
+        if (-not $placement) {
+            [System.IO.File]::WriteAllText($pvFile, $pvOrig)
+        }
 
+        if ($placement) {
+            Remove-Item -LiteralPath $placement.Path -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $createResult.Output | Write-Log
+    if (!$createResult.Success) {
+        Stop-WithError "Failed to create logging resources: $($createResult.Output)"
+    }
     # fluent-bit windows
     if ($setupInfo.LinuxOnly -eq $false) {
         $winConfigMap = "$manifestsPath\fluentbit\windows\configmap-windows.yaml"

@@ -4,6 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 # Quick Start
+
+!!! tip
+    To set up *K2s* on a *Linux* host, follow the [Quick Start on a Linux Host](linux-host.md) instead.
+
 1. [Get *K2s*](../op-manual/getting-k2s.md)
 2. Verify that the [Prerequisites](../op-manual/installing-k2s.md#prerequisites) are fulfilled
 3. If you cloned the *Git* repository, build the Go binaries first (they are not committed to git):

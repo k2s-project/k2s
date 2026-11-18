@@ -6,6 +6,29 @@ name: CI - Windows Cluster
 # Never run untrusted pull-request code on an elevated self-hosted runner.
 on:
   workflow_dispatch:
+    inputs:
+      addon:
+        description: 'Addon whose full test set (all acceptance suites in its folder) runs after the core suite. "none" runs the core suite only.'
+        type: choice
+        required: true
+        default: 'none'
+        options:
+          - none
+          - autoscaling
+          - dashboard
+          - dicom
+          - ingress/nginx-gw
+          - ingress/traefik
+          - logging
+          - metrics
+          - monitoring
+          - registry
+          - rollout/argocd
+          - security
+          - storage/ceph
+          - storage/smb
+          - viewer
+          - windows-exporter
 
 permissions:
   contents: read
@@ -19,7 +42,7 @@ jobs:
     name: Install and test Hyper-V cluster
     runs-on: [self-hosted, k2s-win11-runner]
     environment: k2s-windows-e2e
-    timeout-minutes: 240
+    timeout-minutes: 540
     defaults:
       run:
         shell: powershell
@@ -46,7 +69,9 @@ jobs:
         timeout-minutes: 10
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          # Each run starts on a fresh VM, so a Go cache is never restored. The post-job save
+          # also fails on this runner (no gzip on PATH), so the cache is turned off.
+          cache: false
 
       - name: Build all K2s executables
         timeout-minutes: 30
@@ -127,6 +152,27 @@ jobs:
               --label-filter='core && acceptance' --junit-report=core.xml `
               --output-dir="$env:RUNNER_TEMP\k2s-test-results" .\test\e2e\cluster\core
           if ($LASTEXITCODE -ne 0) { throw "Core acceptance suite failed with exit $LASTEXITCODE" }
+
+      - name: Run addon acceptance suite
+        if: ${{ inputs.addon != 'none' }}
+        timeout-minutes: 240
+        env:
+          ADDON_TEST_PATH: ${{ inputs.addon }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location 'C:\k2s'
+          . .\.github\scripts\windows-cluster-proxy.ps1
+          Initialize-K2sCiProxy -ConfigPath '.\cfg\config.json'
+          $addonDir = Join-Path '.\test\e2e\addons' ($env:ADDON_TEST_PATH -replace '/', '\')
+          if (-not (Test-Path $addonDir)) { throw "Addon test directory $addonDir does not exist." }
+          $junitName = 'addon-' + ($env:ADDON_TEST_PATH -replace '[/\\]', '-') + '.xml'
+          # Addon suites start with all addons disabled (framework.EnsureAddonsAreDisabled); the core suite leaves none enabled.
+          # -r runs every suite under the addon folder (enable/disable, security, backup/restore, export/import, ...)
+          # one after another. --keep-going continues after a failing suite so all results are collected.
+          & go run github.com/onsi/ginkgo/v2/ginkgo -r -v --procs=1 --keep-going --fail-on-empty --timeout=60m `
+              --label-filter='addon && acceptance' --junit-report=$junitName `
+              --output-dir="$env:RUNNER_TEMP\k2s-test-results" $addonDir
+          if ($LASTEXITCODE -ne 0) { throw "Addon acceptance suite '$env:ADDON_TEST_PATH' failed with exit $LASTEXITCODE" }
 
       - name: Collect failure diagnostics
         if: ${{ failure() && steps.install.outcome != 'skipped' && steps.preflight.outcome == 'success' }}

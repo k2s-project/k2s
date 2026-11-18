@@ -98,22 +98,31 @@ function Get-LinuxWorkerNodeProvisioningContext {
     Param(
         [string] $UserName = $(throw 'Argument missing: UserName'),
         [string] $IpAddress = $(throw 'Argument missing: IpAddress'),
-        [string] $NodeName = '',
         [string] $LogPrefix = '[NodeAdd]',
         [string] $TargetDescription = 'remote computer'
     )
-
     $actualHostname = (Invoke-CmdOnVmViaSSHKey -CmdToExecute 'echo $(hostname)' -UserName $UserName -IpAddress $IpAddress).Output
     $k8sFormattedNodeName = $actualHostname.ToLower()
-
-    if (![string]::IsNullOrWhiteSpace($NodeName) -and ($NodeName.ToLower() -ne $k8sFormattedNodeName)) {
-        throw "$LogPrefix Precondition not met: the passed NodeName '$NodeName' does not match the hostname '$actualHostname' of the $TargetDescription with IP '$IpAddress'."
-    }
 
     $installedDistribution = Get-InstalledDistribution -UserName $UserName -IpAddress $IpAddress
     $osMessage = "{0} Detected OS on {1}: {2}" -f $LogPrefix, $TargetDescription, $installedDistribution
     Write-Log $osMessage -Console
     Test-SupportedWorkerOS -OS $installedDistribution
+
+    $architecture = Get-RemoteArchitecture -UserName $UserName -IpAddress $IpAddress
+    $archMessage = "{0} Detected architecture on {1}: {2}" -f $LogPrefix, $TargetDescription, $architecture
+    Write-Log $archMessage -Console
+
+    if ($architecture -notin @('amd64', 'arm64')) {
+        throw "$LogPrefix Unsupported worker architecture '$architecture'; supported architectures are amd64 and arm64."
+    }
+
+    # arm64 is only supported on Debian-family external nodes today (K2s issue #3052); fail
+    # fast here, before any package download or remote mutation starts, rather than failing
+    # deep into provisioning. Generic to the Debian family, not tied to a single release.
+    if ($architecture -eq 'arm64' -and $installedDistribution -notlike 'debian*') {
+        throw "$LogPrefix Unsupported architecture/distro combination: architecture 'arm64' is only supported on Debian-family distributions, detected OS '$installedDistribution' on $TargetDescription with IP '$IpAddress'."
+    }
 
     # Check only node names (not entire output) to avoid false positives from OS-IMAGE column
     $existingNodeNames = @((Invoke-Kubectl -Params @('get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}')).Output -split '\s+' | Where-Object { $_ })
@@ -125,6 +134,7 @@ function Get-LinuxWorkerNodeProvisioningContext {
         ActualHostname         = $actualHostname
         KubernetesNodeName     = $k8sFormattedNodeName
         InstalledDistribution  = $installedDistribution
+        Architecture           = $architecture
     }
 }
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
 #Requires -RunAsAdministrator
@@ -68,6 +68,10 @@ function Invoke-TimeSync {
     }
 }
 
+function Write-ImageRepairHint {
+    Write-Log "[ControlPlane] Hint: if control-plane images were lost (e.g. after an unclean shutdown), run 'k2s image repair' to restore them from the local archives." -Console
+}
+
 function Wait-ForAPIServer {
     $controlPlaneVMHostName = Get-ConfigControlPlaneNodeHostname
     $iteration = 0
@@ -82,6 +86,7 @@ function Wait-ForAPIServer {
         }
         if ($iteration -eq 10) {
             Write-Log $result -Error
+            Write-ImageRepairHint
             throw $result
         }
         Start-Sleep 2
@@ -97,7 +102,9 @@ function Wait-ForAPIServer {
 function Wait-ForControlPlanePodsReady {
     param (
         [Parameter(Mandatory = $false)]
-        [int] $TimeoutSeconds = 300
+        [int] $TimeoutSeconds = 300,
+        [Parameter(Mandatory = $false)]
+        [switch] $SuppressRepairHint
     )
 
     $controlPlaneVMHostName = (Get-ConfigControlPlaneNodeHostname).ToLower()
@@ -131,6 +138,13 @@ function Wait-ForControlPlanePodsReady {
 
             $describeResult = &"$kubeToolsPath\kubectl.exe" describe pod -n kube-system $pod 2>&1
             Write-Log "[ControlPlane] Diagnostics for pod '$pod': $describeResult" -Error
+
+            if (-not $SuppressRepairHint) {
+                if ("$result $describeResult" -match 'ErrImagePull|ImagePullBackOff|image not known|failed to pull|image .* not found') {
+                    Write-Log "[ControlPlane] Control-plane images appear to be missing from the CRI-O image store." -Console
+                }
+                Write-ImageRepairHint
+            }
 
             throw "Control-plane pod '$pod' did not become Ready within ${TimeoutSeconds}s: $result"
         }

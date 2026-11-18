@@ -15,7 +15,7 @@ k2s_run() {
   local command_status tee_status
   local -a pipeline_status
   set -o pipefail
-  if "$@" 2>&1 | tee -a "$K2S_LOG_FILE"; then
+  if "$@" 2>&1 | k2s_log_output; then
     return 0
   fi
   pipeline_status=("${PIPESTATUS[@]}")

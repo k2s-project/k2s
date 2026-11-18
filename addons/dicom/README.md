@@ -127,7 +127,7 @@ Backup/restore is **config-only** and **scoped to the `dicom` namespace**.
 
 ```console
 k2s addons backup dicom
-k2s addons restore dicom <path-to-backup-zip>
+k2s addons restore dicom -f <path-to-backup-zip>
 ```
  
 ## Further Reading

@@ -101,6 +101,16 @@ k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnect
 
 See [Extending K2s cluster](extending-k2s-cluster.md) for the complete node onboarding workflow.
 
+### arm64 Node Package
+
+To build an arm64 node package, run `k2s system package --node-package --arch arm64` **directly on a Linux arm64 host** with `sudo` — not on the Windows K2s host that builds the amd64 packages above. There is no Hyper-V VM or cross-build path for arm64; the build host's own `apt` is used to download packages for its own architecture:
+
+```console
+sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
+```
+
+Only Debian 13 arm64 is tested/validated today; `--os debian12 --arch arm64` runs the same code path but is untested. The package has the same layout as the amd64 package: `packages/` with the `.deb` files and `images/` with the Kubernetes, flannel and (with `--include-gpu`) NVIDIA container images as OCI archives. The images are copied from the registries with `skopeo`, so the build host needs `skopeo` installed (`apt-get install skopeo`) and network access to the registries.
+
 ### GPU-Enabled Node Package
 
 To add a Linux worker node **with GPU support** in an air-gapped environment, include the NVIDIA Container Toolkit packages in the node package:
@@ -169,19 +179,19 @@ k2s addons export registry -d <export-output-directory> --omit-images --omit-pac
 ```
 
 ### Addons Import
-To inspect all export options, run:
+To inspect all import options, run:
 ```console
 k2s addons import -h
 ```
 
 Either specify one or more addons to import from the offline package:
 ```console
-k2s addons import registry -f <directory-containing-addons-archive>\addons.zip
+k2s addons import registry -f <directory-containing-addons-archive>\K2s-<version>-addons-registry.oci.tar
 ```
 
 Or import all addons from the offline package:
 ```console
-k2s addons import -f <directory-containing-addons-archive>\addons.zip
+k2s addons import -f <directory-containing-addons-archive>\K2s-<version>-addons-all.oci.tar
 ```
 
 !!! note

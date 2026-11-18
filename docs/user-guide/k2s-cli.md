@@ -34,19 +34,23 @@ k2s install [flags]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--master-cpus` | | Number of CPUs allocated to master VM |
-| `--master-memory` | | RAM for master VM (minimum 2 GB) |
-| `--master-memory-min` | | Minimum RAM for dynamic memory (enables dynamic memory) |
-| `--master-memory-max` | | Maximum RAM for dynamic memory (enables dynamic memory) |
-| `--master-disk` | | Disk size for master VM (minimum 10 GB) |
+| `--master-cpus` | | Number of CPUs allocated to master VM (Windows host) |
+| `--master-memory` | | RAM for master VM (minimum 2 GB) (Windows host) |
+| `--master-memory-min` | | Minimum RAM for dynamic memory (enables dynamic memory) (Windows host) |
+| `--master-memory-max` | | Maximum RAM for dynamic memory (enables dynamic memory) (Windows host) |
+| `--master-disk` | | Disk size for master VM (minimum 10 GB) (Windows host) |
+| `--worker-cpus` | | Number of CPUs allocated to the managed Windows worker VM (Linux host) |
+| `--worker-memory` | | RAM for the managed Windows worker VM (minimum 2 GB, format `<number>GB`) (Linux host) |
+| `--worker-disk` | | Disk size for the managed Windows worker VM (minimum 20 GB, format `<number>GB`) (Linux host) |
+| `--windows-qcow2-path` | | Path to a prepared Windows QCOW2 image for the managed Windows worker VM (Linux host) |
 | `--proxy` | `-p` | HTTP proxy |
 | `--no-proxy` | | No-proxy hosts/domains (comma-separated) |
 | `--config` | `-c` | Path to config file |
-| `--wsl` | | Use WSL 2 for hosting the KubeMaster |
+| `--wsl` | | Use WSL 2 for hosting the KubeMaster (Windows host) |
 | `--linux-only` | | No Windows worker node |
 | `--force-online-installation` | `-f` | Force online installation |
 | `--delete-files-for-offline-installation` | `-d` | Delete offline-only files after online install |
-| `--k8s-bins` | | Path to locally built Kubernetes binaries |
+| `--k8s-bins` | | Path to locally built Kubernetes binaries (Windows host) |
 | `--skip-start` | | Do not start the cluster after installation |
 | `--append-log` | | Append to existing log file |
 | `--additional-hooks-dir` | | Directory with additional hook scripts |
@@ -94,7 +98,7 @@ Installs a minimal *buildonly* setup (Linux VM without Windows worker node, inte
 k2s install buildonly [flags]
 ```
 
-Accepts the same VM-resource, proxy, and config flags as `install`.
+Accepts the flags `--master-cpus`, `--master-memory`, `--master-memory-min`, `--master-memory-max`, `--master-disk`, `--proxy`, `--no-proxy`, `--config`, `--wsl`, `--force-online-installation`, `--delete-files-for-offline-installation` and `--append-log` (same meaning as for `install`).
 
 ---
 
@@ -143,6 +147,7 @@ k2s stop [flags]
 |------|-------|-------------|
 | `--cache-vswitch` | | Cache vswitches for cluster connectivity |
 | `--node` | | Stop only the specified additional node |
+| `--no-wait` | | Skip waiting for the node readiness transition (skips the ~50 second wait for `NotReady` state) |
 | `--additional-hooks-dir` | | Directory with additional hook scripts |
 
 ---
@@ -175,6 +180,8 @@ k2s version
 
 Manage container images on the cluster nodes.
 
+The subcommands `pull`, `push`, `tag`, `export`, `import`, `rm`, `clean`, `registry add`, `registry rm` and `registry ls` additionally accept `--node` (node name, e.g. `worker-1`) and `--nodes` (comma-separated node names) to target specific nodes.
+
 ### image ls
 
 List images on all nodes.
@@ -186,6 +193,8 @@ k2s image ls [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--include-k8s-images` | `-A` | Include Kubernetes system images |
+| `--node` | | Node name to list images from (e.g. `worker-1`) |
+| `--nodes` | | Comma-separated node names to list images from |
 | `--output` | `-o` | Output format: `json` |
 
 ### image build
@@ -258,7 +267,7 @@ k2s image export [flags]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--id` | | Image ID |
+| `--id` | `-i` | Image ID |
 | `--name` | `-n` | Image name including tag |
 | `--tar` | `-t` | Output tar file path |
 | `--docker-archive` | | Export as docker-archive (default: oci-archive) |
@@ -301,10 +310,10 @@ k2s image rm [flags]
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--id` | | Image ID |
-| `--name` | | Image name |
+| `--id` | `-i` | Image ID |
+| `--name` | `-n` | Image name |
 | `--from-registry` | | Remove from local registry |
-| `--force` | | Force removal (removes containers using the image first) |
+| `--force` | `-f` | Force removal (removes containers using the image first) |
 
 ### image clean
 
@@ -313,6 +322,32 @@ Remove all non-system container images from every node.
 ```console
 k2s image clean
 ```
+
+### image repair
+
+Restore missing Kubernetes system images on the control-plane node from the local image archives.
+
+```console
+k2s image repair [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output` | `-o` | Show log in terminal |
+
+K2s keeps the CRI-O image store of the control-plane node across unclean shutdowns (for example, a power loss): CRI-O does not wipe its image store on the next start, so the control plane can start without pulling images. This matters for offline installations, which cannot pull images.
+
+During installation and update, K2s also saves the system images of the control-plane node as archives in `bin\linuxnode\images` of the installation folder. If system images are still missing, `k2s image repair` compares these archives with the images on the control-plane node, imports only the missing ones, restarts the kubelet, and waits until the control plane is ready. The kubelet is restarted even if no image is missing.
+
+The command requires *K2s* to be installed, the control-plane VM to be running (for example, after a failed `k2s start`), and the *K2s* cluster to be the current `kubectl` context. The control plane itself does not need to be healthy. If the control plane does not become ready during `k2s start`, the error output suggests running `k2s image repair`.
+
+!!! warning "Remaining risk"
+    - If the image store is actually corrupted after an unclean shutdown, CRI-O's storage check removes the damaged images instead of wiping the whole store. `k2s image repair` restores only the system images (control plane, CNI and `clusterip-webhook`). Re-import other images, such as addon and workload images, with `k2s image import`.
+    - The archives are refreshed by `k2s system update` only if the cluster is running during the update.
+    - Linux worker nodes are not repaired. After a `k2s system update`, Linux worker VMs created from a `Kubenode-Base.vhdx` of an earlier *K2s* version do not keep their image store across unclean shutdowns.
+
+!!! note
+    `k2s image repair` only works on the control-plane node and is not supported on Linux hosts.
 
 ### image reset-win-storage
 
@@ -388,12 +423,12 @@ Enable or disable a specific addon. The subcommands and their flags are defined 
 
 ```console
 k2s addons enable <addon> [flags]
-k2s addons disable <addon>
+k2s addons disable <addon> [flags]
 ```
 
 !!! example
     ```console
-    k2s addons enable ingress
+    k2s addons enable ingress nginx
     k2s addons enable registry
     k2s addons disable dashboard
     ```
@@ -430,6 +465,8 @@ k2s addons export <addon> [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--directory` | `-d` | Target directory for the exported artifact |
+| `--omit-images` | | Omit container images from export |
+| `--omit-packages` | | Omit packages (debian, linux, windows) from export |
 
 ### addons import
 
@@ -444,6 +481,7 @@ k2s addons import <addon> [flags]
 | `--file` | `-f` | Path to the OCI artifact tar file |
 | `--node` | | Target node name for addon image import (e.g. `worker-1`); defaults to the nodes described below |
 | `--nodes` | | Target node names (comma-separated) for addon image import (e.g. `worker-1,worker-2`) |
+| `--omit` | | Skip the images of an omitted addon functionality, e.g. `omitCertMgr` or `ingress/nginx:omitCertMgr`. Repeatable |
 
 Addon import supports Windows-hosted mixed clusters, Windows-hosted `--linux-only` installations, and native Linux installations (experimental). Default image targets depend on the setup:
 
@@ -518,6 +556,8 @@ k2s system upgrade [flags]
 | `--backup-dir` | `-b` | Backup directory |
 | `--force` | `-f` | Force upgrade even if versions are not consecutive |
 | `--additional-hooks-dir` | | Directory with additional hook scripts |
+| `--node` | `-n` | Name of the worker node to upgrade (requires `--path`) |
+| `--path` | | Path to a node package zip for an offline node upgrade (requires `--node`) |
 
 ### system package
 
@@ -548,6 +588,7 @@ k2s system package [flags]
 | `--k8s-bins` | | Path to locally built Kubernetes binaries |
 | `--node-package` | | Create a Linux worker node package. Requires an installed and running *K2s* cluster. The local cluster proxy is used by default; override with `-p` if needed |
 | `--os` | | Target Linux distribution for `--node-package`, for example `debian12` or `debian13` |
+| `--arch` | | Target CPU architecture for `--node-package`: `amd64` (default) or `arm64`. `arm64` is Debian-family only and must be built natively on a Linux arm64 host (no cross-build/VM path) |
 | `--include-gpu` | | Include NVIDIA Container Toolkit packages for GPU support. When `k2s node add` uses a package built with this flag, GPU support is auto-configured if an NVIDIA GPU is detected |
 
 Example for node package creation:
@@ -560,6 +601,12 @@ Example for node package with GPU support:
 
 ```console
 k2s system package --node-package --os debian13 --include-gpu --target-dir "C:\out" --name "debian13-gpu.zip"
+```
+
+Example for an arm64 node package, run on a Linux arm64 host:
+
+```console
+sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 ```
 
 ### system backup
@@ -616,6 +663,20 @@ k2s system dump [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--skip-open` | `-S` | Do not open the dump folder afterwards |
+| `--node` | | Additional node name to collect diagnostics for (e.g. `worker-1`) |
+| `--nodes` | | Comma-separated additional node names to collect diagnostics for |
+
+### system check
+
+Run read-only health checks for known causes of problems and print `pass`, `warn`, `fail` or `skip` for each, together with a suggested fix. Nothing on the system is changed. The command exits with a non-zero exit code if at least one check fails. See [Running Health Checks](../troubleshooting/diagnostics.md#running-health-checks) for the list of checks.
+
+```console
+k2s system check [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output` | `-o` | Output format: `json` |
 
 ### system certificate renew
 
@@ -628,6 +689,33 @@ k2s system certificate renew [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--force` | `-f` | Force renewal |
+
+### system certificate autorotation
+
+Manage kubelet certificate auto-rotation (control-plane node only). The flags are mutually exclusive.
+
+```console
+k2s system certificate autorotation [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--enable` | `-e` | Enable kubelet certificate auto-rotation |
+| `--disable` | `-d` | Disable kubelet certificate auto-rotation |
+| `--status` | `-s` | Show the current auto-rotation status |
+
+### system compact
+
+Compact the VHDX disk of the control-plane node to reclaim unused space. If the cluster was running before compaction, it restarts afterwards unless `--no-restart` is given; a cluster that was already stopped remains stopped. Supported for the standard and Linux-only setups; not supported for WSL-based and build-only setups. See [Compacting VHDX Storage](../op-manual/compacting-vhdx-storage.md).
+
+```console
+k2s system compact [flags]
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--no-restart` | | Keep the cluster stopped after compaction |
+| `--yes` | `-y` | Skip confirmation prompts |
 
 ### system proxy
 
@@ -709,11 +797,12 @@ k2s node add [flags]
 |------|-------|-------------|
 | `--ip-addr` | `-i` | **Required.** IP address of the node |
 | `--username` | `-u` | **Required.** SSH username |
-| `--name` | `-m` | Hostname of the node |
-| `--role` | `-r` | Node role (default `worker`) |
+| `--role` | `-r` | Node role (default `worker`). Only `worker` is supported at the moment; any other value prints a warning and no node is added |
 | `--node-package` | `-p` | Path to a node package ZIP for offline installation |
 
 Use `--node-package` together with a node package created through `k2s system package --node-package --os ...` on an installed *K2s* cluster when adding a Linux worker node without internet access.
+
+The public *K2s* SSH key (`sshKey` section and `configDir.ssh` of `cfg/config.json`, e.g. `%USERPROFILE%\.ssh\k2s\id_rsa.pub` on *Windows* or `~/.ssh/k2s/id_ed25519.pub` on a *Linux* host) must already be authorized on the node (`~/.ssh/authorized_keys` of the SSH user); `k2s node add` does not install it. See [Extending a K2s Cluster](../op-manual/extending-k2s-cluster.md).
 
 ### node remove
 
@@ -828,8 +917,8 @@ k2s node copy [flags]
 | `--source` | `-s` | **Required.** Source path |
 | `--target` | `-t` | **Required.** Target path |
 | `--reverse` | `-r` | Copy from node to host |
-| `--port` | `-p` | SSH port |
-| `--timeout` | | Connection timeout |
+| `--port` | `-p` | SSH port (default `22`) |
+| `--timeout` | | Connection timeout (default `30s`) |
 
 ### node exec
 
@@ -844,8 +933,8 @@ k2s node exec [flags]
 | `--ip-addr` | `-i` | **Required.** Node IP address |
 | `--username` | `-u` | **Required.** SSH username |
 | `--command` | `-c` | **Required.** Command to execute |
-| `--port` | `-p` | SSH port |
-| `--timeout` | | Connection timeout |
+| `--port` | `-p` | SSH port (default `22`) |
+| `--timeout` | | Connection timeout (default `30s`) |
 | `--raw` | `-r` | Print only remote output |
 
 ### node connect
@@ -860,5 +949,5 @@ k2s node connect [flags]
 |------|-------|-------------|
 | `--ip-addr` | `-i` | **Required.** Node IP address |
 | `--username` | `-u` | **Required.** SSH username |
-| `--port` | `-p` | SSH port |
-| `--timeout` | | Connection timeout |
+| `--port` | `-p` | SSH port (default `22`) |
+| `--timeout` | | Connection timeout (default `30s`) |

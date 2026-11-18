@@ -96,6 +96,10 @@ func (tp TerminalPrinter) PrintGreenFg(text string) string {
 	return pterm.FgGreen.Sprint(text)
 }
 
+func (tp TerminalPrinter) PrintYellowFg(text string) string {
+	return pterm.FgYellow.Sprint(text)
+}
+
 func (tp TerminalPrinter) PrintCyanFg(text string) string {
 	return pterm.FgCyan.Sprint(text)
 }

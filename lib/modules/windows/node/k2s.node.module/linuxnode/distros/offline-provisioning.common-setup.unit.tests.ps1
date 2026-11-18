@@ -11,7 +11,7 @@ BeforeAll {
         throw "Failed to parse '$modulePath': $($parseErrors[0].Message)"
     }
 
-    foreach ($name in @('Assert-ProvisioningCommandResult', 'Install-Tools', 'Get-KubernetesImages', 'Get-FlannelImages', 'Get-ClusterIPWebhookImages', 'AddRegistryMirrors')) {
+    foreach ($name in @('Assert-ProvisioningCommandResult', 'Install-Tools', 'Get-KubernetesImages', 'Get-FlannelImages', 'Get-ClusterIPWebhookImages', 'AddRegistryMirrors', 'Set-CrioOfflineImageRetention', 'Get-CrioOfflineImageRetentionCommands')) {
         $functionAst = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name

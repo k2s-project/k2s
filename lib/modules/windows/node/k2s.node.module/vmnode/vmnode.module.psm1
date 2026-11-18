@@ -1281,6 +1281,9 @@ function New-VMSession {
     $secondsIncrement = 5
     $elapsedSeconds = 0
 
+    # Wall-clock timeout: a failed New-PSSession attempt blocks on its own, so summing sleep intervals undercounts time.
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
     if ($NoLog -ne $true) {
         Write-Log "Waiting for connection with VM: '$VMName' (timeout: $($TimeoutInSeconds)s) ..."
     }
@@ -1290,7 +1293,7 @@ function New-VMSession {
 
         if (-not $result) {
             Start-Sleep -Seconds $secondsIncrement
-            $elapsedSeconds += $secondsIncrement
+            $elapsedSeconds = [int]$stopwatch.Elapsed.TotalSeconds
 
             if ($NoLog -ne $true) {
                 Write-Log "$($elapsedSeconds)s.. " -Progress

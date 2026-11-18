@@ -8,8 +8,27 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/status"
 )
+
+func TestValidateRole(t *testing.T) {
+	for _, role := range []string{"worker", "Worker", " worker "} {
+		if err := validateRole(role); err != nil {
+			t.Errorf("validateRole(%q) error = %v, want nil", role, err)
+		}
+	}
+
+	for _, role := range []string{"control-plane", ""} {
+		failure, ok := errors.AsType[*common.CmdFailure](validateRole(role))
+		if !ok {
+			t.Fatalf("validateRole(%q) did not return a CmdFailure", role)
+		}
+		if failure.Severity != common.SeverityWarning {
+			t.Errorf("validateRole(%q) severity = %v, want warning", role, failure.Severity)
+		}
+	}
+}
 
 func TestLoadSystemStatusWithRetrySucceedsAfterTransientErrors(t *testing.T) {
 	expected := &status.LoadedStatus{}

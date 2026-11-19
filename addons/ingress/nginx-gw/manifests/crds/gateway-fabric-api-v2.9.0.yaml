@@ -6,7 +6,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: inherited
   name: accesspolicies.gateway.nginx.org
@@ -492,7 +492,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: authenticationfilters.gateway.nginx.org
 spec:
   group: gateway.nginx.org
@@ -539,6 +539,53 @@ spec:
           spec:
             description: Spec defines the desired state of the AuthenticationFilter.
             properties:
+              apiKey:
+                description: APIKey configures API Key Authentication.
+                properties:
+                  secretRef:
+                    description: |-
+                      SecretRef references a Secret containing the API keys in the same namespace.
+                      The Secret's "auth" entry must contain one "client-name:api-key" pair per line.
+                    properties:
+                      name:
+                        description: Name is the name of the referenced object.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  sources:
+                    description: |-
+                      Sources defines where clients can provide the API key.
+                      At least one source must be specified.
+                    items:
+                      description: APIKeySourceEntry defines a single location where
+                        clients can provide an API key.
+                      properties:
+                        name:
+                          description: Name is the header name or query parameter
+                            name that contains the API key.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[A-Za-z0-9_-]+$
+                          type: string
+                        type:
+                          description: 'Type specifies the source type: Header or
+                            Query.'
+                          enum:
+                          - Header
+                          - Query
+                          type: string
+                      required:
+                      - name
+                      - type
+                      type: object
+                    maxItems: 2
+                    minItems: 1
+                    type: array
+                required:
+                - secretRef
+                - sources
+                type: object
               basic:
                 description: Basic configures HTTP Basic Authentication.
                 properties:
@@ -1014,6 +1061,7 @@ spec:
                 - Basic
                 - OIDC
                 - JWT
+                - APIKey
                 type: string
             required:
             - type
@@ -1025,18 +1073,32 @@ spec:
               rule: self.type != 'Basic' || !has(self.jwt)
             - message: type Basic must not set spec.oidc
               rule: self.type != 'Basic' || !has(self.oidc)
+            - message: type Basic must not set spec.apiKey
+              rule: self.type != 'Basic' || !has(self.apiKey)
             - message: type OIDC requires spec.oidc to be set
               rule: self.type != 'OIDC' || has(self.oidc)
             - message: type OIDC must not set spec.basic
               rule: self.type != 'OIDC' || !has(self.basic)
             - message: type OIDC must not set spec.jwt
               rule: self.type != 'OIDC' || !has(self.jwt)
+            - message: type OIDC must not set spec.apiKey
+              rule: self.type != 'OIDC' || !has(self.apiKey)
             - message: type JWT requires spec.jwt to be set
               rule: self.type != 'JWT' || has(self.jwt)
             - message: type JWT must not set spec.basic
               rule: self.type != 'JWT' || !has(self.basic)
             - message: type JWT must not set spec.oidc
               rule: self.type != 'JWT' || !has(self.oidc)
+            - message: type JWT must not set spec.apiKey
+              rule: self.type != 'JWT' || !has(self.apiKey)
+            - message: type APIKey requires spec.apiKey to be set
+              rule: self.type != 'APIKey' || has(self.apiKey)
+            - message: type APIKey must not set spec.basic
+              rule: self.type != 'APIKey' || !has(self.basic)
+            - message: type APIKey must not set spec.jwt
+              rule: self.type != 'APIKey' || !has(self.jwt)
+            - message: type APIKey must not set spec.oidc
+              rule: self.type != 'APIKey' || !has(self.oidc)
           status:
             description: Status defines the state of the AuthenticationFilter.
             properties:
@@ -1149,7 +1211,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: inherited
   name: clientsettingspolicies.gateway.nginx.org
@@ -1622,7 +1684,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: externalloadbalancers.gateway.nginx.org
 spec:
   group: gateway.nginx.org
@@ -2036,7 +2098,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: nginxgateways.gateway.nginx.org
 spec:
   group: gateway.nginx.org
@@ -2170,7 +2232,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: nginxproxies.gateway.nginx.org
 spec:
   group: gateway.nginx.org
@@ -6159,6 +6221,12 @@ spec:
                         description: Defines the configuration of the Service Monitor
                           resource used for scraping metrics.
                         properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations are added to the ServiceMonitor
+                              resource metadata.
+                            type: object
                           enable:
                             description: Enable or disable the Service Monitor.
                             type: boolean
@@ -6185,6 +6253,12 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels are added to the ServiceMonitor resource
+                              metadata.
+                            type: object
                           namespaceSelector:
                             description: |-
                               NamespaceSelector is used to select which namespaces the Kubernetes endpoints
@@ -11018,6 +11092,12 @@ spec:
                         description: Defines the configuration of the Service Monitor
                           resource used for scraping metrics.
                         properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations are added to the ServiceMonitor
+                              resource metadata.
+                            type: object
                           enable:
                             description: Enable or disable the Service Monitor.
                             type: boolean
@@ -11044,6 +11124,12 @@ spec:
                                   type: string
                               type: object
                             type: array
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels are added to the ServiceMonitor resource
+                              metadata.
+                            type: object
                           namespaceSelector:
                             description: |-
                               NamespaceSelector is used to select which namespaces the Kubernetes endpoints
@@ -11979,9 +12065,17 @@ spec:
                 description: |-
                   ZoneSize is the size of the shared memory zone used by the upstream. This memory zone is used to share
                   the upstream configuration between nginx worker processes. The more servers that an upstream has,
-                  the larger memory zone is required.
+                  the larger memory zone is required. Set to "auto" to enable automatic sizing.
                   Default: OSS: 512k, Plus: 2m.
                   Directive: https://nginx.org/en/docs/http/ngx_http_upstream_module.html#zone
+                pattern: ^(auto|\d{1,4}(k|m|g)?)$
+                type: string
+              zoneSizeMaxSize:
+                description: |-
+                  ZoneSizeMaxSize is the maximum zone size that automatic sizing (ZoneSize: "auto") can grow to.
+                  Once a zone reaches this size, NGF stops growing it and surfaces an error if it is still too
+                  small.
+                  Default: "512m".
                 pattern: ^\d{1,4}(k|m|g)?$
                 type: string
             type: object
@@ -11997,7 +12091,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: direct
   name: observabilitypolicies.gateway.nginx.org
@@ -12483,7 +12577,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: inherited
   name: payloadprocessors.gateway.nginx.org
@@ -12639,6 +12733,15 @@ spec:
                       required:
                       - backendRef
                       type: object
+                    failureMode:
+                      default: FailClosed
+                      description: |-
+                        FailureMode determines the behavior when this processor fails to reach a verdict,
+                        for example when the external service is unreachable, times out, or returns an error.
+                      enum:
+                      - FailClosed
+                      - FailOpen
+                      type: string
                     type:
                       description: |-
                         Type specifies how the processor executes.
@@ -13005,7 +13108,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: inherited
   name: proxysettingspolicies.gateway.nginx.org
@@ -13487,7 +13590,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: inherited
   name: ratelimitpolicies.gateway.nginx.org
@@ -14002,7 +14105,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   name: snippetsfilters.gateway.nginx.org
 spec:
   group: gateway.nginx.org
@@ -14054,7 +14157,8 @@ spec:
                   There can only be one snippet per context.
                   Allowed contexts: main, http, http.server, http.server.location.
                 items:
-                  description: Snippet represents an NGINX configuration snippet.
+                  description: FilterSnippet represents an NGINX configuration snippet
+                    for SnippetsFilter.
                   properties:
                     context:
                       description: Context is the NGINX context to insert the snippet
@@ -14193,7 +14297,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: direct
   name: snippetspolicies.gateway.nginx.org
@@ -14254,6 +14358,8 @@ spec:
                       - http
                       - http.server
                       - http.server.location
+                      - stream
+                      - stream.server
                       type: string
                     value:
                       description: Value is the NGINX configuration snippet.
@@ -14263,7 +14369,7 @@ spec:
                   - context
                   - value
                   type: object
-                maxItems: 4
+                maxItems: 6
                 type: array
                 x-kubernetes-validations:
                 - message: Only one snippet allowed per context
@@ -14625,7 +14731,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: direct
   name: upstreamsettingspolicies.gateway.nginx.org
@@ -15034,9 +15140,13 @@ spec:
                   ZoneSize is the size of the shared memory zone used by the upstream. This memory zone is used to share
                   the upstream configuration between nginx worker processes. The more servers that an upstream has,
                   the larger memory zone is required.
-                  Default: OSS: 512k, Plus: 2m.
+                  Explicit values set here override the global NginxProxy.ZoneSize setting.
+                  Set to "auto" to enable automatic sizing: NGF starts every upstream's zone at a flat 64k,
+                  regardless of profile, and automatically doubles it if NGINX fails to reload because the
+                  zone is too small, up to NginxProxy.ZoneSizeMaxSize.
+                  Default: inherited from NginxProxy.ZoneSize.
                   Directive: https://nginx.org/en/docs/http/ngx_http_upstream_module.html#zone
-                pattern: ^\d{1,4}(k|m|g)?$
+                pattern: ^(auto|\d{1,4}(k|m|g)?)$
                 type: string
             required:
             - targetRefs
@@ -15359,7 +15469,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.22.0
+    controller-gen.kubebuilder.io/version: v0.23.0
   labels:
     gateway.networking.k8s.io/policy: inherited
   name: wafpolicies.gateway.nginx.org

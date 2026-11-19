@@ -129,7 +129,7 @@ k2s_node_import_images() {
   local archive count=0
   while IFS= read -r archive; do
     k2s_log INFO "Importing image $(basename "$archive")."
-    k2s_node_ssh "sudo buildah pull oci-archive:$archive" >/dev/null || { k2s_log ERROR "Could not import $(basename "$archive") on $K2S_NODE_IP."; return 1; }
+    k2s_node_ssh "sudo buildah pull oci-archive:$archive" </dev/null >/dev/null || { k2s_log ERROR "Could not import $(basename "$archive") on $K2S_NODE_IP."; return 1; }
     count=$((count + 1))
   done < <(k2s_node_ssh "ls $K2S_NODE_REMOTE_DIR/images/*.tar")
   [[ $count -gt 0 ]] || { k2s_log ERROR "No image archives were found in the node package."; return 1; }

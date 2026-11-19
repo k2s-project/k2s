@@ -26,6 +26,7 @@ cp_vm() {
 wk_vm() {
   VM_DIR="$WK_VM_DIR" VM_ARCH=arm64 VM_NAME=k2s-arm64-worker VM_CPUS=2 VM_MEMORY_MB=2048 \
     VM_NET_MODE=bridge VM_NET_IP="$WK_IP" VM_TAP=k2s-tap-w VM_NET_MTU="$OVERLAY_MTU" \
+    VM_BRIDGE_ADDR=10.10.0.2/24 \
     VM_BRIDGE_GATEWAY=no \
     bash .github/scripts/linux-cluster-vm.sh "$@"
 }

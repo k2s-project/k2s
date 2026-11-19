@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: read
-      actions: read
+      actions: write
       id-token: none
     defaults:
       run:
@@ -58,6 +58,12 @@ jobs:
       CP_TAILSCALE_HOST: k2s-cp-${{ github.run_id }}-${{ github.run_attempt }}
       WK_TAILSCALE_HOST: k2s-arm64-worker-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+
       - name: Check KVM (re-dispatch on a new runner if missing)
         id: kvm
         timeout-minutes: 5
@@ -120,13 +126,6 @@ jobs:
           echo "VM_OVERLAY_LOCAL=$local_ip" >> "$GITHUB_ENV"
           echo "VM_OVERLAY_PEER=$peer_ip" >> "$GITHUB_ENV"
           echo "Overlay: this runner $local_ip, worker runner $peer_ip"
-
-      - name: Checkout
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          persist-credentials: false
 
       - name: Free runner disk space for the guest image
         if: ${{ steps.kvm.outputs.available == 'true' }}
@@ -381,6 +380,7 @@ jobs:
 
   arm64-worker:
     name: Arm64 worker guest (no KVM)
+    needs: arm64-node-package
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     permissions:
@@ -394,6 +394,12 @@ jobs:
       WK_TAILSCALE_HOST: k2s-arm64-worker-${{ github.run_id }}-${{ github.run_attempt }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+
       - name: Join Tailscale (overlay network to the control-plane runner)
         uses: tailscale/github-action@v3
         timeout-minutes: 10
@@ -420,12 +426,6 @@ jobs:
           echo "VM_OVERLAY_LOCAL=$local_ip" >> "$GITHUB_ENV"
           echo "VM_OVERLAY_PEER=$peer_ip" >> "$GITHUB_ENV"
           echo "Overlay: this runner $local_ip, control-plane runner $peer_ip"
-
-      - name: Checkout
-        uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          persist-credentials: false
 
       - name: Start worker guest (arm64, TCG, 2 GB)
         timeout-minutes: 60

@@ -58,18 +58,27 @@ wait_for_dpkg_lock
 # ---------------------------------------------------------------------------
 # Install .deb packages
 # ---------------------------------------------------------------------------
-# Links the .deb files whose package is not installed on this node into a new directory and
-# prints that directory. Packages already installed (base system packages such as libc6 or
-# systemd) are left alone: installing another version over them could upgrade or downgrade the
-# running system.
+# Links packages with an absent or incompatible installed version into a new directory and prints
+# that directory. Kubernetes and runtime packages use the bundled version exactly; other packages
+# are retained when their installed version is at least as new as the bundled dependency version.
 stage_missing_debs() {
-    local source_dir="$1" target_dir deb package
+    local source_dir="$1" target_dir deb package package_version installed_status installed_version
     target_dir="$(mktemp -d)"
     for deb in "$source_dir"/*.deb; do
         [ -e "$deb" ] || continue
         package="$(dpkg-deb -f "$deb" Package)"
-        if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
-            continue
+        package_version="$(dpkg-deb -f "$deb" Version)"
+        installed_status="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
+        if [[ "$installed_status" == 'install ok installed' ]]; then
+            installed_version="$(dpkg-query -W -f='${Version}' "$package")"
+            case "$package" in
+                kubelet|kubeadm|kubectl|cri-o|cri-tools)
+                    [[ "$installed_version" == "$package_version" ]] && continue
+                    ;;
+                *)
+                    dpkg --compare-versions "$installed_version" ge "$package_version" && continue
+                    ;;
+            esac
         fi
         ln -s "$deb" "$target_dir/"
     done

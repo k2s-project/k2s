@@ -12,7 +12,7 @@
 # VM_NET_MODE=bridge: the guest is one NIC on a bridge, with a static address on one subnet.
 # ci-linux-cluster-node-arm64.yml uses it on two GitHub runners that form one L2 segment:
 #   control-plane runner  bridge with the gateway 10.10.0.1 (VM_BRIDGE_GATEWAY=yes): routes and NATs
-#   worker runner         bridge without an address (VM_BRIDGE_GATEWAY=no)
+#   worker runner         bridge with 10.10.0.2 (VM_BRIDGE_GATEWAY=no)
 #   both runners          VXLAN device (VM_OVERLAY_PEER=<other runner's address>) joins the bridges
 #                         over the private network that Tailscale provides on the runners
 # So the worker sits in the control plane's subnet, and K2s sees one default route and one address
@@ -138,7 +138,7 @@ packages:
 EOF
   printf 'instance-id: %s\nlocal-hostname: %s\n' "$VM_NAME" "$VM_NAME" > "$VM_DIR/meta-data"
 
-  local seed_args=("$VM_DIR/seed.img" "$VM_DIR/user-data" "$VM_DIR/meta-data")
+  local network_args=()
   if [[ "$VM_NET_MODE" == bridge ]]; then
     cat > "$VM_DIR/network-config" <<EOF
 version: 2
@@ -158,9 +158,9 @@ ethernets:
         - 1.1.1.1
         - 8.8.8.8
 EOF
-    seed_args+=("$VM_DIR/network-config")
+    network_args=(--network-config="$VM_DIR/network-config")
   fi
-  cloud-localds "${seed_args[@]}"
+  cloud-localds "${network_args[@]}" "$VM_DIR/seed.img" "$VM_DIR/user-data" "$VM_DIR/meta-data"
 
   qemu-img create -f qcow2 -F qcow2 -b "$VM_DIR/base.qcow2" "$VM_DIR/overlay.qcow2" "$VM_DISK_SIZE"
 
@@ -177,10 +177,13 @@ network_up() {
   fi
   sudo ip link set "$VM_BRIDGE" mtu "$VM_NET_MTU" up
 
-  if [[ "$VM_BRIDGE_GATEWAY" == yes ]]; then
+  if [[ -n "$VM_BRIDGE_ADDR" ]]; then
     if ! ip -o -4 addr show dev "$VM_BRIDGE" | grep -qF "inet $VM_BRIDGE_ADDR"; then
       sudo ip addr add "$VM_BRIDGE_ADDR" dev "$VM_BRIDGE"
     fi
+  fi
+
+  if [[ "$VM_BRIDGE_GATEWAY" == yes ]]; then
     sudo sysctl -q -w net.ipv4.ip_forward=1
     sudo iptables -t nat -C POSTROUTING -s "$VM_BRIDGE_SUBNET" ! -d "$VM_BRIDGE_SUBNET" -j MASQUERADE 2>/dev/null \
       || sudo iptables -t nat -A POSTROUTING -s "$VM_BRIDGE_SUBNET" ! -d "$VM_BRIDGE_SUBNET" -j MASQUERADE

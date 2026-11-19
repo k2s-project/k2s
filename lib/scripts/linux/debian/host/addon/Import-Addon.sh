@@ -1093,6 +1093,7 @@ addon_import_main() {
   done < <(addon_import_jq 'plan_summary' -r <<<"$plan")
 }
 
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+# Sourcing the script (as the tests do) only defines its functions.
+if ! (return 0 2>/dev/null); then
   addon_import_main "$@"
 fi

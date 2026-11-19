@@ -800,6 +800,7 @@ Layer types:
 EOF
 }
 
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+# Sourcing the script only defines its functions.
+if ! (return 0 2>/dev/null); then
   addon_export_main "$@"
 fi

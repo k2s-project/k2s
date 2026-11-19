@@ -23,6 +23,8 @@ See also [Hosting Variants](../user-guide/hosting-variants.md).
 
 On a Linux host the control plane runs natively (no VM). An optional Windows VM is provisioned via libvirt/KVM for mixed-OS workloads. Networking uses standard Linux routing and iptables — L2Bridge, DNSProxy, VFPRules are Windows-specific components and are not used.
 
+`k2s addons export` and `k2s addons import` are implemented by the Bash scripts `Export-Addon.sh` and `Import-Addon.sh` in `lib/scripts/linux/debian/host/addon/`, the counterparts of `addons/Export.ps1` and `addons/Import.ps1`; they share the OCI format helpers of `lib/modules/linux/cluster/addon-oci.sh`, and the CLI only passes the command line on. Windows hosts keep using the PowerShell scripts; on Linux-only installations they skip the Windows images on export and import.
+
 ## *Image Commands*
 Container image lifecycle operations (`build`, `clean`, `export`, `import`, `ls`, `pull`, `push`, `rm`, `tag`, `registry add`, `registry rm`, `registry ls`) are supported across all active hosting variants:
 - **Windows host**: Delegated to PowerShell automation managing the host Windows node and remote Linux VM.

@@ -152,3 +152,62 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
         Should -Invoke Expand-TarGzArchive -Times 1 -Exactly -ParameterFilter { $DestinationPath -eq $implementationPath }
     }
 }
+
+Describe 'Addon export in a Linux-only setup' -Tag 'unit', 'ci', 'addon' {
+    BeforeAll {
+        $tokens = $null
+        $errors = $null
+        $script:exportAst = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot 'Export.ps1'), [ref]$tokens, [ref]$errors)
+        if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+        $block = $script:exportAst.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.IfStatementAst] -and
+                $node.Extent.Text.StartsWith('if (-not $exportWindowsImages)')
+            }, $true)
+        if ($null -eq $block) { throw 'Windows image skipping was not found in Export.ps1.' }
+        $script:skipWindowsImages = [scriptblock]::Create($block.Extent.Text)
+    }
+
+    It 'no longer rejects a Linux-only setup' {
+        $script:exportAst.Extent.Text | Should -Not -Match 'Cannot export addons in Linux-only setup'
+        $script:exportAst.Extent.Text | Should -Match '\$exportWindowsImages = \$setupInfo\.LinuxOnly -ne \$true'
+    }
+
+    It 'does not query the Windows node of a Linux-only setup' {
+        $script:exportAst.Extent.Text | Should -Match 'if \(\$exportWindowsImages\) \{ Get-ContainerImagesOnWindowsNode'
+    }
+
+    It 'skips the Windows images when there is no Windows node' {
+        Mock Write-Log { }
+        $exportWindowsImages = $false
+        $addonName = 'security'
+        $windowsImages = @('mcr.microsoft.com/windows/nanoserver:ltsc2022', 'mcr.microsoft.com/windows/servercore:ltsc2022')
+
+        . $script:skipWindowsImages
+
+        @($windowsImages).Count | Should -Be 0
+        Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Message -like 'Skipping 2 Windows image(s) of addon security*' }
+    }
+
+    It 'keeps the Windows images when the setup has a Windows node' {
+        $exportWindowsImages = $true
+        $windowsImages = @('mcr.microsoft.com/windows/nanoserver:ltsc2022')
+
+        . $script:skipWindowsImages
+
+        $windowsImages | Should -Be @('mcr.microsoft.com/windows/nanoserver:ltsc2022')
+    }
+
+    It 'does not report anything when there are no Windows images' {
+        Mock Write-Log { }
+        $exportWindowsImages = $false
+        $addonName = 'registry'
+        $windowsImages = $null
+
+        . $script:skipWindowsImages
+
+        @($windowsImages).Count | Should -Be 0
+        Should -Invoke Write-Log -Times 0
+    }
+}

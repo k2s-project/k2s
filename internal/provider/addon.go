@@ -93,11 +93,13 @@ type AddonStatusProp struct {
 	Message *string // optional display message (overrides Name: Value formatting)
 }
 
-// AddonExportConfig holds parameters for exporting addon state.
+// AddonExportConfig holds parameters for exporting addons as an OCI artifact.
 type AddonExportConfig struct {
-	OutputDir  string
-	Name       string // Empty means all enabled addons
-	ShowOutput bool
+	OutputDir    string   // Absolute directory that receives the '.oci.tar' artifact
+	Names        []string // Addons to export; empty means all addons
+	OmitImages   bool     // Do not pull and package container images
+	OmitPackages bool     // Do not download and package offline packages
+	ShowOutput   bool
 }
 
 // AddonImportConfig holds parameters for importing addons from an exported OCI artifact.

@@ -159,22 +159,30 @@ func (p *windowsAddonProvider) Status(cfg AddonStatusConfig) (*AddonStatusResult
 func (p *windowsAddonProvider) Export(cfg AddonExportConfig) error {
 	scriptPath := utils.FormatScriptFilePath(filepath.Join(p.installDir, "addons", "Export.ps1"))
 
-	var params string
-	if cfg.OutputDir != "" {
-		params += fmt.Sprintf(" -ExportDir '%s'", cfg.OutputDir)
-	}
-	if cfg.Name != "" {
-		params += " -Name " + cfg.Name
-	}
-	if cfg.ShowOutput {
-		params += " -ShowLogs"
-	}
-
-	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](scriptPath+params, "CmdResult", p.stdWriter)
+	result, err := powershell.ExecutePsWithStructuredResult[*psCmdResult](scriptPath, "CmdResult", p.stdWriter, buildAddonExportParams(cfg)...)
 	if err != nil {
 		return err
 	}
 	return result.checkFailure()
+}
+
+func buildAddonExportParams(cfg AddonExportConfig) []string {
+	params := []string{" -ExportDir " + utils.EscapeWithSingleQuotes(cfg.OutputDir)}
+	if len(cfg.Names) > 0 {
+		params = append(params, " -Names "+utils.EscapeArrayWithSingleQuotes(cfg.Names))
+	} else {
+		params = append(params, " -All")
+	}
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+	if cfg.OmitImages {
+		params = append(params, " -OmitImages")
+	}
+	if cfg.OmitPackages {
+		params = append(params, " -OmitPackages")
+	}
+	return params
 }
 
 func (p *windowsAddonProvider) Import(cfg AddonImportConfig) error {

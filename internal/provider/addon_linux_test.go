@@ -15,13 +15,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
-	"github.com/k2s-project/k2s/internal/definitions"
-	sshprovider "github.com/k2s-project/k2s/internal/providers/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -155,37 +154,124 @@ func writeArtifact(t *testing.T, addons ...testAddon) string {
 	return artifact
 }
 
-// importFixture is a provider whose Import-Image.sh records the archives handed to it; an
-// archive with the content 'broken' makes the script fail.
+const (
+	addonNameAnnotation = "vnd.k2s.addon.name"
+	addonImplAnnotation = "vnd.k2s.addon.implementation"
+)
+
+// importFixture is an installation with the real Import-Addon.sh and stubs for everything outside of
+// the host: Import-Image.sh records the archives handed to it (an archive with the content 'broken'
+// makes it fail), kubectl reports the nodes of K2S_TEST_READY_NODES ('*' for all) as Ready, and ssh/scp
+// record what is done on an additional node; commands matching K2S_TEST_SSH_FAIL and every copy with
+// K2S_TEST_SCP_FAIL set fail.
 type importFixture struct {
-	provider *linuxAddonProvider
-	record   string
+	provider  *linuxAddonProvider
+	output    *recordingWriter
+	recordDir string
 }
 
 func newImportFixture(t *testing.T) *importFixture {
 	t.Helper()
+	requireAddonScriptTools(t)
+
 	installDir := t.TempDir()
 	fixture := &importFixture{
-		provider: &linuxAddonProvider{installDir: installDir, configDir: t.TempDir()},
-		record:   filepath.Join(t.TempDir(), "imported-images"),
+		provider:  &linuxAddonProvider{installDir: installDir, configDir: t.TempDir()},
+		output:    &recordingWriter{},
+		recordDir: t.TempDir(),
 	}
+	fixture.provider.stdWriter = fixture.output
 
-	script := (&linuxImageProvider{installDir: installDir}).scriptPath("Import-Image.sh")
-	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := "#!/bin/sh\ncontent=$(cat \"$2\")\nprintf '%s=%s\\n' \"$(basename \"$2\")\" \"$content\" >> \"" + fixture.record + "\"\n[ \"$content\" != broken ]\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	installAddonScripts(t, installDir,
+		"lib/scripts/linux/debian/host/addon/Import-Addon.sh",
+		"lib/modules/linux/common/logging.sh",
+		"lib/modules/linux/infra/ssh.sh",
+		"lib/modules/linux/cluster/addon-oci.sh",
+	)
+	writeExecutable(t, filepath.Join(installDir, "lib/scripts/linux/debian/host/image/Import-Image.sh"),
+		"#!/bin/sh\ncontent=$(cat \"$2\")\nprintf '%s=%s\\n' \"$(basename \"$2\")\" \"$content\" >> \"$K2S_TEST_RECORD_DIR/imported-images\"\n[ \"$content\" != broken ]\n")
+
+	stubs := t.TempDir()
+	writeExecutable(t, filepath.Join(stubs, "kubectl"), `#!/bin/sh
+printf '%s\n' "$3" >> "$K2S_TEST_RECORD_DIR/readiness-checks"
+case ",$K2S_TEST_READY_NODES," in
+  *",*,"* | *",$3,"*) printf True ;;
+  *) printf False ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(stubs, "scp"), `#!/bin/sh
+printf '%s\n' "$*" >> "$K2S_TEST_RECORD_DIR/scp-arguments"
+eval "source=\${$(($# - 1))}"
+eval "target=\${$#}"
+printf '%s=%s\n' "${target#*:}" "$(cat "$source")" >> "$K2S_TEST_RECORD_DIR/copied"
+if [ -n "$K2S_TEST_SCP_FAIL" ]; then echo 'simulated upload failure' >&2; exit 1; fi
+`)
+	writeExecutable(t, filepath.Join(stubs, "ssh"), `#!/bin/sh
+printf '%s\n' "$*" >> "$K2S_TEST_RECORD_DIR/ssh-arguments"
+eval "command=\${$#}"
+printf '%s\n' "$command" >> "$K2S_TEST_RECORD_DIR/commands"
+case "$command" in "tar -C "*) tar -tf - >> "$K2S_TEST_RECORD_DIR/received-files" ;; esac
+if [ -n "$K2S_TEST_SSH_FAIL" ] && printf '%s' "$command" | grep -Eq "$K2S_TEST_SSH_FAIL"; then echo 'simulated failure' >&2; exit 1; fi
+`)
+
+	t.Setenv("PATH", stubs+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("K2S_LOG_FILE", filepath.Join(t.TempDir(), "k2s.log"))
+	t.Setenv("K2S_TEST_RECORD_DIR", fixture.recordDir)
+	t.Setenv("K2S_TEST_READY_NODES", "*")
+	t.Setenv("K2S_TEST_SSH_FAIL", "")
+	t.Setenv("K2S_TEST_SCP_FAIL", "")
 	return fixture
+}
+
+// repositoryRoot is the checkout that contains the scripts under test.
+const repositoryRoot = "../.."
+
+// requireAddonScriptTools skips the test unless the tools of the addon scripts are available.
+func requireAddonScriptTools(t *testing.T) {
+	t.Helper()
+	for _, tool := range []string{"bash", "tar", "sha256sum", "jq", "yq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
+		}
+	}
+	if version, err := exec.Command("yq", "--version").CombinedOutput(); err != nil || !strings.Contains(string(version), "mikefarah") {
+		t.Skip("yq from https://github.com/mikefarah/yq is not available")
+	}
+}
+
+// installAddonScripts copies scripts of the checkout into the installation under test.
+func installAddonScripts(t *testing.T, installDir string, scripts ...string) {
+	t.Helper()
+	for _, script := range scripts {
+		content, err := os.ReadFile(filepath.Join(repositoryRoot, script))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeExecutable(t, filepath.Join(installDir, script), string(content))
+	}
+}
+
+func writeExecutable(t *testing.T, file, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *importFixture) addonsDir() string { return filepath.Join(f.provider.installDir, "addons") }
 
 func (f *importFixture) importedImages(t *testing.T) []string {
+	return f.recorded(t, "imported-images")
+}
+
+// recorded returns the lines a stub wrote to the record with the given name.
+func (f *importFixture) recorded(t *testing.T, name string) []string {
 	t.Helper()
-	content, err := os.ReadFile(f.record)
+	content, err := os.ReadFile(filepath.Join(f.recordDir, name))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -194,6 +280,14 @@ func (f *importFixture) importedImages(t *testing.T) []string {
 	}
 	return strings.Split(strings.TrimSpace(string(content)), "\n")
 }
+
+type recordingWriter struct {
+	stdOut, stdErr []string
+}
+
+func (w *recordingWriter) WriteStdOut(message string) { w.stdOut = append(w.stdOut, message) }
+func (w *recordingWriter) WriteStdErr(message string) { w.stdErr = append(w.stdErr, message) }
+func (w *recordingWriter) Flush()                     {}
 
 func assertFile(t *testing.T, want string, pathElements ...string) {
 	t.Helper()
@@ -641,6 +735,20 @@ func TestImport_Omit(t *testing.T) {
 	}
 }
 
+func TestImport_OmitAlsoWorksWhenLogsAreShown(t *testing.T) {
+	fixture := newImportFixture(t)
+	addon := certManagerAddon(t, "ingress", "nginx", omitManifest("ingress", "nginx", []string{"manifests/missing.yaml"}, "quay.io/jetstack/cert-manager-controller:v1.20.2"))
+
+	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: writeArtifact(t, addon), Omit: []string{"omitCertMgr"}, ShowOutput: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if images := fixture.importedImages(t); !slices.Equal(images, []string{nginxArchive + "=nginx"}) {
+		t.Fatalf("imported images = %q", images)
+	}
+}
+
 func TestImport_OmitFallsBackToInstalledManifest(t *testing.T) {
 	fixture := newImportFixture(t)
 	// The artifact predates the omit option: its manifest does not declare the flag.
@@ -678,50 +786,6 @@ func TestImport_OmitResolvesFromFilesAgainstImportedManifests(t *testing.T) {
 	}
 }
 
-// fakeWorker records what is done on an additional node instead of using SSH.
-type fakeWorker struct {
-	options  sshprovider.ConnectionOptions
-	copied   []string
-	commands []string
-	fail     func(command string) bool
-	copyErr  error
-}
-
-func (w *fakeWorker) CopyToNode(source, target string) error {
-	content, err := os.ReadFile(source)
-	if err != nil {
-		return err
-	}
-	w.copied = append(w.copied, target+"="+string(content))
-	return w.copyErr
-}
-
-func (w *fakeWorker) Exec(command string) error {
-	w.commands = append(w.commands, command)
-	if w.fail != nil && w.fail(command) {
-		return errors.New("exit status 1")
-	}
-	return nil
-}
-
-// useFakeWorkers replaces the SSH access and the readiness check; workers are keyed by IP address.
-func useFakeWorkers(t *testing.T, ready bool, fail func(command string) bool) map[string]*fakeWorker {
-	t.Helper()
-	workers := map[string]*fakeWorker{}
-	originalConnect, originalReady := connectWorker, isNodeReady
-	t.Cleanup(func() { connectWorker, isNodeReady = originalConnect, originalReady })
-
-	connectWorker = func(options sshprovider.ConnectionOptions) workerShell {
-		if workers[options.IpAddress] == nil {
-			workers[options.IpAddress] = &fakeWorker{fail: fail}
-		}
-		workers[options.IpAddress].options = options
-		return workers[options.IpAddress]
-	}
-	isNodeReady = func(string) bool { return ready }
-	return workers
-}
-
 func writeClusterDescriptor(t *testing.T, fixture *importFixture, nodesJSON string) {
 	t.Helper()
 	content := `{"nodes":[` + nodesJSON + `]}`
@@ -748,6 +812,7 @@ func TestImport_RejectsNodesThatCannotReceiveImagesBeforeAnyChange(t *testing.T)
 		"no cluster descriptor":     {nodes: "worker-1", wantError: "was not found in the cluster"},
 		"invalid node name":         {nodes: "-rf", descriptor: linuxWorkerDescriptor, wantError: "not a valid node name"},
 		"worker without SSH user":   {nodes: "worker-1", descriptor: `{"Name":"worker-1","IpAddress":"172.19.1.50","OS":"linux"}`, wantError: "IpAddress or Username is missing"},
+		"worker user as an option":  {nodes: "worker-1", descriptor: `{"Name":"worker-1","IpAddress":"172.19.1.50","Username":"-oProxyCommand=x","OS":"linux"}`, wantError: "invalid IpAddress or Username"},
 		"worker not ready":          {nodes: "worker-1", descriptor: linuxWorkerDescriptor, notReady: true, wantError: "is not in Ready state"},
 		"local alias not ready":     {nodes: "linux", notReady: true, wantError: "is not in Ready state"},
 		"local hostname not ready":  {nodes: getNodeName(), notReady: true, wantError: "is not in Ready state"},
@@ -755,7 +820,9 @@ func TestImport_RejectsNodesThatCannotReceiveImagesBeforeAnyChange(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			fixture := newImportFixture(t)
-			workers := useFakeWorkers(t, !test.notReady, nil)
+			if test.notReady {
+				t.Setenv("K2S_TEST_READY_NODES", "")
+			}
 			if test.descriptor != "" {
 				writeClusterDescriptor(t, fixture, test.descriptor)
 			}
@@ -769,7 +836,7 @@ func TestImport_RejectsNodesThatCannotReceiveImagesBeforeAnyChange(t *testing.T)
 			if _, statErr := os.Stat(fixture.addonsDir()); statErr == nil {
 				t.Fatal("the addons directory was changed although the nodes were rejected")
 			}
-			if len(workers) != 0 || len(fixture.importedImages(t)) != 0 {
+			if len(fixture.recorded(t, "commands")) != 0 || len(fixture.recorded(t, "copied")) != 0 || len(fixture.importedImages(t)) != 0 {
 				t.Fatal("images were imported although the nodes were rejected")
 			}
 		})
@@ -778,7 +845,6 @@ func TestImport_RejectsNodesThatCannotReceiveImagesBeforeAnyChange(t *testing.T)
 
 func TestImport_ImportsOntoAdditionalLinuxWorkerOverSSH(t *testing.T) {
 	fixture := newImportFixture(t)
-	workers := useFakeWorkers(t, true, nil)
 	writeClusterDescriptor(t, fixture, linuxWorkerDescriptor)
 	artifact := writeArtifact(t, certManagerAddon(t, "ingress", "nginx", ""))
 
@@ -787,27 +853,26 @@ func TestImport_ImportsOntoAdditionalLinuxWorkerOverSSH(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	worker := workers["172.19.1.50"]
-	if worker == nil {
-		t.Fatal("the worker was not contacted")
+	for record, want := range map[string]string{"ssh-arguments": "-p 22 worker@172.19.1.50 ", "scp-arguments": "-P 22 "} {
+		for _, arguments := range fixture.recorded(t, record) {
+			if !strings.HasPrefix(arguments, "-i /keys/id_rsa ") || !strings.Contains(arguments, want) {
+				t.Fatalf("%s = %q, want the K2s key and %q", record, arguments, want)
+			}
+		}
 	}
-	wantOptions := sshprovider.ConnectionOptions{IpAddress: "172.19.1.50", Port: 22, RemoteUser: "worker", SshPrivateKeyPath: "/keys/id_rsa", Timeout: definitions.SSHDefaultTimeout}
-	worker.options.StdOutWriter = nil
-	if worker.options != wantOptions {
-		t.Fatalf("SSH options = %+v, want %+v", worker.options, wantOptions)
-	}
-	if len(worker.copied) != 2 || len(worker.commands) != 4 {
-		t.Fatalf("copied = %q, commands = %q", worker.copied, worker.commands)
+	copied, commands := fixture.recorded(t, "copied"), fixture.recorded(t, "commands")
+	if len(copied) != 2 || len(commands) != 4 {
+		t.Fatalf("copied = %q, commands = %q", copied, commands)
 	}
 	for i, wantContent := range []string{"cert-manager", "nginx"} {
-		remote, content, _ := strings.Cut(worker.copied[i], "=")
+		remote, content, _ := strings.Cut(copied[i], "=")
 		if !strings.HasPrefix(remote, "/var/tmp/k2s-image-import-") || content != wantContent {
-			t.Fatalf("copied[%d] = %q", i, worker.copied[i])
+			t.Fatalf("copied[%d] = %q", i, copied[i])
 		}
-		if got, want := worker.commands[i*2], "sudo buildah pull oci-archive:"+remote+" 2>&1"; got != want {
+		if got, want := commands[i*2], "sudo buildah pull oci-archive:"+remote+" 2>&1"; got != want {
 			t.Fatalf("commands[%d] = %q, want %q", i*2, got, want)
 		}
-		if got, want := worker.commands[i*2+1], "sudo rm -f "+remote; got != want {
+		if got, want := commands[i*2+1], "sudo rm -f "+remote; got != want {
 			t.Fatalf("commands[%d] = %q, want %q", i*2+1, got, want)
 		}
 	}
@@ -819,11 +884,10 @@ func TestImport_ImportsOntoAdditionalLinuxWorkerOverSSH(t *testing.T) {
 
 func TestImport_ImportsOntoLocalHostAndWorkerWhenBothAreSelected(t *testing.T) {
 	fixture := newImportFixture(t)
-	workers := useFakeWorkers(t, true, nil)
 	writeClusterDescriptor(t, fixture, linuxWorkerDescriptor)
 	artifact := writeArtifact(t, certManagerAddon(t, "ingress", "nginx", ""))
 
-	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: getNodeName() + ",worker-1,linux"})
+	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: getNodeName() + ",worker-1,linux", SshPrivateKeyPath: "/keys/id_rsa"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -831,23 +895,23 @@ func TestImport_ImportsOntoLocalHostAndWorkerWhenBothAreSelected(t *testing.T) {
 	if images := fixture.importedImages(t); len(images) != 2 {
 		t.Fatalf("local images = %q", images)
 	}
-	if worker := workers["172.19.1.50"]; worker == nil || len(worker.copied) != 2 {
-		t.Fatalf("worker was not given both images: %+v", worker)
+	if copied := fixture.recorded(t, "copied"); len(copied) != 2 {
+		t.Fatalf("worker was not given both images: %q", copied)
 	}
 }
 
 func TestImport_WorkerFallsBackToDockerArchiveAndCleansUp(t *testing.T) {
 	fixture := newImportFixture(t)
-	workers := useFakeWorkers(t, true, func(command string) bool { return strings.Contains(command, "oci-archive:") })
+	t.Setenv("K2S_TEST_SSH_FAIL", "oci-archive:")
 	writeClusterDescriptor(t, fixture, linuxWorkerDescriptor)
 	artifact := writeArtifact(t, testAddon{name: "metrics", implementation: "metrics", layers: []testLayer{
 		{mediaType: linuxImagesMediaType, content: tarOf(t, tarEntry{"./one_v1.tar", "image-one"})}}})
 
-	if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: "worker-1"}); err != nil {
+	if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: "worker-1", SshPrivateKeyPath: "/keys/id_rsa"}); err != nil {
 		t.Fatal(err)
 	}
 
-	commands := workers["172.19.1.50"].commands
+	commands := fixture.recorded(t, "commands")
 	if len(commands) != 3 || !strings.Contains(commands[0], "oci-archive:") || !strings.Contains(commands[1], "docker-archive:") || !strings.HasPrefix(commands[2], "sudo rm -f /var/tmp/k2s-image-import-") {
 		t.Fatalf("commands = %q", commands)
 	}
@@ -855,54 +919,53 @@ func TestImport_WorkerFallsBackToDockerArchiveAndCleansUp(t *testing.T) {
 
 func TestImport_ReportsWorkerImageFailuresAndStillRemovesTheArchive(t *testing.T) {
 	fixture := newImportFixture(t)
-	workers := useFakeWorkers(t, true, func(command string) bool { return strings.Contains(command, "buildah pull") })
+	t.Setenv("K2S_TEST_SSH_FAIL", "buildah pull")
 	writeClusterDescriptor(t, fixture, linuxWorkerDescriptor)
 	artifact := writeArtifact(t, testAddon{name: "metrics", implementation: "metrics", layers: []testLayer{
 		{mediaType: linuxImagesMediaType, content: tarOf(t, tarEntry{"./one_v1.tar", "image-one"})}}})
 
-	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: "worker-1"})
+	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: "worker-1", SshPrivateKeyPath: "/keys/id_rsa"})
 
 	if err == nil || !strings.Contains(err.Error(), "one_v1.tar of 'metrics'") {
 		t.Fatalf("expected an image import failure, got: %v", err)
 	}
-	commands := workers["172.19.1.50"].commands
+	commands := fixture.recorded(t, "commands")
 	if last := commands[len(commands)-1]; !strings.HasPrefix(last, "sudo rm -f /var/tmp/k2s-image-import-") {
 		t.Fatalf("the temporary archive was not removed: %q", commands)
 	}
 }
 
-func TestImportImageOnWorker_RemovesPartialUpload(t *testing.T) {
+func TestImport_RemovesPartialUploadFromWorker(t *testing.T) {
 	for _, cleanupFails := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cleanup failure=%t", cleanupFails), func(t *testing.T) {
-			workers := useFakeWorkers(t, true, nil)
-			copyErr := errors.New("upload interrupted")
-			worker := &fakeWorker{
-				copyErr: copyErr,
-				fail: func(command string) bool {
-					return cleanupFails && strings.HasPrefix(command, "sudo rm -f ")
-				},
+			fixture := newImportFixture(t)
+			t.Setenv("K2S_TEST_SCP_FAIL", "true")
+			if cleanupFails {
+				t.Setenv("K2S_TEST_SSH_FAIL", "^sudo rm -f ")
 			}
-			target := importTarget{name: "worker-1", ip: "172.19.1.50", user: "worker"}
-			workers[target.ip] = worker
-			archive := filepath.Join(t.TempDir(), "image.tar")
-			if err := os.WriteFile(archive, []byte("partial image"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeClusterDescriptor(t, fixture, linuxWorkerDescriptor)
+			artifact := writeArtifact(t, testAddon{name: "metrics", implementation: "metrics", layers: []testLayer{
+				{mediaType: linuxImagesMediaType, content: tarOf(t, tarEntry{"./one_v1.tar", "partial image"})}}})
 
-			err := importImageOnWorker(target, archive, "/keys/id_rsa")
+			err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: "worker-1", SshPrivateKeyPath: "/keys/id_rsa"})
 
-			if !errors.Is(err, copyErr) {
-				t.Fatalf("the upload error must be preserved, got: %v", err)
+			if err == nil || !strings.Contains(err.Error(), "one_v1.tar of 'metrics'") {
+				t.Fatalf("expected an image import failure, got: %v", err)
 			}
-			if strings.Contains(err.Error(), "removing the temporary image archive") != cleanupFails {
-				t.Fatalf("cleanup failure reported incorrectly: %v", err)
+			output := strings.Join(fixture.output.stdOut, "\n")
+			if !strings.Contains(output, "copying the image archive failed: simulated upload failure") {
+				t.Fatalf("the upload error must be reported, got output:\n%s", output)
 			}
-			if len(worker.copied) != 1 || len(worker.commands) != 1 {
-				t.Fatalf("a failed copy must run only cleanup: copied=%q, commands=%q", worker.copied, worker.commands)
+			if strings.Contains(output, "removing the temporary image archive") != cleanupFails {
+				t.Fatalf("cleanup failure reported incorrectly, got output:\n%s", output)
 			}
-			remote, _, _ := strings.Cut(worker.copied[0], "=")
-			if !strings.HasPrefix(remote, "/var/tmp/k2s-image-import-") || worker.commands[0] != "sudo rm -f "+remote {
-				t.Fatalf("the partial upload must be removed from disk-backed staging: %q", worker.commands)
+			copied, commands := fixture.recorded(t, "copied"), fixture.recorded(t, "commands")
+			if len(copied) != 1 || len(commands) != 1 {
+				t.Fatalf("a failed copy must run only cleanup: copied=%q, commands=%q", copied, commands)
+			}
+			remote, _, _ := strings.Cut(copied[0], "=")
+			if !strings.HasPrefix(remote, "/var/tmp/k2s-image-import-") || commands[0] != "sudo rm -f "+remote {
+				t.Fatalf("the partial upload must be removed from disk-backed staging: %q", commands)
 			}
 		})
 	}
@@ -917,12 +980,7 @@ func TestImport_AcceptsTheLocalHostNode(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fixture := newImportFixture(t)
-			useFakeWorkers(t, true, nil)
-			var readinessChecks []string
-			isNodeReady = func(node string) bool {
-				readinessChecks = append(readinessChecks, node)
-				return node == getNodeName()
-			}
+			t.Setenv("K2S_TEST_READY_NODES", getNodeName())
 			artifact := writeArtifact(t, certManagerAddon(t, "ingress", "nginx", ""))
 
 			if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact, Nodes: nodes}); err != nil {
@@ -932,112 +990,230 @@ func TestImport_AcceptsTheLocalHostNode(t *testing.T) {
 			if images := fixture.importedImages(t); len(images) != 2 {
 				t.Fatalf("imported images = %q", images)
 			}
-			if len(readinessChecks) == 0 || slices.Contains(readinessChecks, "linux") && getNodeName() != "linux" {
-				t.Fatalf("readiness must be checked using the actual local node name, got %q", readinessChecks)
+			checks := fixture.recorded(t, "readiness-checks")
+			if len(checks) == 0 || slices.Contains(checks, "linux") && getNodeName() != "linux" {
+				t.Fatalf("readiness must be checked using the actual local node name, got %q", checks)
 			}
 		})
 	}
 }
 
-func TestParseOmitTokens(t *testing.T) {
-	tokens := parseOmitTokens([]string{"omitCertMgr", " security : omitKeycloak ", "ingress/nginx:omitCertMgr", "  ", "security:"})
+// packagesAddon carries the offline packages of a registry addon: a debian package, linux packages with
+// a relative, an absolute and an escaping destination, and a Windows package.
+func packagesAddon(t *testing.T, systemDestination string) testAddon {
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: AddonManifest
+metadata:
+  name: registry
+spec:
+  implementations:
+    - name: registry
+      offline_usage:
+        linux:
+          deb:
+            - apache2-utils
+          curl:
+            - url: https://example.com/tool-linux-amd64?raw=true
+              destination: bin/tool
+            - url: https://example.com/system-tool
+              destination: %s
+            - url: https://example.com/evil
+              destination: ../../evil
+        windows:
+          curl:
+            - url: https://example.com/tool.exe
+              destination: bin/tool.exe
+`, systemDestination)
+	return testAddon{name: "registry", implementation: "registry", layers: []testLayer{
+		{mediaType: configMediaType, content: tarGzOf(t, tarEntry{"./addon.manifest.yaml", manifest})},
+		manifestsLayerOf(t, "registry.yaml"),
+		{mediaType: packagesMediaType, content: tarGzOf(t,
+			tarEntry{"./debianpackages/apache2-utils/apache2-utils_1.0_amd64.deb", "deb"},
+			tarEntry{"./linuxpackages/tool-linux-amd64", "tool"},
+			tarEntry{"./linuxpackages/system-tool", "system tool"},
+			tarEntry{"./linuxpackages/evil", "evil"},
+			tarEntry{"./windowspackages/tool.exe", "windows tool"})},
+	}}
+}
 
-	want := []omitToken{
-		{raw: "omitCertMgr", flag: "omitCertMgr"},
-		{raw: "security : omitKeycloak", addon: "security", flag: "omitKeycloak"},
-		{raw: "ingress/nginx:omitCertMgr", addon: "ingress", implementation: "nginx", flag: "omitCertMgr"},
+func TestImport_InstallsPackagesLikeImportPs1(t *testing.T) {
+	fixture := newImportFixture(t)
+	home := os.Getenv("HOME")
+	writeExecutable(t, filepath.Join(home, ".registry", "stale", "stale.deb"), "stale")
+	systemDestination := filepath.Join(t.TempDir(), "system-tool")
+
+	if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: writeArtifact(t, packagesAddon(t, systemDestination))}); err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Equal(tokens, want) {
-		t.Fatalf("tokens = %+v, want %+v", tokens, want)
+
+	assertFile(t, "deb", home, ".registry", "apache2-utils", "apache2-utils_1.0_amd64.deb")
+	assertFile(t, "tool", home, ".registry", "bin", "tool")
+	assertFile(t, "system tool", systemDestination)
+	if _, err := os.Stat(filepath.Join(home, ".registry", "stale")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the debian packages must replace ~/.registry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Clean(filepath.Join(home, ".registry", "..", "..", "evil"))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a package must not be written outside of ~/.registry: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".registry", "bin", "tool.exe")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Windows packages must not be installed on a Linux host: %v", err)
+	}
+	output := strings.Join(fixture.output.stdOut, "\n")
+	for _, want := range []string{"Installing packages for addon registry", "destination '../../evil'", "Skipping 1 Windows package(s) of addon registry"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output does not contain %q:\n%s", want, output)
+		}
 	}
 }
 
-func TestImageNameHelpers(t *testing.T) {
-	for image, want := range map[string]string{
-		"quay.io/keycloak/keycloak:26.7.2":       "quay.io_keycloak_keycloak_26.7.2.tar",
-		"registry.k8s.io/kube-apiserver:v1.37.2": "registry.k8s.io_kube-apiserver_v1.37.2.tar",
-	} {
-		if got := addonImageArchiveName(image); got != want {
-			t.Errorf("addonImageArchiveName(%q) = %q, want %q", image, got, want)
+func TestImport_InstallsPackagesOnTheLastSelectedWorker(t *testing.T) {
+	fixture := newImportFixture(t)
+	writeClusterDescriptor(t, fixture, linuxWorkerDescriptor)
+	systemDestination := filepath.Join(t.TempDir(), "system-tool")
+
+	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: writeArtifact(t, packagesAddon(t, systemDestination)),
+		Nodes: getNodeName() + ",worker-1", SshPrivateKeyPath: "/keys/id_rsa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commands := fixture.recorded(t, "commands")
+	for _, want := range []string{"sudo rm -rf .registry && mkdir -p .registry", "tar -C .registry -xf -", "mkdir -p .registry/bin"} {
+		if !slices.Contains(commands, want) {
+			t.Fatalf("commands = %q, missing %q", commands, want)
 		}
 	}
-	for image, want := range map[string]string{
-		"quay.io/jetstack/cert-manager-controller:v1.21.1": "quay.io_jetstack_cert-manager-controller",
-		"localhost:5000/repo/image:1.0":                    "localhost_5000_repo_image",
-		"repo/image@sha256:abc":                            "repo_image",
-		"image:1":                                          "image",
-		"":                                                 "",
-	} {
-		if got := comparableImageKey(image); got != want {
-			t.Errorf("comparableImageKey(%q) = %q, want %q", image, got, want)
+	if received := fixture.recorded(t, "received-files"); !slices.Contains(received, "./apache2-utils/apache2-utils_1.0_amd64.deb") {
+		t.Fatalf("debian packages received by the worker = %q", received)
+	}
+	if copied := fixture.recorded(t, "copied"); !slices.Equal(copied, []string{".registry/bin/tool=tool"}) {
+		t.Fatalf("copied = %q", copied)
+	}
+	// Like Import.ps1, an absolute destination is installed on the control plane.
+	assertFile(t, "system tool", systemDestination)
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".registry")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the packages of a worker must not be put on this host: %v", err)
+	}
+}
+
+func TestImport_ReportsMissingScript(t *testing.T) {
+	p := &linuxAddonProvider{installDir: t.TempDir(), configDir: t.TempDir()}
+
+	err := p.Import(AddonImportConfig{ArtifactFile: filepath.Join(t.TempDir(), "addons.oci.tar")})
+
+	if err == nil || errors.Is(err, ErrNotSupported) {
+		t.Fatalf("expected the failure of the missing script, got: %v", err)
+	}
+}
+
+// runImportFunction sources Import-Addon.sh of the checkout and runs the bash snippet with the arguments.
+func runImportFunction(t *testing.T, snippet string, args ...string) (string, error) {
+	t.Helper()
+	for _, tool := range []string{"bash", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not available", tool)
 		}
 	}
-	for archive, want := range map[string]string{
-		"quay.io_jetstack_cert-manager-controller_v1.20.2.tar":         "quay.io_jetstack_cert-manager-controller",
-		"windows_quay.io_jetstack_cert-manager-controller_v1.20.2.tar": "quay.io_jetstack_cert-manager-controller",
-		"noversion.tar": "",
-		"image.zip":     "",
+	script := filepath.Join(repositoryRoot, "lib/scripts/linux/debian/host/addon/Import-Addon.sh")
+	cmd := exec.Command("bash", append([]string{"-c", "source \"$0\"\n" + snippet, script}, args...)...)
+	cmd.Env = append(os.Environ(), "K2S_INSTALL_DIR="+repositoryRoot, "K2S_LOG_FILE="+filepath.Join(t.TempDir(), "k2s.log"))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err != nil {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), err
+}
+
+func TestImportScript_ParsesOmitTokens(t *testing.T) {
+	got, err := runImportFunction(t, `addon_import_jq '$ARGS.positional | parse_tokens | map([.raw, .addon, .implementation, .flag] | join("|"))[]' -nr --args "$@"`,
+		"omitCertMgr", " security : omitKeycloak ", "ingress/nginx:omitCertMgr", "  ", "security:")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := "omitCertMgr|||omitCertMgr\nsecurity : omitKeycloak|security||omitKeycloak\ningress/nginx:omitCertMgr|ingress|nginx|omitCertMgr"
+	if got != want {
+		t.Fatalf("tokens =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestImportScript_ImageNameHelpers(t *testing.T) {
+	for function, cases := range map[string]map[string]string{
+		"archive_name": {
+			"quay.io/keycloak/keycloak:26.7.2":       "quay.io_keycloak_keycloak_26.7.2.tar",
+			"registry.k8s.io/kube-apiserver:v1.37.2": "registry.k8s.io_kube-apiserver_v1.37.2.tar",
+		},
+		"comparable_key": {
+			"quay.io/jetstack/cert-manager-controller:v1.21.1": "quay.io_jetstack_cert-manager-controller",
+			"localhost:5000/repo/image:1.0":                    "localhost_5000_repo_image",
+			"repo/image@sha256:abc":                            "repo_image",
+			"image:1":                                          "image",
+			"":                                                 "",
+		},
+		"identity_key": {
+			"quay.io_jetstack_cert-manager-controller_v1.20.2.tar":         "quay.io_jetstack_cert-manager-controller",
+			"windows_quay.io_jetstack_cert-manager-controller_v1.20.2.tar": "quay.io_jetstack_cert-manager-controller",
+			"noversion.tar": "",
+			"image.zip":     "",
+		},
 	} {
-		if got := archiveIdentityKey(archive); got != want {
-			t.Errorf("archiveIdentityKey(%q) = %q, want %q", archive, got, want)
+		for input, want := range cases {
+			got, err := runImportFunction(t, `addon_import_jq "\$value | $1" -nr --arg value "$2"`, function, input)
+			if err != nil || got != want {
+				t.Errorf("%s(%q) = %q, %v; want %q", function, input, got, err, want)
+			}
 		}
 	}
 }
 
-func TestImagesFromYAMLAndVersionlessImages(t *testing.T) {
+func TestImportScript_ImagesFromYAMLAndVersionlessImages(t *testing.T) {
 	content := "containers:\n  - name: a\n    image: 'repo/a:1' # comment\n    image: repo/b\n    image: repo/b:2\n    args:\n      - --solver=quay.io/x/solver:v3\n"
 
-	images := imagesFromYAML(content)
-
-	if want := []string{"repo/a:1", "repo/b", "repo/b:2", "quay.io/x/solver:v3"}; !slices.Equal(images, want) {
-		t.Fatalf("images = %q, want %q", images, want)
+	images, err := runImportFunction(t, `addon_import_jq 'images_from_yaml | join(",")' -rRs <<<"$1"`, content)
+	if err != nil || images != "repo/a:1,repo/b,repo/b:2,quay.io/x/solver:v3" {
+		t.Fatalf("images = %q, %v", images, err)
 	}
-	if got, want := removeVersionlessImages(images), []string{"repo/a:1", "repo/b:2", "quay.io/x/solver:v3"}; !slices.Equal(got, want) {
-		t.Fatalf("images without versionless duplicates = %q, want %q", got, want)
+	cleaned, err := runImportFunction(t, `addon_import_jq '$ARGS.positional | clean_images | join(",")' -nr --args "$@"`,
+		"repo/a:1", "repo/b", ` "repo/b:2" `, "quay.io/x/solver:v3", "repo/a:1", "")
+	if err != nil || cleaned != "repo/a:1,repo/b:2,quay.io/x/solver:v3" {
+		t.Fatalf("images without versionless duplicates = %q, %v", cleaned, err)
 	}
 }
 
-func TestSelectExportedAddons(t *testing.T) {
-	exported := []exportedAddon{
-		{name: "registry", implementation: "registry"},
-		{name: "ingress", implementation: "nginx"},
-		{name: "ingress", implementation: "traefik"},
-		{name: "security", implementation: "security"},
-	}
+func TestImportScript_SelectsExportedAddons(t *testing.T) {
+	selectAddons := `exported_names=(registry ingress ingress security)
+exported_implementations=(registry nginx traefik security)
+addon_import_select "$@"
+for i in "${selected_indices[@]}"; do addon_import_key "${exported_names[i]}" "${exported_implementations[i]}"; done | paste -sd, -`
 
 	for name, test := range map[string]struct {
 		names []string
-		want  []string
+		want  string
 	}{
-		"no names selects everything":        {nil, []string{"registry", "ingress/nginx", "ingress/traefik", "security"}},
-		"base addon selects all its impls":   {[]string{"ingress"}, []string{"ingress/nginx", "ingress/traefik"}},
-		"quoted implementation":              {[]string{"ingress traefik"}, []string{"ingress/traefik"}},
-		"implementation as separate token":   {[]string{"ingress", "traefik", "registry"}, []string{"ingress/traefik", "registry"}},
-		"flattened implementation":           {[]string{"ingress-nginx"}, []string{"ingress/nginx"}},
-		"names are matched case-insensitive": {[]string{"Registry"}, []string{"registry"}},
-		"duplicates are removed":             {[]string{"security", "ingress nginx", "security"}, []string{"ingress/nginx", "security"}},
+		"no names selects everything":        {nil, "registry,ingress/nginx,ingress/traefik,security"},
+		"base addon selects all its impls":   {[]string{"ingress"}, "ingress/nginx,ingress/traefik"},
+		"quoted implementation":              {[]string{"ingress traefik"}, "ingress/traefik"},
+		"implementation as separate token":   {[]string{"ingress", "traefik", "registry"}, "ingress/traefik,registry"},
+		"flattened implementation":           {[]string{"ingress-nginx"}, "ingress/nginx"},
+		"names are matched case-insensitive": {[]string{"Registry"}, "registry"},
+		"duplicates are removed":             {[]string{"security", "ingress nginx", "security"}, "ingress/nginx,security"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			selected, err := selectExportedAddons(exported, test.names)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var keys []string
-			for _, addon := range selected {
-				keys = append(keys, addon.key())
-			}
-			if !slices.Equal(keys, test.want) {
-				t.Fatalf("selected %q, want %q", keys, test.want)
+			selected, err := runImportFunction(t, selectAddons, test.names...)
+			if err != nil || selected != test.want {
+				t.Fatalf("selected %q, %v; want %q", selected, err, test.want)
 			}
 		})
 	}
 
-	if _, err := selectExportedAddons(exported, []string{"registry", "dashboard"}); err == nil || !strings.Contains(err.Error(), "addon 'dashboard' not found") {
+	if _, err := runImportFunction(t, selectAddons, "registry", "dashboard"); err == nil || !strings.Contains(err.Error(), "addon 'dashboard' not found") {
 		t.Fatalf("expected a not-found error for 'dashboard', got: %v", err)
 	}
 }
 
-func TestResolveImportPath(t *testing.T) {
+func TestImportScript_ResolvesImportPath(t *testing.T) {
 	for _, test := range []struct {
 		name, implementation         string
 		wantBase, wantImplementation string
@@ -1051,9 +1227,10 @@ func TestResolveImportPath(t *testing.T) {
 		{name: "ingress", implementation: "..", wantError: true},
 		{name: "/etc", implementation: "cron.d", wantError: true},
 	} {
-		base, implementation, err := resolveImportPath(test.name, test.implementation)
-		if (err != nil) != test.wantError || base != test.wantBase || implementation != test.wantImplementation {
-			t.Errorf("resolveImportPath(%q, %q) = (%q, %q, %v), want (%q, %q, error=%t)",
+		resolved, err := runImportFunction(t, `addon_import_resolve_path "$1" "$2" | tr '\t' '|'`, test.name, test.implementation)
+		base, implementation, _ := strings.Cut(resolved, "|")
+		if (err != nil) != test.wantError || (err == nil && (base != test.wantBase || implementation != test.wantImplementation)) {
+			t.Errorf("resolve(%q, %q) = (%q, %q, %v), want (%q, %q, error=%t)",
 				test.name, test.implementation, base, implementation, err, test.wantBase, test.wantImplementation, test.wantError)
 		}
 	}

@@ -59,17 +59,8 @@ if ($systemError) {
 }
 
 $setupInfo = Get-SetupInfo
-if ($setupInfo.LinuxOnly -eq $true) {
-    $errMsg = 'Cannot export addons in Linux-only setup' 
-    if ($EncodeStructuredOutput -eq $true) {
-        $err = New-Error -Severity Warning -Code ErrCodeWrongSetupType -Message $errMsg
-        Send-ToCli -MessageType $MessageType -Message @{Error = $err }
-        return
-    }
-
-    Write-Log $errMsg -Error
-    exit 1
-}
+# A Linux-only setup has no Windows node to pull Windows images on; they are skipped, like on import.
+$exportWindowsImages = $setupInfo.LinuxOnly -ne $true
 
 $tmpExportDir = "${ExportDir}\tmp-exported-addons"
 Remove-Item -Force "$tmpExportDir" -Recurse -Confirm:$False -ErrorAction SilentlyContinue
@@ -463,6 +454,13 @@ try {
             $linuxImages = Remove-VersionlessImages -Images $linuxImages
             $windowsImages = $windowsImages | Select-Object -Unique | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim("`"'").Trim(' ') }
             $windowsImages = Remove-VersionlessImages -Images $windowsImages
+            if (-not $exportWindowsImages) {
+                $skippedWindowsImages = @($windowsImages | Where-Object { $_ })
+                if ($skippedWindowsImages.Count -gt 0) {
+                    Write-Log "Skipping $($skippedWindowsImages.Count) Windows image(s) of addon ${addonName}: a Linux-only setup has no Windows node" -Console
+                }
+                $windowsImages = @()
+            }
             $images += $linuxImages
             $images += $windowsImages
             $images = $images | Select-Object -Unique
@@ -520,7 +518,7 @@ try {
                 Write-Log '---'
 
                 $linuxContainerImages = Get-ContainerImagesOnLinuxNode -IncludeK8sImages $false
-                $windowsContainerImages = Get-ContainerImagesOnWindowsNode -IncludeK8sImages $false
+                $windowsContainerImages = if ($exportWindowsImages) { Get-ContainerImagesOnWindowsNode -IncludeK8sImages $false } else { @() }
 
                 Write-Log "Exporting images for addon $addonName" -Console
                 Write-Log "[AddonExport] Found $($linuxContainerImages.Count) linux container images, $($windowsContainerImages.Count) windows container images"

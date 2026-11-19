@@ -4,9 +4,9 @@
 site_name: K2s - Kubernetes distribution for Windows & Linux workloads
 site_url: https://k2s-project.github.io/k2s
 copyright: >-
-  Copyright k2s a Series of LF Projects, LLC<br><br>
+  <strong>Copyright K2s Series of LF Projects, LLC<br><br>
   For website terms of use, trademark policy and other project policies please see
-  <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+  <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
 repo_url: https://github.com/k2s-project/k2s/
 edit_uri: edit/main/docs/
 strict: true
@@ -160,6 +160,7 @@ nav:
 not_in_nav: |
   /includes/**/*.*
 extra:
+  generator: false
   version:
     provider: mike
     default: latest

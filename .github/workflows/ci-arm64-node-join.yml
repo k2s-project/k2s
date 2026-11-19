@@ -60,9 +60,7 @@ jobs:
         run: |
           mkdir -p /tmp/k8s-packages
           sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
-          registry_token="$(sed '1s/^\xEF\xBB\xBF//' bin/registry.dat | tr -d '\r\n[:space:]')"
-          sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" "$registry_token" false
-          unset registry_token
+          sudo bash cfg/nodeextension/debian13/scripts/install-k8s-packages.sh /tmp/k8s-packages "" bin/registry.dat false
           sudo systemctl enable kubelet
 
       - name: Start sshd and wait for the control-plane's public key

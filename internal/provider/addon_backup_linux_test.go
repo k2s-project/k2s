@@ -522,7 +522,70 @@ func TestRestoreRegistry_RejectsInvalidArchivesBeforeTouchingTheRegistry(t *test
 					{Name: "repository/../auth/htpasswd", Typeflag: tar.TypeReg, Mode: 0o644},
 				})
 			},
+			want: "'..' path component",
+		},
+		"entry outside repository without parent components": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "auth/htpasswd", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
 			want: "outside of 'repository'",
+		},
+		"parent component staying inside repository": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/sub/../blob", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "'..' path component",
+		},
+		"hard link target with parent component": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/a", Typeflag: tar.TypeReg, Mode: 0o644},
+					{Name: "repository/b", Typeflag: tar.TypeLink, Linkname: "repository/sub/../a", Mode: 0o644},
+				})
+			},
+			want: "'..' path component",
+		},
+		"device node": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/disk", Typeflag: tar.TypeBlock, Devmajor: 8, Mode: 0o666},
+				})
+			},
+			want: "not a regular file, directory or hard link",
+		},
+		"setuid file": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/suid", Typeflag: tar.TypeReg, Mode: 0o4755},
+				})
+			},
+			want: "setuid or setgid",
+		},
+		"repository is a regular file": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "'repository' must be a directory",
+		},
+		"hard link to a directory": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeLink, Linkname: "repository", Mode: 0o755},
+				})
+			},
+			want: "missing entry",
 		},
 		"symlink entry": {
 			write: func(t *testing.T, path string) {

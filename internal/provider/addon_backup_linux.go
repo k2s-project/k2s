@@ -353,7 +353,8 @@ func validateRegistryBackup(backupDir string, files []string) error {
 
 // validateRepositoryArchive reads the whole archive and rejects it when it is
 // corrupt, has no 'repository' directory, or holds entries outside of
-// 'repository/' or symbolic links, which could redirect the privileged
+// 'repository/', entries other than regular files, directories and hard links,
+// setuid or setgid files, '..' path components or symbolic links, which could redirect the privileged
 // extraction. Hard links are allowed (the registry deduplicates blobs) as long
 // as their target stays inside 'repository/'.
 func validateRepositoryArchive(archivePath string) error {
@@ -371,7 +372,7 @@ func validateRepositoryArchive(archivePath string) error {
 
 	reader := tar.NewReader(gz)
 	foundRepository := false
-	entries := map[string]struct{}{}
+	entries := map[string]byte{}
 	for {
 		header, err := reader.Next()
 		if err == io.EOF {
@@ -380,21 +381,37 @@ func validateRepositoryArchive(archivePath string) error {
 		if err != nil {
 			return fmt.Errorf("invalid archive '%s': %w", registryRepositoryArchive, err)
 		}
-		if header.Typeflag == tar.TypeSymlink {
+		switch header.Typeflag {
+		case tar.TypeReg, tar.TypeDir, tar.TypeLink:
+		case tar.TypeSymlink:
 			return fmt.Errorf("invalid archive '%s': symbolic link entry '%s' is not allowed", registryRepositoryArchive, header.Name)
+		default:
+			return fmt.Errorf("invalid archive '%s': entry '%s' is not a regular file, directory or hard link", registryRepositoryArchive, header.Name)
+		}
+		if header.Mode&0o6000 != 0 {
+			return fmt.Errorf("invalid archive '%s': entry '%s' has setuid or setgid permissions", registryRepositoryArchive, header.Name)
+		}
+		if hasParentDirComponent(header.Name) || (header.Typeflag == tar.TypeLink && hasParentDirComponent(header.Linkname)) {
+			return fmt.Errorf("invalid archive '%s': entry '%s' contains a '..' path component", registryRepositoryArchive, header.Name)
 		}
 		if !isInsideRepository(header.Name) {
 			return fmt.Errorf("invalid archive '%s': entry '%s' is outside of 'repository'", registryRepositoryArchive, header.Name)
 		}
-		if header.Typeflag == tar.TypeLink && !isInsideRepository(header.Linkname) {
-			return fmt.Errorf("invalid archive '%s': hard link '%s' targets '%s' outside of 'repository'", registryRepositoryArchive, header.Name, header.Linkname)
+		name := filepath.Clean(header.Name)
+		if name == "repository" && header.Typeflag != tar.TypeDir {
+			return fmt.Errorf("invalid archive '%s': 'repository' must be a directory", registryRepositoryArchive)
 		}
 		if header.Typeflag == tar.TypeLink {
-			if _, ok := entries[filepath.Clean(header.Linkname)]; !ok {
+			if !isInsideRepository(header.Linkname) {
+				return fmt.Errorf("invalid archive '%s': hard link '%s' targets '%s' outside of 'repository'", registryRepositoryArchive, header.Name, header.Linkname)
+			}
+			if entries[filepath.Clean(header.Linkname)] != tar.TypeReg {
 				return fmt.Errorf("invalid archive '%s': hard link '%s' targets missing entry '%s'", registryRepositoryArchive, header.Name, header.Linkname)
 			}
+			entries[name] = tar.TypeReg
+		} else {
+			entries[name] = header.Typeflag
 		}
-		entries[filepath.Clean(header.Name)] = struct{}{}
 		foundRepository = true
 	}
 	if !foundRepository {
@@ -406,6 +423,13 @@ func validateRepositoryArchive(archivePath string) error {
 		return fmt.Errorf("invalid archive '%s': %w", registryRepositoryArchive, err)
 	}
 	return nil
+}
+
+// hasParentDirComponent reports whether a tar path has a raw '..' component,
+// which GNU tar refuses to extract even if the cleaned path stays inside
+// 'repository/'.
+func hasParentDirComponent(name string) bool {
+	return slices.Contains(strings.Split(name, "/"), "..")
 }
 
 func isInsideRepository(name string) bool {

@@ -138,12 +138,20 @@ addon_export_select() {
       return 1
     fi
 
+    local matched=false
     while IFS= read -r implementation_name; do
       [[ -n $implementation_name ]] || continue
       if [[ -z $implementation || ${implementation_name,,} == "${implementation,,}" ]]; then
         export_manifests+=("$found") export_implementations+=("$implementation_name")
+        matched=true
       fi
     done < <(addon_export_implementations "$found")
+    # Export.ps1 silently exports nothing here; an artifact without the requested addon would only fail
+    # later, when it is imported offline.
+    if [[ $matched == false ]]; then
+      addon_export_error "addon '${manifest_names[found]}' has no implementation${implementation:+ '$implementation'}"
+      return 1
+    fi
   done
 }
 
@@ -305,7 +313,7 @@ addon_export_pull() {
 # Collects, pulls and exports the Linux images of one addon implementation into images-linux.tar.
 addon_export_images() {
   local addon_name="$1" implementation_path="$2" dir_name="$3" implementation_json="$4" images_dir="$5" layer="$6"
-  local chart chart_folder values base release image id archive kind
+  local chart chart_folder values base release image id archive kind output
   local -a files=() charts=() linux=() windows=() additional=() archives=()
 
   addon_export_log "Pulling images for addon $addon_name from $implementation_path"
@@ -328,11 +336,17 @@ addon_export_images() {
         base="$(basename "$chart")"
         base="${base%.*}"
         release="${base%-*}"
+        local -a values_args=()
         if [[ -f $values ]]; then
-          helm template "$release" "$chart" -f "$values" --output-dir "$chart_folder" 2>&1 | k2s_log_output >/dev/null || true
-        else
-          helm template "$release" "$chart" --output-dir "$chart_folder" 2>&1 | k2s_log_output >/dev/null || true
+          values_args=(-f "$values")
         fi
+        # Images referenced only by the chart would be missing from the artifact, so a chart that cannot
+        # be rendered fails the export.
+        if ! output="$(helm template "$release" "$chart" "${values_args[@]}" --output-dir "$chart_folder" 2>&1)"; then
+          addon_export_error "rendering chart $(basename "$chart") of addon $addon_name failed: ${output##*$'\n'}"
+          return 1
+        fi
+        printf '%s\n' "$output" | k2s_log_output >/dev/null
         mapfile -t -O "${#files[@]}" files < <(find "$chart_folder" -type f -iname '*?yaml' | sort)
       done
     fi
@@ -406,7 +420,7 @@ addon_export_download() {
 # downloaded only once.
 addon_export_packages() {
   local addon_name="$1" dir_name="$2" implementation_json="$3" destination="$4"
-  local repo command package cache archives url
+  local repo command package cache archives url output
   local -a repos=() debs=() urls=()
 
   addon_export_log "Downloading packages for addon $addon_name"
@@ -436,11 +450,23 @@ addon_export_packages() {
         continue
       fi
       addon_export_log_to_file "Downloading debian package \"$package\" with dependencies"
-      if ! DEBIAN_FRONTEND=noninteractive apt-get --download-only reinstall -y "$package" >/dev/null 2>&1; then
-        addon_export_log "Warning: downloading debian package $package failed"
+      # A missing package would only be noticed when the addon is enabled offline, so a failed download
+      # fails the export, and an incomplete cache entry is removed so that a retry downloads it again.
+      if ! output="$(DEBIAN_FRONTEND=noninteractive apt-get --download-only reinstall -y "$package" 2>&1)"; then
+        apt-get clean >/dev/null 2>&1 || true
+        addon_export_error "downloading debian package $package failed: ${output##*$'\n'}"
+        return 1
       fi
-      mkdir -p "$cache/$package" || return 1
-      cp "$archives"*.deb "$cache/$package/" 2>/dev/null || addon_export_log "Warning: no debian packages were downloaded for $package"
+      local -a downloaded=()
+      shopt -s nullglob
+      downloaded=("$archives"*.deb)
+      shopt -u nullglob
+      if ((${#downloaded[@]} == 0)) || ! mkdir -p "$cache/$package" || ! cp "${downloaded[@]}" "$cache/$package/"; then
+        rm -rf "${cache:?}/$package"
+        apt-get clean >/dev/null 2>&1 || true
+        addon_export_error "no debian packages were downloaded for $package"
+        return 1
+      fi
       apt-get clean >/dev/null 2>&1 || true
     done
     mkdir -p "$destination/debianpackages" || return 1

@@ -1096,6 +1096,69 @@ func TestImport_InstallsPackagesOnTheLastSelectedWorker(t *testing.T) {
 	}
 }
 
+func TestImport_KeepsPackagesOfAllImplementationsInTheSharedAddonDirectory(t *testing.T) {
+	fixture := newImportFixture(t)
+	writeExecutable(t, filepath.Join(os.Getenv("HOME"), ".storage", "stale", "stale.deb"), "stale")
+	manifest := `metadata:
+  name: storage
+spec:
+  implementations:
+    - name: smb
+      offline_usage:
+        linux:
+          deb:
+            - cifs-utils
+    - name: ceph
+      offline_usage:
+        linux:
+          deb:
+            - lvm2
+          curl:
+            - url: https://example.com/cephadm
+              destination: cephadm
+`
+	storageAddon := func(implementation, deb string, extra ...tarEntry) testAddon {
+		packages := append([]tarEntry{{"./debianpackages/" + deb + "/" + deb + "_1.0_amd64.deb", deb}}, extra...)
+		return testAddon{name: "storage", implementation: implementation, layers: []testLayer{
+			{mediaType: configMediaType, content: tarGzOf(t, tarEntry{"./addon.manifest.yaml", manifest})},
+			{mediaType: packagesMediaType, content: tarGzOf(t, packages...)},
+		}}
+	}
+	artifact := writeArtifact(t,
+		storageAddon("smb", "cifs-utils"),
+		storageAddon("ceph", "lvm2", tarEntry{"./linuxpackages/cephadm", "cephadm"}))
+
+	if err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact}); err != nil {
+		t.Fatal(err)
+	}
+
+	home := os.Getenv("HOME")
+	assertFile(t, "cifs-utils", home, ".storage", "cifs-utils", "cifs-utils_1.0_amd64.deb")
+	assertFile(t, "lvm2", home, ".storage", "lvm2", "lvm2_1.0_amd64.deb")
+	assertFile(t, "cephadm", home, ".storage", "cephadm")
+	if _, err := os.Stat(filepath.Join(home, ".storage", "stale")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("~/.storage must still be replaced once per import: %v", err)
+	}
+}
+
+func TestImport_ReportsImageArchivesThatCannotBeExtracted(t *testing.T) {
+	fixture := newImportFixture(t)
+	layer := tarOf(t, tarEntry{"./one_v1.tar", "image-one"}, tarEntry{"./two_v2.tar", strings.Repeat("x", 1000)})
+	// Cut into the data of the second archive: its header is intact, its content is not.
+	truncated := layer[:3*512+100]
+	artifact := writeArtifact(t, testAddon{name: "metrics", implementation: "metrics", layers: []testLayer{
+		{mediaType: linuxImagesMediaType, content: truncated}}})
+
+	err := fixture.provider.Import(AddonImportConfig{ArtifactFile: artifact})
+
+	if err == nil || !strings.Contains(err.Error(), "two_v2.tar of 'metrics' (extraction failed)") {
+		t.Fatalf("expected the failed extraction to be reported, got: %v", err)
+	}
+	if images := fixture.importedImages(t); !slices.Equal(images, []string{"one_v1.tar=image-one"}) {
+		t.Fatalf("imported images = %q", images)
+	}
+}
+
 func TestImport_ReportsMissingScript(t *testing.T) {
 	p := &linuxAddonProvider{installDir: t.TempDir(), configDir: t.TempDir()}
 

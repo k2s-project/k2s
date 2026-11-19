@@ -851,14 +851,23 @@ addon_import_packages() {
   folder=".$base"
 
   if [[ -d "$packages/debianpackages" ]]; then
+    # Implementations of one addon share ~/.<addon> (storage smb and ceph use ~/.storage), so it is
+    # replaced only once per import and node; later implementations add to it.
+    local cleared_key="${ip:-local}|$folder" prepare="mkdir -p $folder"
+    if [[ -z ${addon_import_cleared_package_dirs[$cleared_key]:-} ]]; then
+      prepare="sudo rm -rf $folder && mkdir -p $folder"
+      addon_import_cleared_package_dirs[$cleared_key]=1
+    fi
     if [[ -n $ip ]]; then
       addon_import_log "Copying debian packages for addon $key to node '$node' ($ip)"
-      if ! output="$(addon_import_worker_ssh "$ip" "$user" "sudo rm -rf $folder && mkdir -p $folder" 2>&1)" ||
+      if ! output="$(addon_import_worker_ssh "$ip" "$user" "$prepare" 2>&1)" ||
         ! output="$(tar -C "$packages/debianpackages" -cf - . | addon_import_worker_ssh "$ip" "$user" "tar -C $folder -xf -" 2>&1)"; then
         addon_import_log "Warning: copying the debian packages of addon $key to node '$node' failed: $output"
       fi
     else
-      rm -rf "${HOME:?}/$folder"
+      if [[ $prepare == sudo* ]]; then
+        rm -rf "${HOME:?}/$folder"
+      fi
       if ! mkdir -p "$HOME/$folder" || ! cp -R "$packages/debianpackages/." "$HOME/$folder/"; then
         addon_import_log "Warning: copying the debian packages of addon $key to $HOME/$folder failed"
       fi
@@ -941,8 +950,13 @@ addon_import_image_layer() {
     addon_import_check_entry "$entry" || return 1
     image_dir="$(mktemp -d "$work_dir/image-XXXXXX")" || return 1
     archive="$image_dir/$entry"
-    if ! tar -xf "$layer" -C "$image_dir" --no-same-owner --no-same-permissions --occurrence=1 -- "$entry" 2>/dev/null ||
-      [[ ! -f $archive || -L $archive ]]; then
+    if ! tar -xf "$layer" -C "$image_dir" --no-same-owner --no-same-permissions --occurrence=1 -- "$entry" 2>/dev/null; then
+      addon_import_log "Warning: extracting image archive $name failed"
+      image_failures+=("$name of '$key' (extraction failed)")
+      rm -rf "$image_dir"
+      continue
+    fi
+    if [[ ! -f $archive || -L $archive ]]; then
       # Links and special files are not images.
       rm -rf "$image_dir"
       count=$((count - 1))
@@ -982,6 +996,7 @@ addon_import_main() {
   target_names=() target_ips=() target_users=()
   exported_names=() exported_implementations=() exported_manifests=() selected_indices=()
   entry_keys=() entry_layers=() entry_bases=() entry_implementations=() entry_packages=() entry_manifests=() image_failures=()
+  declare -gA addon_import_cleared_package_dirs=()
 
   while (($# > 0)); do
     case "$1" in

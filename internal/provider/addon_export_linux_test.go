@@ -79,6 +79,7 @@ printf 'id-%s\n' "$(printf '%s' "$image" | tr '/:' '__')"
 `)
 	writeExecutable(t, filepath.Join(stubs, "helm"), `#!/bin/sh
 printf '%s\n' "$*" >> "$K2S_TEST_RECORD_DIR/helm"
+if [ -n "$K2S_TEST_HELM_FAIL" ]; then echo "Error: simulated render failure" >&2; exit 1; fi
 release=$2
 while [ $# -gt 0 ]; do
   case "$1" in --output-dir) out=$2; shift 2 ;; *) shift ;; esac
@@ -92,7 +93,10 @@ printf "ARCHIVES='%s/'\n" "$K2S_TEST_RECORD_DIR/apt-archives"
 	writeExecutable(t, filepath.Join(stubs, "apt-get"), `#!/bin/sh
 printf '%s\n' "$*" >> "$K2S_TEST_RECORD_DIR/apt-get"
 case "$*" in
-  *--download-only*) eval "package=\${$#}"; mkdir -p "$K2S_TEST_RECORD_DIR/apt-archives"
+  *--download-only*) eval "package=\${$#}"
+    if [ "$package" = "$K2S_TEST_APT_FAIL" ]; then echo "E: Unable to locate package $package" >&2; exit 100; fi
+    if [ "$package" = "$K2S_TEST_APT_EMPTY" ]; then exit 0; fi
+    mkdir -p "$K2S_TEST_RECORD_DIR/apt-archives"
     printf 'deb %s' "$package" > "$K2S_TEST_RECORD_DIR/apt-archives/${package}_1.0_amd64.deb" ;;
   clean) rm -f "$K2S_TEST_RECORD_DIR/apt-archives/"*.deb ;;
 esac
@@ -110,6 +114,9 @@ printf 'downloaded %s' "$url" > "$destination"
 	t.Setenv("K2S_LOG_FILE", filepath.Join(t.TempDir(), "k2s.log"))
 	t.Setenv("K2S_TEST_RECORD_DIR", fixture.recordDir)
 	t.Setenv("K2S_TEST_PULL_FAIL", "")
+	t.Setenv("K2S_TEST_HELM_FAIL", "")
+	t.Setenv("K2S_TEST_APT_FAIL", "")
+	t.Setenv("K2S_TEST_APT_EMPTY", "")
 	return fixture
 }
 
@@ -346,13 +353,70 @@ func TestExport_SelectsAddonsLikeExportPs1(t *testing.T) {
 }
 
 func TestExport_RejectsUnknownAddon(t *testing.T) {
+	for name, test := range map[string]struct {
+		names     []string
+		wantError string
+	}{
+		"unknown addon":                              {names: []string{"ghost", "dashboard"}, wantError: "no addon with name 'ghost' found"},
+		"unknown implementation":                     {names: []string{"ingress", "nonexistent"}, wantError: "addon 'ingress' has no implementation 'nonexistent'"},
+		"unknown quoted implementation among others": {names: []string{"dashboard", "ingress nonexistent"}, wantError: "addon 'ingress' has no implementation 'nonexistent'"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newExportFixture(t)
+			fixture.withDashboard(t)
+			fixture.withIngress(t)
+
+			err := fixture.provider.Export(AddonExportConfig{OutputDir: fixture.outputDir, Names: test.names, OmitImages: true})
+
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("expected an error containing %q, got: %v", test.wantError, err)
+			}
+			if entries, _ := os.ReadDir(fixture.outputDir); len(entries) != 0 {
+				t.Fatalf("a rejected export must not write anything: %v", entries)
+			}
+		})
+	}
+}
+
+func TestExport_FailsWhenAChartCannotBeRendered(t *testing.T) {
 	fixture := newExportFixture(t)
 	fixture.withDashboard(t)
+	t.Setenv("K2S_TEST_HELM_FAIL", "true")
 
-	err := fixture.provider.Export(AddonExportConfig{OutputDir: fixture.outputDir, Names: []string{"ghost", "dashboard"}, OmitImages: true})
+	err := fixture.provider.Export(AddonExportConfig{OutputDir: fixture.outputDir, Names: []string{"dashboard"}})
 
-	if err == nil || !strings.Contains(err.Error(), "no addon with name 'ghost' found") {
-		t.Fatalf("expected a not-found error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "rendering chart headlamp-0.25.0.tgz of addon dashboard failed") || !strings.Contains(err.Error(), "simulated render failure") {
+		t.Fatalf("expected a render failure, got: %v", err)
+	}
+	if calls := fixture.recorded(t, "buildah"); len(calls) != 0 {
+		t.Fatalf("no image must be pulled after a render failure: %q", calls)
+	}
+}
+
+func TestExport_FailsWhenADebianPackageIsNotDownloaded(t *testing.T) {
+	for name, test := range map[string]struct {
+		env, wantError string
+	}{
+		"download fails":     {env: "K2S_TEST_APT_FAIL", wantError: "downloading debian package apache2-utils failed: E: Unable to locate package apache2-utils"},
+		"nothing downloaded": {env: "K2S_TEST_APT_EMPTY", wantError: "no debian packages were downloaded for apache2-utils"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newExportFixture(t)
+			fixture.write(t, "addons/registry/addon.manifest.yaml", "metadata:\n  name: registry\nspec:\n  implementations:\n    - name: registry\n      offline_usage:\n        linux:\n          deb:\n            - apache2-utils\n")
+			t.Setenv(test.env, "apache2-utils")
+
+			err := fixture.provider.Export(AddonExportConfig{OutputDir: fixture.outputDir, Names: []string{"registry"}, OmitImages: true})
+
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("expected an error containing %q, got: %v", test.wantError, err)
+			}
+			if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".registry", "apache2-utils")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("an incomplete cache entry must not be kept: %v", err)
+			}
+			if entries, _ := os.ReadDir(fixture.outputDir); len(entries) != 0 {
+				t.Fatalf("a failed export must not write anything: %v", entries)
+			}
+		})
 	}
 }
 

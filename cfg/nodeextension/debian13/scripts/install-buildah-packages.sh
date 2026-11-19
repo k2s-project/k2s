@@ -33,12 +33,33 @@ wait_for_dpkg_lock() {
 
 wait_for_dpkg_lock
 
+# Links the .deb files whose package is not installed on this node into a new directory and
+# prints that directory. Packages already installed (base system packages such as libc6 or
+# systemd) are left alone: installing another version over them could upgrade or downgrade the
+# running system.
+stage_missing_debs() {
+    local source_dir="$1" target_dir deb package
+    target_dir="$(mktemp -d)"
+    for deb in "$source_dir"/*.deb; do
+        [ -e "$deb" ] || continue
+        package="$(dpkg-deb -f "$deb" Package)"
+        if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
+            continue
+        fi
+        ln -s "$deb" "$target_dir/"
+    done
+    echo "$target_dir"
+}
+
+BUILDAH_MISSING_DEBS_PATH="$(stage_missing_debs "$BUILDAH_DEB_PACKAGES_PATH")"
+echo "[BuildahInstall] Packages not yet installed on this node: $(ls "$BUILDAH_MISSING_DEBS_PATH" | wc -l)"
+
 # Multi-pass dpkg: alphabetical glob order can place a package before its deps
 # are configured. Three passes let each iteration configure more packages.
 # --no-remove prevents apt --fix-broken from evicting buildah.
 for pass in 1 2 3; do
     echo "[BuildahInstall] dpkg install pass $pass"
-    sudo DEBIAN_FRONTEND=noninteractive dpkg --force-confnew -i "$BUILDAH_DEB_PACKAGES_PATH"/*.deb 2>&1 || true
+    sudo DEBIAN_FRONTEND=noninteractive dpkg --force-confnew -i "$BUILDAH_MISSING_DEBS_PATH"/*.deb 2>&1 || true
 done
 
 sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y --no-remove 2>&1 || true

@@ -58,8 +58,28 @@ wait_for_dpkg_lock
 # ---------------------------------------------------------------------------
 # Install .deb packages
 # ---------------------------------------------------------------------------
+# Links the .deb files whose package is not installed on this node into a new directory and
+# prints that directory. Packages already installed (base system packages such as libc6 or
+# systemd) are left alone: installing another version over them could upgrade or downgrade the
+# running system.
+stage_missing_debs() {
+    local source_dir="$1" target_dir deb package
+    target_dir="$(mktemp -d)"
+    for deb in "$source_dir"/*.deb; do
+        [ -e "$deb" ] || continue
+        package="$(dpkg-deb -f "$deb" Package)"
+        if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
+            continue
+        fi
+        ln -s "$deb" "$target_dir/"
+    done
+    echo "$target_dir"
+}
+
 echo "[InstallK8s] Installing deb packages from $K8S_DEB_PACKAGES_PATH"
-sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$K8S_DEB_PACKAGES_PATH"/*.deb || true
+MISSING_DEBS_PATH="$(stage_missing_debs "$K8S_DEB_PACKAGES_PATH")"
+echo "[InstallK8s] Packages not yet installed on this node: $(ls "$MISSING_DEBS_PATH" | wc -l)"
+sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$MISSING_DEBS_PATH"/*.deb || true
 sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y
 
 if ! command -v crictl >/dev/null 2>&1; then

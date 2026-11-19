@@ -138,11 +138,38 @@ k2s_node_import_images() {
 
 # Joins the worker with a fresh token from the control plane. The control plane is this host.
 k2s_node_join() {
-  local join_command
+  local join_command command api_server_endpoint token ca_cert_hash quoted_endpoint quoted_token quoted_hash quoted_node_ip join_config
   join_command=$(KUBECONFIG="$K2S_NODE_KUBECONFIG" kubeadm token create --print-join-command) || { k2s_log ERROR "Could not create a join token."; return 1; }
-  join_command="$join_command --cri-socket $K2S_NODE_CRI_SOCKET"
+  read -r command _ api_server_endpoint _ token _ ca_cert_hash <<< "$join_command"
+  if [[ "$command" != kubeadm || -z "$api_server_endpoint" || -z "$token" || -z "$ca_cert_hash" ]]; then
+    k2s_log ERROR "Could not parse the kubeadm join command."
+    return 1
+  fi
+  quoted_endpoint="$(jq -Rn --arg value "$api_server_endpoint" '$value')" || return 1
+  quoted_token="$(jq -Rn --arg value "$token" '$value')" || return 1
+  quoted_hash="$(jq -Rn --arg value "$ca_cert_hash" '$value')" || return 1
+  quoted_node_ip="$(jq -Rn --arg value "$K2S_NODE_IP" '$value')" || return 1
+  join_config="$(cat <<EOF
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: $quoted_endpoint
+    token: $quoted_token
+    caCertHashes:
+      - $quoted_hash
+nodeRegistration:
+  criSocket: $K2S_NODE_CRI_SOCKET
+  kubeletExtraArgs:
+    - name: node-ip
+      value: $quoted_node_ip
+    - name: config-dir
+      value: /etc/kubernetes/kubelet.conf.d
+EOF
+)" || return 1
   k2s_log INFO "Joining $K2S_NODE_IP to the cluster."
-  k2s_node_ssh "sudo $join_command" || { k2s_log ERROR "kubeadm join failed on $K2S_NODE_IP."; return 1; }
+  k2s_node_ssh "config=\$(mktemp) && sudo tee \"\$config\" >/dev/null && sudo kubeadm join --config=\"\$config\"; result=\$?; rm -f \"\$config\"; exit \"\$result\"" <<< "$join_config" \
+    || { k2s_log ERROR "kubeadm join failed on $K2S_NODE_IP."; return 1; }
 }
 
 # Waits until the node reports Ready. The node name is the hostname the kubelet registered with.
@@ -166,5 +193,5 @@ k2s_node_remove_staging() {
 }
 
 k2s_node_hostname() {
-  k2s_node_ssh 'hostname' | tr -d '[:space:]'
+  k2s_node_ssh 'hostname' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
 }

@@ -80,6 +80,7 @@ stage_missing_debs() {
                     ;;
             esac
         fi
+        deb="$(realpath "$deb")"
         ln -s "$deb" "$target_dir/"
     done
     echo "$target_dir"

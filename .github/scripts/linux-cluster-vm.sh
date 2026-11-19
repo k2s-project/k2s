@@ -187,10 +187,10 @@ network_up() {
     sudo sysctl -q -w net.ipv4.ip_forward=1
     sudo iptables -t nat -C POSTROUTING -s "$VM_BRIDGE_SUBNET" ! -d "$VM_BRIDGE_SUBNET" -j MASQUERADE 2>/dev/null \
       || sudo iptables -t nat -A POSTROUTING -s "$VM_BRIDGE_SUBNET" ! -d "$VM_BRIDGE_SUBNET" -j MASQUERADE
-    # The runner's FORWARD policy may drop traffic it does not know about, so accept the bridge explicitly.
-    sudo iptables -C FORWARD -i "$VM_BRIDGE" -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -i "$VM_BRIDGE" -j ACCEPT
-    sudo iptables -C FORWARD -o "$VM_BRIDGE" -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -o "$VM_BRIDGE" -j ACCEPT
   fi
+  # The runner's FORWARD policy may drop traffic it does not know about, so accept the bridge explicitly.
+  sudo iptables -C FORWARD -i "$VM_BRIDGE" -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -i "$VM_BRIDGE" -j ACCEPT
+  sudo iptables -C FORWARD -o "$VM_BRIDGE" -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -o "$VM_BRIDGE" -j ACCEPT
 
   if [[ -n "$VM_OVERLAY_PEER" ]]; then
     [[ -n "$VM_OVERLAY_LOCAL" ]] || die "VM_OVERLAY_PEER needs VM_OVERLAY_LOCAL (this runner's address)."

@@ -38,7 +38,29 @@ wait_for_dpkg_lock
 # retained when their installed version is at least as new as the bundled dependency version.
 stage_missing_debs() {
     local source_dir="$1" target_dir deb package package_version installed_status installed_version
+    local nftables_deb='' libnftables_deb='' reconcile_nftables=false
     target_dir="$(mktemp -d)"
+
+    for deb in "$source_dir"/*.deb; do
+        [ -e "$deb" ] || continue
+        case "$(dpkg-deb -f "$deb" Package)" in
+            nftables) nftables_deb="$deb" ;;
+            libnftables1) libnftables_deb="$deb" ;;
+        esac
+    done
+    if [[ -n "$nftables_deb" && -n "$libnftables_deb" ]]; then
+        for deb in "$nftables_deb" "$libnftables_deb"; do
+            package="$(dpkg-deb -f "$deb" Package)"
+            package_version="$(dpkg-deb -f "$deb" Version)"
+            installed_status="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
+            installed_version=''
+            if [[ "$installed_status" == 'install ok installed' ]]; then
+                installed_version="$(dpkg-query -W -f='${Version}' "$package")"
+            fi
+            [[ "$installed_version" == "$package_version" ]] || reconcile_nftables=true
+        done
+    fi
+
     for deb in "$source_dir"/*.deb; do
         [ -e "$deb" ] || continue
         package="$(dpkg-deb -f "$deb" Package)"
@@ -50,11 +72,23 @@ stage_missing_debs() {
                 buildah|crun|netavark|aardvark-dns|nftables)
                     [[ "$installed_version" == "$package_version" ]] && continue
                     ;;
+                libnftables1)
+                    if [[ -n "$nftables_deb" && -n "$libnftables_deb" ]]; then
+                        [[ "$reconcile_nftables" == false ]] && continue
+                    else
+                        [[ "$installed_version" == "$package_version" ]] && continue
+                    fi
+                    ;;
                 *)
                     dpkg --compare-versions "$installed_version" ge "$package_version" && continue
                     ;;
             esac
+        elif [[ "$package" == nftables || "$package" == libnftables1 ]]; then
+            if [[ -n "$nftables_deb" && -n "$libnftables_deb" ]]; then
+                [[ "$reconcile_nftables" == false ]] && continue
+            fi
         fi
+        deb="$(realpath "$deb")"
         ln -s "$deb" "$target_dir/"
     done
     echo "$target_dir"

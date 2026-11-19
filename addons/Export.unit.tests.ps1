@@ -210,4 +210,63 @@ Describe 'Addon export in a Linux-only setup' -Tag 'unit', 'ci', 'addon' {
         @($windowsImages).Count | Should -Be 0
         Should -Invoke Write-Log -Times 0
     }
+
+    It 'skips the Windows packages of a Linux-only setup as well' {
+        $script:exportAst.Extent.Text | Should -Match '\$exportWindowsPackages = \$exportWindowsImages'
+        $block = $script:exportAst.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.IfStatementAst] -and
+                $node.Extent.Text.StartsWith('if (-not $exportWindowsPackages')
+            }, $true)
+        $block | Should -Not -BeNullOrEmpty
+        Mock Write-Log { }
+        $exportWindowsPackages = $false
+        $addonName = 'security'
+        $windowsCurlPackages = @(@{ url = 'https://example.com/cmctl.exe' }, @{ url = 'https://example.com/kyverno.zip' })
+
+        . ([scriptblock]::Create($block.Extent.Text))
+
+        $windowsCurlPackages.Count | Should -Be 0
+        Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Message -like 'Skipping 2 Windows package(s) of addon security*' }
+    }
+}
+
+Describe 'Addon export failures' -Tag 'unit', 'ci', 'addon' {
+    BeforeAll {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PSScriptRoot 'Export.ps1'), [ref]$tokens, [ref]$errors)
+        if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+        $script:exportTry = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.TryStatementAst] -and
+                $null -ne $node.Finally -and $node.Finally.Extent.Text -match 'http_proxy'
+            }, $true)
+        if ($null -eq $script:exportTry) { throw 'The export try statement was not found in Export.ps1.' }
+    }
+
+    It 'turns an error that ends the export into a failure instead of an artifact without addons' {
+        $script:exportTry.CatchClauses.Count | Should -Be 1
+    }
+
+    It 'removes the staging directory and reports the error' {
+        function New-Error { param($Code, $Message) @{ Code = $Code; Message = $Message } }
+        function Send-ToCli { param($MessageType, $Message) $script:sentError = $Message.Error }
+        $tmpExportDir = Join-Path $TestDrive 'tmp-exported-addons'
+        New-Item -ItemType Directory -Path (Join-Path $tmpExportDir 'artifacts') -Force | Out-Null
+        $EncodeStructuredOutput = $true
+        $MessageType = 'CmdResult'
+        $body = $script:exportTry.CatchClauses[0].Body.Extent.Text
+        $catchBody = [scriptblock]::Create($body.Substring(1, $body.Length - 2))
+        $failure = [System.Management.Automation.ErrorRecord]::new(
+            [System.Management.Automation.CommandNotFoundException]::new("The term 'crictl.exe' is not recognized"),
+            'CommandNotFoundException', 'ObjectNotFound', $null)
+
+        $failure | ForEach-Object { . $catchBody }
+
+        Test-Path $tmpExportDir | Should -BeFalse
+        $script:sentError.Code | Should -Be 'addon-export-failed'
+        $script:sentError.Message | Should -Be "Exporting the addons failed: The term 'crictl.exe' is not recognized"
+    }
 }

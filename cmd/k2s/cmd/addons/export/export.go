@@ -66,7 +66,7 @@ Both flags can be combined to export only configuration, manifests, and scripts.
 
 On a Linux host, Windows container images and Windows packages are skipped, and packages
 are downloaded on the host itself. A Linux-only installation on a Windows host skips the
-Windows container images as well.`,
+Windows container images and Windows packages as well.`,
 		Example: exportCommandExample,
 		RunE:    runExport,
 	}

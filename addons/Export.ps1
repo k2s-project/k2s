@@ -60,7 +60,9 @@ if ($systemError) {
 
 $setupInfo = Get-SetupInfo
 # A Linux-only setup has no Windows node to pull Windows images on; they are skipped, like on import.
+# Its Windows packages are skipped as well, like on Linux hosts, so that the artifact carries no Windows content.
 $exportWindowsImages = $setupInfo.LinuxOnly -ne $true
+$exportWindowsPackages = $exportWindowsImages
 
 $tmpExportDir = "${ExportDir}\tmp-exported-addons"
 Remove-Item -Force "$tmpExportDir" -Recurse -Confirm:$False -ErrorAction SilentlyContinue
@@ -670,8 +672,12 @@ try {
 
                 # download windows packages via curl
                 $windowsPackages = $implementation.offline_usage.windows
-                $windowsCurlPackages = $windowsPackages.curl
-                if ($windowsCurlPackages) {
+                $windowsCurlPackages = @($windowsPackages.curl | Where-Object { $_ })
+                if (-not $exportWindowsPackages -and $windowsCurlPackages.Count -gt 0) {
+                    Write-Log "Skipping $($windowsCurlPackages.Count) Windows package(s) of addon ${addonName}: a Linux-only setup does not use them" -Console
+                    $windowsCurlPackages = @()
+                }
+                if ($windowsCurlPackages.Count -gt 0) {
                     $targetWinPkgDir = "${packagesStaging}\windowspackages"
                     mkdir -Force $targetWinPkgDir | Out-Null
                     foreach ($package in $windowsCurlPackages) {
@@ -963,6 +969,20 @@ try {
     $json = $indexManifest | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($indexJsonPath, $json, [System.Text.UTF8Encoding]::new($false))
 }
+catch {
+    # An error that ends the export statement must not leave an artifact without addons behind,
+    # reported as a successful export.
+    $errMsg = "Exporting the addons failed: $($_.Exception.Message)"
+    Remove-Item -Force "$tmpExportDir" -Recurse -Confirm:$False -ErrorAction SilentlyContinue
+    if ($EncodeStructuredOutput -eq $true) {
+        $err = New-Error -Code 'addon-export-failed' -Message $errMsg
+        Send-ToCli -MessageType $MessageType -Message @{Error = $err }
+        return
+    }
+
+    Write-Log $errMsg -Error
+    exit 1
+}
 finally {
     $env:http_proxy = $currentHttpProxy
     $env:https_proxy = $currentHttpsProxy
@@ -1015,12 +1035,18 @@ if ($OmitImages) {
     Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar) [SKIPPED]" -Console
 } else {
     Write-Log "  Layer 4: images-linux.tar    (application/vnd.oci.image.layer.v1.tar)" -Console
-    Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar)" -Console
+    if ($exportWindowsImages) {
+        Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar)" -Console
+    } else {
+        Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar) [SKIPPED in Linux-only setup]" -Console
+    }
 }
 if ($OmitPackages) {
     Write-Log "  Layer 6: packages.tar.gz     (application/vnd.k2s.addon.packages.v1.tar+gzip) [SKIPPED]" -Console
-} else {
+} elseif ($exportWindowsPackages) {
     Write-Log "  Layer 6: packages.tar.gz     (application/vnd.k2s.addon.packages.v1.tar+gzip)" -Console
+} else {
+    Write-Log "  Layer 6: packages.tar.gz     (application/vnd.k2s.addon.packages.v1.tar+gzip) [Windows packages SKIPPED in Linux-only setup]" -Console
 }
 
 if ($EncodeStructuredOutput -eq $true) {

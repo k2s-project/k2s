@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: orthanc
-          image: docker.io/jodogne/orthanc-plugins:1.13.0
+          image: docker.io/jodogne/orthanc-plugins:1.13.1
           ports:
             - containerPort: 8042
             - containerPort: 4242

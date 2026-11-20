@@ -318,6 +318,13 @@ repositories/workflows. Under **Actions > CI - E2E Windows Cluster > Run workflo
 select a reviewed branch. To test a PR, dispatch its reviewed head branch
 within this repository; do not execute untrusted fork code on this runner.
 There are deliberately no `pull_request` or `pull_request_target` triggers.
+For unattended scheduled runs, also create a `k2s-windows-e2e-nightly`
+environment with deployment access restricted to the repository's default
+branch and no required reviewers. Copy the `K2S_HTTP_PROXY` and `K2S_NO_PROXY`
+environment variables from `k2s-windows-e2e` if they are configured there.
+Only a scheduled run on the default branch selects this environment; manual
+dispatches, including those on the default branch, continue to require approval
+through `k2s-windows-e2e`.
 Runs share the `k2s-win11-runner` concurrency group and do not cancel an active
 installation. Other workflows targeting this same support-side pool/shared
 reporting PVC must use the same group, or the dispatcher must enforce a

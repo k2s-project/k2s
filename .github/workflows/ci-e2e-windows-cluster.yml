@@ -59,7 +59,9 @@ jobs:
   install-and-test:
     name: Install and test Hyper-V cluster
     runs-on: [self-hosted, k2s-win11-runner]
-    environment: k2s-windows-e2e
+    environment: >-
+      ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+      'k2s-windows-e2e-nightly' || 'k2s-windows-e2e' }}
     timeout-minutes: ${{ inputs.timeout_minutes || 540 }}
     defaults:
       run:

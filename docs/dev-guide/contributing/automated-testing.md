@@ -318,6 +318,13 @@ repositories/workflows. Under **Actions > CI - E2E Windows Cluster > Run workflo
 select a reviewed branch. To test a PR, dispatch its reviewed head branch
 within this repository; do not execute untrusted fork code on this runner.
 There are deliberately no `pull_request` or `pull_request_target` triggers.
+For unattended scheduled runs, also create a `k2s-windows-e2e-nightly`
+environment with deployment access restricted to the repository's default
+branch and no required reviewers. Copy the `K2S_HTTP_PROXY` and `K2S_NO_PROXY`
+environment variables from `k2s-windows-e2e` if they are configured there.
+Only a scheduled run on the default branch selects this environment; manual
+dispatches, including those on the default branch, continue to require approval
+through `k2s-windows-e2e`.
 Runs share the `k2s-win11-runner` concurrency group and do not cancel an active
 installation. Other workflows targeting this same support-side pool/shared
 reporting PVC must use the same group, or the dispatcher must enforce a
@@ -381,7 +388,31 @@ actually uses (including reading existing claims and any token-cache Secret),
 without exposing those permissions or credentials to the Windows guest.
 Mount the per-job JIT Secret in each Argo pod that actually copies/uses it;
 mounts in a caller pod are not automatically inherited by referenced templates.
-  
+
+## Nightly Runs of the E2E Workflows
+
+The **CI - E2E Nightly** workflow (`.github/workflows/ci-e2e-nightly.yml`) runs every night at `0 22 * * *` UTC
+(23:00 CET, 00:00 CEST; GitHub cron has no time zone) and can also be started manually. It calls
+`ci-e2e-windows-cluster.yml`, `ci-e2e-linux-cluster.yml` and `ci-e2e-linux-cluster-node-arm64.yml` through
+`workflow_call`, core suite only (`addon: none`), and repeats each of them three times to expose flaky results.
+
+- The three workflows run in parallel with each other. The repetitions of one workflow run one after another
+  (`max-parallel: 1`): the Windows workflow takes one runner VM from the K2s CI cluster, and its concurrency group
+  keeps only one pending run, so parallel repetitions would be cancelled.
+- A failed repetition does not stop the following ones (`fail-fast: false`).
+- One Windows repetition is limited to 180 minutes (`windows_timeout_minutes`), so a hung run cannot block the
+  repetitions after it. Adjust the value when measured run times require it.
+- In nightly mode (`nightly: true`) a GitHub-hosted Linux runner without `/dev/kvm` fails the repetition with
+  `NO_KVM` instead of re-dispatching the workflow. A re-dispatched run would start outside the nightly, and the
+  original run would end green without testing anything.
+- Scheduled workflows run only from the default branch. To try the nightly manually, start it with
+  `workflow_dispatch` and choose fewer repetitions or a single workflow.
+
+The morning e-mail of the K2s CI (`ci/email` in `k2s-support`) reports the results of the nightly per workflow
+(passed, failed, flaky, `NO_KVM`) next to the Argo workflow statistics. It identifies the jobs by their names,
+`Windows (run N)`, `Linux (run N)` and `Linux arm64 node (run N)`; keep these names unchanged or adapt the e-mail
+script together with them.
+
 ## Main Script: execute_all_tests.ps1
 The main entry point for automated testing is the script `execute_all_tests.ps1`, whether being executed locally or in CI/CD workflows. It is not mandatory, but recommended to use this script instead of running *Pester* or *Ginkgo* commands directly due to the following features of the `execute_all_tests.ps1` script:
 

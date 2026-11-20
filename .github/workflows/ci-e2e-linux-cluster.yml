@@ -51,6 +51,29 @@ on:
         type: number
         required: false
         default: 1
+  # Called by ci-e2e-nightly.yml.
+  workflow_call:
+    inputs:
+      addon:
+        description: 'Not yet supported on the Linux host; any value other than "none" fails the run.'
+        type: string
+        required: false
+        default: 'none'
+      kvm_attempt:
+        description: 'Internal: attempt number. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+      nightly:
+        description: 'Nightly mode: a runner without /dev/kvm fails the run (NO_KVM) instead of re-dispatching it, so the nightly counts every repetition.'
+        type: boolean
+        required: false
+        default: false
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
+        type: number
+        required: false
+        default: 1
 
 permissions:
   contents: read
@@ -92,6 +115,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
+          K2S_NIGHTLY: ${{ inputs.nightly }}
         run: |
           set -uo pipefail
           echo "KVM attempt ${KVM_ATTEMPT} of ${KVM_MAX_ATTEMPTS}"
@@ -112,6 +136,12 @@ jobs:
             exit 0
           fi
           echo "available=false" >> "$GITHUB_OUTPUT"
+          if [ "$K2S_NIGHTLY" = "true" ]; then
+            # A re-dispatch would start a separate run outside the nightly and this one would end green
+            # without testing anything. Failing keeps the nightly statistics honest (the email reports NO_KVM).
+            echo "::error::NO_KVM: no usable /dev/kvm on this runner (nightly run, not re-dispatched)."
+            exit 1
+          fi
           if [ "$KVM_ATTEMPT" -ge "$KVM_MAX_ATTEMPTS" ]; then
             echo "::error::No usable /dev/kvm after ${KVM_ATTEMPT} attempts; giving up."
             exit 1
@@ -288,7 +318,7 @@ jobs:
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: linux-cluster-${{ github.run_id }}-${{ github.run_attempt }}-test-results
+          name: linux-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}-test-results
           path: ${{ runner.temp }}/k2s-results-export/
           if-no-files-found: warn
           retention-days: 7

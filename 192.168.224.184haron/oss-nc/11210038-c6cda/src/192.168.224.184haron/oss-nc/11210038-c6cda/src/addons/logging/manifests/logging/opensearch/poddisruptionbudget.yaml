@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Source: opensearch/templates/poddisruptionbudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: "opensearch-cluster-master-pdb"
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/instance: opensearch
+    app.kubernetes.io/component: opensearch-cluster-master
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch
+      app.kubernetes.io/instance: opensearch

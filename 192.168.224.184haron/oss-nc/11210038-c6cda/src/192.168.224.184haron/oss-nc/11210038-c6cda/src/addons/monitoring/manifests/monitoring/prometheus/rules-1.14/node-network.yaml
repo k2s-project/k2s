@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Source: kube-prometheus-stack/templates/prometheus/rules-1.14/node-network.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kube-prometheus-stack-node-network
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: kube-prometheus-stack
+    app.kubernetes.io/version: "47.1.0"
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    chart: kube-prometheus-stack-47.1.0
+    release: "kube-prometheus-stack"
+    heritage: "Helm"
+spec:
+  groups:
+  - name: node-network
+    rules:
+    - alert: NodeNetworkInterfaceFlapping
+      annotations:
+        description: Network interface "{{ $labels.device }}" changing its up status often on node-exporter {{ $labels.namespace }}/{{ $labels.pod }}
+        runbook_url: https://runbooks.prometheus-operator.dev/runbooks/general/nodenetworkinterfaceflapping
+        summary: Network interface is often changing its status
+      expr: changes(node_network_up{job="node-exporter",device!~"veth.+"}[2m]) > 2
+      for: 2m
+      labels:
+        severity: warning

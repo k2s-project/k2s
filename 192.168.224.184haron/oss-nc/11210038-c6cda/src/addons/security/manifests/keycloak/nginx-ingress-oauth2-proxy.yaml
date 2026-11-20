@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oauth2-proxy
+  namespace: security
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - k2s.cluster.local
+      secretName: k2s-cluster-local-tls
+  rules:
+    - host: k2s.cluster.local
+      http:
+        paths:
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy
+                port:
+                  number: 4180
+

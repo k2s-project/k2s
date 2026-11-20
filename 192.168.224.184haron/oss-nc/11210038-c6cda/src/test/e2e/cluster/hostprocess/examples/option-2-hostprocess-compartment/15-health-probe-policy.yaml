@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Linkerd policy that lets kubelet health probes reach the dedicated health port (8081)
+# of the meshed anchor compartment.
+#
+# WHY: kubelet probes arrive at the proxy WITHOUT an mTLS identity (they originate from the
+# host, unmeshed). With the security addon's default-deny inbound policy, the proxy rejects
+# them with 403. On Windows `config.linkerd.io/skip-inbound-ports` is NOT honored, so we
+# cannot bypass the proxy - instead we explicitly authorize the health port here.
+#
+# This opens ONLY port 8081 to unauthenticated (network-based) access. The application port
+# 8080 stays under your zero-trust policy (70-zero-trust-policy.yaml).
+#
+# Requires the security addon (Linkerd policy CRDs). Skip this file if the mesh is not enabled.
+---
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: albums-health
+  namespace: hostprocess-examples
+spec:
+  podSelector:
+    matchLabels:
+      app: cp-albums-win # anchor pod that owns the compartment
+  port: 8081
+  proxyProtocol: HTTP/1
+---
+# Authorizes connections from any network (covers the unmeshed kubelet probe source).
+apiVersion: policy.linkerd.io/v1alpha1
+kind: NetworkAuthentication
+metadata:
+  name: any-network
+  namespace: hostprocess-examples
+spec:
+  networks:
+    - cidr: 0.0.0.0/0
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: albums-health-allow-probes
+  namespace: hostprocess-examples
+spec:
+  targetRef:
+    group: policy.linkerd.io
+    kind: Server
+    name: albums-health
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: NetworkAuthentication
+      name: any-network

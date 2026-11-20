@@ -1,0 +1,6 @@
+{
+  "Network": "NETWORK.ADDRESS",
+  "Backend": {
+    "Type": "host-gw"
+  }
+}

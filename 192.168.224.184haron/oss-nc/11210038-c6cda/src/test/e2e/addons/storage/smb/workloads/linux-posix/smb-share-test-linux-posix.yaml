@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: smb-share-test-linux-posix
+  namespace: smb-share-test
+  labels:
+    app: smb-share-test-linux-posix
+spec:
+  serviceName: smb-share-test-linux-posix
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: smb-share-test-linux-posix
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: smb-share-test-linux-posix
+          image: docker.io/curlimages/curl:8.5.0
+          command:
+            - "/bin/sh"
+            - "-c"
+            - set -eu; echo posix-marker > /mnt/smb/marker.txt; ln -sf /mnt/smb/marker.txt /mnt/smb/marker.link; while true; do sleep 30; done
+          volumeMounts:
+            - name: persistent-storage
+              mountPath: /mnt/smb
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: smb-share-test-linux-posix
+  volumeClaimTemplates:
+    - metadata:
+        name: persistent-storage
+        labels:
+          app: smb-share-test-linux-posix
+      spec:
+        storageClassName: smb-posix
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

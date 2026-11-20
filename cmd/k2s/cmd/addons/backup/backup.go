@@ -356,9 +356,19 @@ func createZipFile(zipPath string) (zipFile *os.File, zipWriter *zip.Writer, cle
 		return nil, nil, nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	zipFile, err = os.Create(zipPath)
+	// The archive can contain private data (e.g. registry images), so keep it owner-only,
+	// also when overwriting an existing file, and only truncate once that is ensured.
+	zipFile, err = os.OpenFile(zipPath, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create zip file: %w", err)
+	}
+	if err := zipFile.Chmod(0o600); err != nil {
+		_ = zipFile.Close()
+		return nil, nil, nil, fmt.Errorf("failed to restrict permissions of zip file: %w", err)
+	}
+	if err := zipFile.Truncate(0); err != nil {
+		_ = zipFile.Close()
+		return nil, nil, nil, fmt.Errorf("failed to truncate zip file: %w", err)
 	}
 
 	zipWriter = zip.NewWriter(zipFile)

@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# HostProcess Deployment launching cplauncher from the host (single replica)
+# NOTE: The anchor pod (albums-compartment-anchor) is in anchor-pod.yaml and must
+#       be deployed and Ready BEFORE this deployment so cplauncher can resolve it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: albums-win-hp-app-hostprocess
+  labels:
+    app: albums-win-hp-app-hostprocess
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: albums-win-hp-app-hostprocess
+  template:
+    metadata:
+      labels:
+        app: albums-win-hp-app-hostprocess
+    spec:
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations: # (optional) tolerate Windows taint
+        - key: 'OS'
+          operator: 'Equal'
+          value: 'Windows'
+          effect: 'NoSchedule'
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\SYSTEM"
+      hostNetwork: true
+      containers:
+        - name: cplauncher
+          image: shsk2s.azurecr.io/pause-win:v1.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CPLAUNCHER_BASE
+              valueFrom:
+                configMapKeyRef:
+                  name: hostprocess-launcher-env
+                  key: CPLAUNCHER_BASE
+            - name: ALBUMS_WIN
+              valueFrom:
+                configMapKeyRef:
+                  name: hostprocess-launcher-env
+                  key: ALBUMS_WIN
+            - name: RESOURCE
+              value: 'albums-win-hp-app-hostprocess'
+          # Invoke via PowerShell to avoid cmd.exe quoting ambiguities with paths containing spaces.
+          # PowerShell expands $env: vars and preserves quoted arguments precisely.
+          command:
+            - powershell.exe
+            - -NoLogo
+            - -NoProfile
+            - -Command
+            - '& "$env:CPLAUNCHER_BASE\cplauncher.exe" -label app=cp-albums-win -namespace k2s -label-timeout 120s -wait-tree -no-inject -- "$env:ALBUMS_WIN"'
+          # Probes use the static Service ClusterIP to reach the health endpoints.
+          # The albumswin process listens in the anchor pod's network compartment,
+          # NOT the host compartment, so kubelet cannot probe via podIP or localhost.
+          # Using the ClusterIP avoids DNS resolution of .cluster.local which the
+          # Windows host DNS resolver cannot perform.
+          readinessProbe:
+            httpGet:
+              host: 172.21.1.211          # static ClusterIP of albums-win-hp-app-hostprocess Service
+              port: 8080
+              path: /health/readiness
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+            successThreshold: 1
+            timeoutSeconds: 6
+          livenessProbe:
+            httpGet:
+              host: 172.21.1.211
+              port: 8080
+              path: /health/liveness
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 6
+            failureThreshold: 5
+            successThreshold: 1
+          startupProbe:
+            httpGet:
+              host: 172.21.1.211
+              port: 8080
+              path: /health/startup
+              scheme: HTTP
+            initialDelaySeconds: 15       # allow cplauncher to resolve anchor pod first
+            periodSeconds: 10             # check every 10s during startup
+            failureThreshold: 18          # 15 + 18*10 = 195s budget; covers cplauncher label-timeout (120s)
+            successThreshold: 1
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: host-var-log
+              mountPath: C:/var/log
+      volumes:
+        - name: host-var-log
+          hostPath:
+            path: C:/var/log
+            type: DirectoryOrCreate
+      restartPolicy: Always
+---
+# 3. Service exposing the hostprocess albums application
+apiVersion: v1
+kind: Service
+metadata:
+  name: albums-win-hp-app-hostprocess
+  labels:
+    app: albums-win-hp-app-hostprocess
+spec:
+  selector:
+    app: cp-albums-win # <== label selector used by cplauncher
+  type: ClusterIP
+  clusterIP: 172.21.1.211
+  ports:
+    - name: http
+      port: 8080 # Cluster IP port
+      targetPort: 8080 # Container listens on 8080 (adjust if different)
+      protocol: TCP

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+ARG WINDOWS_VERSION
+
+# FROM mcr.microsoft.com/oss/kubernetes-csi/csi-node-driver-registrar:${TOOL_VERSION} AS toolbase
+FROM mcr.microsoft.com/windows/servercore:${WINDOWS_VERSION} AS winbase
+FROM mcr.microsoft.com/windows/nanoserver:${WINDOWS_VERSION}
+
+LABEL description='CSI Node driver registrar'
+
+COPY ["csi-node-driver-registrar.exe", "/csi-node-driver-registrar.exe"]
+COPY --from=winbase ["/Windows/System32/netapi32.dll", "/Windows/System32/netapi32.dll"]
+
+USER ContainerAdministrator
+ENTRYPOINT ["/csi-node-driver-registrar.exe"]

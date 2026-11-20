@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Source: kube-prometheus-stack/templates/prometheus/prometheus.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: kube-prometheus-stack-prometheus
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack-prometheus
+    
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: kube-prometheus-stack
+    app.kubernetes.io/version: "47.1.0"
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    chart: kube-prometheus-stack-47.1.0
+    release: "kube-prometheus-stack"
+    heritage: "Helm"
+spec:
+  alerting:
+    alertmanagers:
+      - namespace: monitoring
+        name: kube-prometheus-stack-alertmanager
+        port: http-web
+        pathPrefix: "/"
+        apiVersion: v2
+  image: "quay.io/prometheus/prometheus:v3.16.0"
+  version: v3.16.0
+  externalUrl: http://kube-prometheus-stack-prometheus.monitoring:9090
+  paused: false
+  replicas: 1
+  shards: 1
+  logLevel:  info
+  logFormat:  logfmt
+  listenLocal: false
+  enableAdminAPI: false
+  nodeSelector:
+    "kubernetes.io/os": linux
+  retention: "10d"
+  tsdb:
+    outOfOrderTimeWindow: 0s
+  walCompression: true
+  routePrefix: "/"
+  serviceAccountName: kube-prometheus-stack-prometheus
+  serviceMonitorSelector:
+    matchLabels:
+      release: "kube-prometheus-stack"
+
+  serviceMonitorNamespaceSelector: {}
+  podMonitorSelector:
+    matchLabels:
+      release: "kube-prometheus-stack"
+
+  podMonitorNamespaceSelector: {}
+  probeSelector:
+    matchLabels:
+      release: "kube-prometheus-stack"
+
+  probeNamespaceSelector: {}
+  securityContext:
+    fsGroup: 2000
+    runAsGroup: 2000
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  ruleNamespaceSelector: {}
+  ruleSelector:
+    matchLabels:
+      release: "kube-prometheus-stack"
+
+  scrapeConfigSelector:
+    matchLabels:
+      release: "kube-prometheus-stack"
+
+  scrapeConfigNamespaceSelector: {}
+  additionalScrapeConfigs:
+    name: kube-prometheus-stack-prometheus-scrape-confg
+    key: additional-scrape-configs.yaml
+  portName: http-web
+  hostNetwork: false

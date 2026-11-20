@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# This ingress exposes the ArgoCD server on https://k2s.cluster.local/rollout
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rollout-nginx-gw-http
+  namespace: rollout
+spec:
+  parentRefs:
+    - name: nginx-cluster-local
+      namespace: nginx-gw
+      sectionName: http
+  hostnames:
+    - k2s.cluster.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /rollout
+      backendRefs:
+        - name: argocd-server
+          port: 443
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rollout-nginx-gw-https
+  namespace: rollout
+spec:
+  parentRefs:
+    - name: nginx-cluster-local
+      namespace: nginx-gw
+      sectionName: https
+  hostnames:
+    - k2s.cluster.local
+  rules:
+    # OAuth2 callback routes
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /oauth2
+      backendRefs:
+        - name: oauth2-proxy
+          namespace: security
+          port: 4180
+    # Rollout application route with auth_request pattern
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /rollout
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.nginx.org
+            kind: SnippetsFilter
+            name: oauth2-auth-filter
+      backendRefs:
+        - name: argocd-server
+          port: 443
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: rollout-nginx-gw-reference-grant
+  namespace: nginx-gw
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: rollout
+  to:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: nginx-cluster-local
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: rollout-to-security-oauth2-proxy
+  namespace: security
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: rollout
+  to:
+    - group: ""
+      kind: Service
+      name: oauth2-proxy
+---
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: rollout-nginx-gw-server
+  namespace: rollout
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  port: 8080
+  proxyProtocol: HTTP/1
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: rollout-nginx-gw-server-authorization
+  namespace: rollout
+spec:
+  server:
+    name: rollout-nginx-gw-server
+  client:
+    unauthenticated: true

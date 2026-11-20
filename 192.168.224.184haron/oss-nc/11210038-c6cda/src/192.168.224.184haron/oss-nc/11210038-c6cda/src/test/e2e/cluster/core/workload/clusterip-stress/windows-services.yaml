@@ -1,0 +1,467 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# 10 Windows Deployments + Services to stress-test concurrent ClusterIP allocation.
+# All are deployed simultaneously via kubectl apply to trigger parallel webhook calls.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-01
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-01
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-01
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-01"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-01
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-01
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-02
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-02
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-02
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-02"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-02
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-02
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-03
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-03
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-03
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-03"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-03
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-03
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-04
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-04
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-04
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-04"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-04
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-04
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-05
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-05
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-05
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-05"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-05
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-05
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-06
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-06
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-06
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-06"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-06
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-06
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-07
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-07
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-07
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-07"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-07
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-07
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-08
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-08
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-08
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-08"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-08
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-08
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-09
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-09
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-09
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-09"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-09
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-09
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-win-10
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-win-10
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-win-10
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-win:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-win-10"
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-win-10
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-win-10
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80

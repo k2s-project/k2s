@@ -840,3 +840,35 @@ func TestApplyBackupFiles_FailsOnOtherErrors(t *testing.T) {
 		t.Fatalf("expected the restore to stop after the first failure, got: %v", fake.calls)
 	}
 }
+
+func TestRestoreRegistry_RefusesWhenPreviousRepositoryExists(t *testing.T) {
+	sourceDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(sourceDir, "repository", "blob"), "layer")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return []byte(registryConfigMapJSON), nil
+	})
+	backupDir := t.TempDir()
+	files, err := backupRegistry(backupDir)
+	if err != nil {
+		t.Fatalf("backupRegistry() failed: %v", err)
+	}
+
+	targetDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(targetDir, "repository", "current"), "data")
+	writeTestFile(t, filepath.Join(targetDir, registryRestorePreviousDir, "original"), "only copy")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, nil
+	})
+
+	err = restoreRegistry(backupDir, files)
+
+	if err == nil || !strings.Contains(err.Error(), "previous repository") {
+		t.Fatalf("expected error about the previous repository, got: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(targetDir, registryRestorePreviousDir, "original")); err != nil || string(data) != "only copy" {
+		t.Fatalf("expected previous repository to be kept, got %q (%v)", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "repository", "current")); err != nil {
+		t.Fatalf("expected current repository to be untouched: %v", err)
+	}
+}

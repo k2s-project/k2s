@@ -1,0 +1,874 @@
+// SPDX-FileCopyrightText: © 2026 The K2s Authors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//go:build linux
+
+package provider
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/k2s-project/k2s/internal/definitions"
+)
+
+// fakeAddonCommands replaces linuxAddonCommandOutput for a test. kubectl calls
+// are answered by the handler; sudo calls run the wrapped command without sudo
+// so that archives are really created and extracted in temporary directories.
+type fakeAddonCommands struct {
+	calls   []string
+	kubectl func(args []string) ([]byte, error)
+}
+
+func stubAddonCommands(t *testing.T, kubectl func(args []string) ([]byte, error)) *fakeAddonCommands {
+	t.Helper()
+	fake := &fakeAddonCommands{kubectl: kubectl}
+	original := linuxAddonCommandOutput
+	linuxAddonCommandOutput = func(name string, args ...string) ([]byte, error) {
+		fake.calls = append(fake.calls, strings.Join(append([]string{name}, args...), " "))
+		switch name {
+		case "kubectl":
+			if fake.kubectl == nil {
+				t.Fatalf("unexpected kubectl call: %v", args)
+			}
+			return fake.kubectl(args)
+		case "sudo":
+			out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+			if err != nil {
+				return out, errors.New(string(out))
+			}
+			return out, nil
+		default:
+			t.Fatalf("unexpected command: %s %v", name, args)
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() { linuxAddonCommandOutput = original })
+	return fake
+}
+
+var requestTimeoutPattern = regexp.MustCompile(`--request-timeout=\d+s`)
+
+func (f *fakeAddonCommands) kubectlCalls() []string {
+	var calls []string
+	for _, call := range f.calls {
+		if strings.HasPrefix(call, "kubectl ") {
+			// The request timeout depends on the time left, so keep it out of exact comparisons.
+			calls = append(calls, requestTimeoutPattern.ReplaceAllString(strings.TrimPrefix(call, "kubectl "), "--request-timeout=<n>s"))
+		}
+	}
+	return calls
+}
+
+func useRegistryDataDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	original := linuxRegistryDataDir
+	linuxRegistryDataDir = dir
+	t.Cleanup(func() { linuxRegistryDataDir = original })
+	return dir
+}
+
+func newBackupTestProvider(t *testing.T, enabledAddons ...map[string]string) *linuxAddonProvider {
+	t.Helper()
+	configDir := t.TempDir()
+	data, err := json.Marshal(map[string]any{"EnabledAddons": enabledAddons})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, definitions.K2sRuntimeConfigFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return &linuxAddonProvider{installDir: t.TempDir(), configDir: configDir}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readBackupManifest(t *testing.T, backupDir string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(backupDir, addonBackupManifestFileName))
+	if err != nil {
+		t.Fatalf("backup.json not written: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("backup.json is invalid: %v", err)
+	}
+	return manifest
+}
+
+func tarGzEntries(t *testing.T, path string) []string {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(gz)
+	var names []string
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			return names
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, strings.TrimSuffix(header.Name, "/"))
+	}
+}
+
+func notFound(kind, name string) error {
+	return errors.New(`Error from server (NotFound): ` + kind + ` "` + name + `" not found`)
+}
+
+const registryConfigMapJSON = `{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {"name": "registry-config", "namespace": "registry", "resourceVersion": "4711", "managedFields": [{"manager": "kubectl"}]},
+  "data": {"config.yml": "version: 0.1\n"}
+}`
+
+func TestBackup_RejectsAddonsWithoutLinuxImplementation(t *testing.T) {
+	fake := stubAddonCommands(t, nil)
+	p := newBackupTestProvider(t, map[string]string{"Name": "monitoring"})
+	backupDir := t.TempDir()
+
+	err := p.Backup(AddonBackupConfig{AddonName: "monitoring", Implementation: "monitoring", BackupDir: backupDir})
+
+	if !errors.Is(err, ErrNotSupported) || !strings.Contains(err.Error(), "'ingress nginx', 'ingress traefik', 'registry'") {
+		t.Fatalf("expected NotSupportedError listing the supported addons, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no commands, got: %v", fake.calls)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, addonBackupManifestFileName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup.json, got stat error: %v", err)
+	}
+}
+
+func TestBackup_RequiresEnabledAddon(t *testing.T) {
+	fake := stubAddonCommands(t, nil)
+	p := newBackupTestProvider(t, map[string]string{"Name": "ingress", "Implementation": "traefik"})
+
+	err := p.Backup(AddonBackupConfig{AddonName: "ingress", Implementation: "nginx", BackupDir: t.TempDir()})
+
+	if err == nil || !strings.Contains(err.Error(), "addon 'ingress nginx' is not enabled") {
+		t.Fatalf("expected not-enabled error, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no commands, got: %v", fake.calls)
+	}
+}
+
+func TestBackup_RegistryArchivesRepositoryAndMinimalConfigMap(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "docker", "registry", "v2", "blobs", "data"), "layer")
+	writeTestFile(t, filepath.Join(dataDir, "auth", "htpasswd"), "secret")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if strings.Join(args, " ") != "get configmap registry-config -n registry -o json" {
+			t.Fatalf("unexpected kubectl call: %v", args)
+		}
+		return []byte(registryConfigMapJSON), nil
+	})
+	p := newBackupTestProvider(t, map[string]string{"Name": "registry"})
+	backupDir := t.TempDir()
+
+	if err := p.Backup(AddonBackupConfig{AddonName: "registry", Implementation: "registry", BackupDir: backupDir}); err != nil {
+		t.Fatalf("Backup() failed: %v", err)
+	}
+
+	manifest := readBackupManifest(t, backupDir)
+	if manifest["addon"] != "registry" || manifest["k2sVersion"] == "" || manifest["createdAt"] == "" {
+		t.Fatalf("unexpected backup.json: %v", manifest)
+	}
+	if _, ok := manifest["implementation"]; ok {
+		t.Fatalf("single-implementation addon must not record an implementation: %v", manifest)
+	}
+	if files, _ := json.Marshal(manifest["files"]); string(files) != `["registry-repository.tar.gz","registry-config.json"]` {
+		t.Fatalf("unexpected files: %s", files)
+	}
+
+	entries := tarGzEntries(t, filepath.Join(backupDir, registryRepositoryArchive))
+	if !slices.Contains(entries, "repository/docker/registry/v2/blobs/data") {
+		t.Fatalf("archive must keep the 'repository/' prefix used by Windows backups, got: %v", entries)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, "auth") {
+			t.Fatalf("archive must only contain the repository, got: %v", entries)
+		}
+	}
+
+	var configMap map[string]any
+	data, err := os.ReadFile(filepath.Join(backupDir, registryConfigBackupFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &configMap); err != nil {
+		t.Fatal(err)
+	}
+	metadata, _ := json.Marshal(configMap["metadata"])
+	if string(metadata) != `{"name":"registry-config","namespace":"registry"}` {
+		t.Fatalf("expected metadata without resourceVersion/managedFields, got: %s", metadata)
+	}
+	if dataField, _ := json.Marshal(configMap["data"]); string(dataField) != `{"config.yml":"version: 0.1\n"}` {
+		t.Fatalf("unexpected ConfigMap data: %s", dataField)
+	}
+}
+
+func TestBackup_RegistryWithoutConfigMapKeepsDataArchive(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "blob"), "layer")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, notFound("configmaps", "registry-config")
+	})
+	p := newBackupTestProvider(t, map[string]string{"Name": "registry"})
+	backupDir := t.TempDir()
+
+	if err := p.Backup(AddonBackupConfig{AddonName: "registry", Implementation: "registry", BackupDir: backupDir}); err != nil {
+		t.Fatalf("Backup() failed: %v", err)
+	}
+
+	if files, _ := json.Marshal(readBackupManifest(t, backupDir)["files"]); string(files) != `["registry-repository.tar.gz"]` {
+		t.Fatalf("unexpected files: %s", files)
+	}
+}
+
+func TestBackup_RegistryFailsOnConfigMapExportErrors(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "blob"), "layer")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, errors.New("Unable to connect to the server: dial tcp 172.19.1.100:6443: connect: connection refused")
+	})
+	p := newBackupTestProvider(t, map[string]string{"Name": "registry"})
+	backupDir := t.TempDir()
+
+	err := p.Backup(AddonBackupConfig{AddonName: "registry", Implementation: "registry", BackupDir: backupDir})
+
+	if err == nil || !strings.Contains(err.Error(), "backup of addon 'registry' failed") {
+		t.Fatalf("expected backup failure, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, addonBackupManifestFileName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup.json after a failed backup, got stat error: %v", err)
+	}
+}
+
+func TestBackup_RegistryFailsWithoutRepositoryDirectory(t *testing.T) {
+	useRegistryDataDir(t)
+	fake := stubAddonCommands(t, nil)
+	p := newBackupTestProvider(t, map[string]string{"Name": "registry"})
+
+	err := p.Backup(AddonBackupConfig{AddonName: "registry", Implementation: "registry", BackupDir: t.TempDir()})
+
+	if err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Fatalf("expected missing repository error, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no commands, got: %v", fake.calls)
+	}
+}
+
+func TestBackup_IngressNginxExportsControllerConfigAndSkipsMissingIngress(t *testing.T) {
+	const configMapYAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ingress-nginx-controller\n"
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case "get namespace ingress-nginx":
+			return []byte("namespace/ingress-nginx"), nil
+		case "get configmap ingress-nginx-controller -n ingress-nginx -o yaml":
+			return []byte(configMapYAML), nil
+		case "get ingress nginx-cluster-local -n ingress-nginx -o yaml":
+			return nil, notFound("ingresses.networking.k8s.io", "nginx-cluster-local")
+		}
+		t.Fatalf("unexpected kubectl call: %v", args)
+		return nil, nil
+	})
+	p := newBackupTestProvider(t, map[string]string{"Name": "ingress", "Implementation": "nginx"})
+	backupDir := t.TempDir()
+
+	if err := p.Backup(AddonBackupConfig{AddonName: "ingress", Implementation: "nginx", BackupDir: backupDir}); err != nil {
+		t.Fatalf("Backup() failed: %v", err)
+	}
+
+	manifest := readBackupManifest(t, backupDir)
+	if manifest["addon"] != "ingress" || manifest["implementation"] != "nginx" {
+		t.Fatalf("unexpected backup.json: %v", manifest)
+	}
+	if files, _ := json.Marshal(manifest["files"]); string(files) != `["ingress-nginx-controller-configmap.yaml"]` {
+		t.Fatalf("unexpected files: %s", files)
+	}
+	if data, _ := os.ReadFile(filepath.Join(backupDir, "ingress-nginx-controller-configmap.yaml")); string(data) != configMapYAML {
+		t.Fatalf("unexpected exported ConfigMap: %q", data)
+	}
+	if len(fake.kubectlCalls()) != 3 {
+		t.Fatalf("unexpected kubectl calls: %v", fake.kubectlCalls())
+	}
+}
+
+func TestBackup_IngressTraefikRequiresClusterLocalIngress(t *testing.T) {
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if strings.Join(args, " ") == "get namespace ingress-traefik" {
+			return []byte("namespace/ingress-traefik"), nil
+		}
+		return nil, notFound("ingresses.networking.k8s.io", "traefik-cluster-local")
+	})
+	p := newBackupTestProvider(t, map[string]string{"Name": "ingress", "Implementation": "traefik"})
+
+	err := p.Backup(AddonBackupConfig{AddonName: "ingress", Implementation: "traefik", BackupDir: t.TempDir()})
+
+	if err == nil || !strings.Contains(err.Error(), "exporting ingress 'traefik-cluster-local' failed") {
+		t.Fatalf("expected export failure, got: %v", err)
+	}
+}
+
+func TestRestore_RejectsUnsupportedInputsBeforeEnablingTheAddon(t *testing.T) {
+	validBackup := t.TempDir()
+	writeTestFile(t, filepath.Join(validBackup, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"registry","files":[]}`)
+
+	traversalBackup := t.TempDir()
+	writeTestFile(t, filepath.Join(traversalBackup, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"registry","files":["../registry-repository.tar.gz"]}`)
+
+	missingFileBackup := t.TempDir()
+	writeTestFile(t, filepath.Join(missingFileBackup, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"registry","files":["registry-repository.tar.gz"]}`)
+
+	directoryEntryBackup := t.TempDir()
+	writeTestFile(t, filepath.Join(directoryEntryBackup, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"ingress","files":["manifests"]}`)
+	if err := os.Mkdir(filepath.Join(directoryEntryBackup, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, tc := range map[string]struct {
+		cfg     AddonRestoreConfig
+		want    string
+		notSupp bool
+	}{
+		"unsupported addon": {
+			cfg:     AddonRestoreConfig{AddonName: "dashboard", Implementation: "dashboard", BackupDir: validBackup},
+			want:    "cannot be backed up or restored on Linux hosts",
+			notSupp: true,
+		},
+		"infrastructure placement": {
+			cfg:     AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: validBackup, InfraNodeSelector: "kubernetes.io/hostname=infra-1"},
+			want:    "Windows-hosted",
+			notSupp: true,
+		},
+		"path traversal": {
+			cfg:  AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: traversalBackup},
+			want: "is not a plain file name",
+		},
+		"missing backup file": {
+			cfg:  AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: missingFileBackup},
+			want: "backup file 'registry-repository.tar.gz' not found",
+		},
+		"directory entry": {
+			cfg:  AddonRestoreConfig{AddonName: "ingress", Implementation: "traefik", BackupDir: directoryEntryBackup},
+			want: "is not a regular file",
+		},
+		"missing backup.json": {
+			cfg:  AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: t.TempDir()},
+			want: "reading backup.json failed",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := stubAddonCommands(t, nil)
+			p := newBackupTestProvider(t)
+
+			err := p.Restore(tc.cfg)
+
+			if err == nil || !strings.Contains(err.Error(), tc.want) || errors.Is(err, ErrNotSupported) != tc.notSupp {
+				t.Fatalf("expected error containing %q (not supported: %v), got: %v", tc.want, tc.notSupp, err)
+			}
+			if len(fake.calls) != 0 {
+				t.Fatalf("expected no commands, got: %v", fake.calls)
+			}
+		})
+	}
+}
+
+func TestRestoreRegistry_ReplacesRepositoryWithBackupContent(t *testing.T) {
+	// Create the backup from one data directory ...
+	sourceDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(sourceDir, "repository", "docker", "registry", "v2", "blobs", "data"), "layer")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return []byte(registryConfigMapJSON), nil
+	})
+	backupDir := t.TempDir()
+	files, err := backupRegistry(backupDir)
+	if err != nil {
+		t.Fatalf("backupRegistry() failed: %v", err)
+	}
+
+	// ... and restore it into another one that holds stale data.
+	targetDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(targetDir, "repository", "stale"), "old")
+	writeTestFile(t, filepath.Join(targetDir, "auth", "htpasswd"), "secret")
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, nil
+	})
+
+	if err := restoreRegistry(backupDir, files); err != nil {
+		t.Fatalf("restoreRegistry() failed: %v", err)
+	}
+
+	if data, err := os.ReadFile(filepath.Join(targetDir, "repository", "docker", "registry", "v2", "blobs", "data")); err != nil || string(data) != "layer" {
+		t.Fatalf("expected restored blob, got %q (%v)", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "repository", "stale")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale repository content to be removed, got stat error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "auth", "htpasswd")); err != nil {
+		t.Fatalf("expected data outside the repository to be kept: %v", err)
+	}
+
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"get pods -n registry -l app=registry -o name --request-timeout=<n>s",
+		"apply --server-side --force-conflicts --field-manager=k2s-addon-restore -f " + filepath.Join(backupDir, registryConfigBackupFile),
+		"scale statefulset registry -n registry --replicas=1",
+		"rollout status statefulset registry -n registry --timeout=300s",
+	}
+	if got := fake.kubectlCalls(); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestRestoreRegistry_RequiresRepositoryArchive(t *testing.T) {
+	useRegistryDataDir(t)
+	fake := stubAddonCommands(t, nil)
+
+	err := restoreRegistry(t.TempDir(), []string{registryConfigBackupFile})
+
+	if err == nil || !strings.Contains(err.Error(), "required archive 'registry-repository.tar.gz'") {
+		t.Fatalf("expected missing archive error, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no commands, got: %v", fake.calls)
+	}
+}
+
+func TestApplyBackupFiles_ReplacesObjectsOnConflict(t *testing.T) {
+	backupDir := t.TempDir()
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if args[0] == "apply" {
+			return nil, errors.New(`Error from server (Conflict): Operation cannot be fulfilled on configmaps "ingress-nginx-controller": the object has been modified`)
+		}
+		return nil, nil
+	})
+
+	if err := applyBackupFiles(backupDir, []string{"ingress-nginx-controller-configmap.yaml"}); err != nil {
+		t.Fatalf("applyBackupFiles() failed: %v", err)
+	}
+
+	path := filepath.Join(backupDir, "ingress-nginx-controller-configmap.yaml")
+	want := []string{"apply -f " + path, "replace --force -f " + path}
+	if got := fake.kubectlCalls(); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func writeTestArchive(t *testing.T, path string, headers []tar.Header) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gz := gzip.NewWriter(file)
+	tw := tar.NewWriter(gz)
+	for i := range headers {
+		if err := tw.WriteHeader(&headers[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreRegistry_RejectsInvalidArchivesBeforeTouchingTheRegistry(t *testing.T) {
+	for name, tc := range map[string]struct {
+		write func(t *testing.T, path string)
+		want  string
+	}{
+		"corrupt archive": {
+			write: func(t *testing.T, path string) { writeTestFile(t, path, "not a tar.gz") },
+			want:  "invalid archive",
+		},
+		"entry outside repository": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/../auth/htpasswd", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "'..' path component",
+		},
+		"entry outside repository without parent components": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "auth/htpasswd", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "outside of 'repository'",
+		},
+		"parent component staying inside repository": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/sub/../blob", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "'..' path component",
+		},
+		"hard link target with parent component": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/a", Typeflag: tar.TypeReg, Mode: 0o644},
+					{Name: "repository/b", Typeflag: tar.TypeLink, Linkname: "repository/sub/../a", Mode: 0o644},
+				})
+			},
+			want: "'..' path component",
+		},
+		"device node": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/disk", Typeflag: tar.TypeBlock, Devmajor: 8, Mode: 0o666},
+				})
+			},
+			want: "not a regular file, directory or hard link",
+		},
+		"setuid file": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/suid", Typeflag: tar.TypeReg, Mode: 0o4755},
+				})
+			},
+			want: "setuid or setgid",
+		},
+		"repository is a regular file": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository", Typeflag: tar.TypeReg, Mode: 0o644},
+				})
+			},
+			want: "'repository' must be a directory",
+		},
+		"hard link to a directory": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeLink, Linkname: "repository", Mode: 0o755},
+				})
+			},
+			want: "missing entry",
+		},
+		"symlink entry": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeSymlink, Linkname: "../auth", Mode: 0o777},
+				})
+			},
+			want: "symbolic link entry",
+		},
+		"hard link leaving repository": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeLink, Linkname: "auth/htpasswd", Mode: 0o644},
+				})
+			},
+			want: "outside of 'repository'",
+		},
+		"hard link to missing entry": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "repository/link", Typeflag: tar.TypeLink, Linkname: "repository/missing", Mode: 0o644},
+				})
+			},
+			want: "missing entry",
+		},
+		"corrupt gzip checksum": {
+			write: func(t *testing.T, path string) {
+				writeTestArchive(t, path, []tar.Header{
+					{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+				})
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data[len(data)-8] ^= 0xff // CRC32 in the gzip trailer
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "invalid archive",
+		},
+		"no repository content": {
+			write: func(t *testing.T, path string) { writeTestArchive(t, path, nil) },
+			want:  "no 'repository' content",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dataDir := useRegistryDataDir(t)
+			writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+			backupDir := t.TempDir()
+			tc.write(t, filepath.Join(backupDir, registryRepositoryArchive))
+			fake := stubAddonCommands(t, nil)
+
+			err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error containing %q, got: %v", tc.want, err)
+			}
+			if len(fake.calls) != 0 {
+				t.Fatalf("expected no commands, got: %v", fake.calls)
+			}
+			if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+				t.Fatalf("expected repository data to be untouched: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestValidateRepositoryArchive_AcceptsHardLinksInsideRepository(t *testing.T) {
+	path := filepath.Join(t.TempDir(), registryRepositoryArchive)
+	writeTestArchive(t, path, []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "repository/blobs/a", Typeflag: tar.TypeReg, Mode: 0o644},
+		{Name: "repository/blobs/b", Typeflag: tar.TypeLink, Linkname: "repository/blobs/a", Mode: 0o644},
+	})
+
+	if err := validateRepositoryArchive(path); err != nil {
+		t.Fatalf("expected archive with in-repository hard link to be accepted: %v", err)
+	}
+}
+
+func TestRestore_RegistryBackupWithoutArchiveIsRejectedBeforeEnabling(t *testing.T) {
+	backupDir := t.TempDir()
+	writeTestFile(t, filepath.Join(backupDir, registryConfigBackupFile), "{}")
+	writeTestFile(t, filepath.Join(backupDir, addonBackupManifestFileName), `{"k2sVersion":"v1","addon":"registry","files":["registry-config.json"]}`)
+	fake := stubAddonCommands(t, nil)
+
+	err := newBackupTestProvider(t).Restore(AddonRestoreConfig{AddonName: "registry", Implementation: "registry", BackupDir: backupDir})
+
+	if err == nil || !strings.Contains(err.Error(), "required archive") {
+		t.Fatalf("expected missing archive error, got: %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("expected no commands, got: %v", fake.calls)
+	}
+}
+
+func TestRestoreRegistry_AbortsWhenPodsDoNotTerminate(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+	backupDir := t.TempDir()
+	writeTestArchive(t, filepath.Join(backupDir, registryRepositoryArchive), []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+
+	previousPoll := registryPodsPollInterval
+	registryPodsPollInterval = time.Millisecond
+	t.Cleanup(func() { registryPodsPollInterval = previousPoll })
+	previous := registryPodsTerminationTimeout
+	registryPodsTerminationTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { registryPodsTerminationTimeout = previous })
+
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if args[0] == "get" {
+			return []byte("pod/registry-0\n"), nil
+		}
+		return nil, nil
+	})
+
+	err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+	if err == nil || !strings.Contains(err.Error(), "did not terminate") {
+		t.Fatalf("expected termination timeout error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+		t.Fatalf("expected repository data to be untouched: %v", statErr)
+	}
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"get pods -n registry -l app=registry -o name --request-timeout=<n>s",
+		"scale statefulset registry -n registry --replicas=1",
+	}
+	// The pods are polled until the deadline, so repeated polls collapse into one.
+	if got := slices.Compact(fake.kubectlCalls()); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestRestoreRegistry_AbortsWhenTerminationDeadlineIsExpired(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+	backupDir := t.TempDir()
+	writeTestArchive(t, filepath.Join(backupDir, registryRepositoryArchive), []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+
+	previous := registryPodsTerminationTimeout
+	registryPodsTerminationTimeout = 0
+	t.Cleanup(func() { registryPodsTerminationTimeout = previous })
+
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if args[0] == "get" {
+			t.Errorf("expected no request after the deadline expired, got: %v", args)
+		}
+		return nil, nil
+	})
+
+	err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+	if err == nil || !strings.Contains(err.Error(), "did not terminate") {
+		t.Fatalf("expected termination timeout error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+		t.Fatalf("expected repository data to be untouched: %v", statErr)
+	}
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"scale statefulset registry -n registry --replicas=1",
+	}
+	if got := fake.kubectlCalls(); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestRestoreRegistry_KeepsRepositoryAndScalesUpWhenExtractionFails(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+	backupDir := t.TempDir()
+	writeTestArchive(t, filepath.Join(backupDir, registryRepositoryArchive), []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, nil
+	})
+	original := linuxAddonCommandOutput
+	linuxAddonCommandOutput = func(name string, args ...string) ([]byte, error) {
+		if name == "sudo" && len(args) > 0 && args[0] == "tar" {
+			fake.calls = append(fake.calls, name+" "+strings.Join(args, " "))
+			return nil, errors.New("no space left on device")
+		}
+		return original(name, args...)
+	}
+	t.Cleanup(func() { linuxAddonCommandOutput = original })
+
+	err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+	if err == nil || !strings.Contains(err.Error(), "extracting") {
+		t.Fatalf("expected extraction error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+		t.Fatalf("expected repository data to be untouched: %v", statErr)
+	}
+	for _, leftover := range []string{registryRestoreStagingDir, registryRestorePreviousDir} {
+		if _, statErr := os.Stat(filepath.Join(dataDir, leftover)); !os.IsNotExist(statErr) {
+			t.Fatalf("expected '%s' to be removed, got stat error: %v", leftover, statErr)
+		}
+	}
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"get pods -n registry -l app=registry -o name --request-timeout=<n>s",
+		"scale statefulset registry -n registry --replicas=1",
+	}
+	if got := fake.kubectlCalls(); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestApplyBackupFiles_DoesNotReplaceOnUnrelatedConflictText(t *testing.T) {
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, errors.New(`admission webhook denied the request: host conflicts with another ingress`)
+	})
+
+	err := applyBackupFiles(t.TempDir(), []string{"x.yaml"})
+
+	if err == nil {
+		t.Fatal("expected apply failure")
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected no replace attempt, got: %v", fake.calls)
+	}
+}
+
+func TestApplyBackupFiles_FailsOnOtherErrors(t *testing.T) {
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, errors.New(`error: error validating "x.yaml": unknown field "foo"`)
+	})
+
+	err := applyBackupFiles(t.TempDir(), []string{"traefik-cluster-local-ingress.yaml", "other.yaml"})
+
+	if err == nil || !strings.Contains(err.Error(), "applying 'traefik-cluster-local-ingress.yaml' failed") {
+		t.Fatalf("expected apply failure, got: %v", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("expected the restore to stop after the first failure, got: %v", fake.calls)
+	}
+}
+
+func TestRestoreRegistry_RefusesWhenPreviousRepositoryExists(t *testing.T) {
+	sourceDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(sourceDir, "repository", "blob"), "layer")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return []byte(registryConfigMapJSON), nil
+	})
+	backupDir := t.TempDir()
+	files, err := backupRegistry(backupDir)
+	if err != nil {
+		t.Fatalf("backupRegistry() failed: %v", err)
+	}
+
+	targetDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(targetDir, "repository", "current"), "data")
+	writeTestFile(t, filepath.Join(targetDir, registryRestorePreviousDir, "original"), "only copy")
+	stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, nil
+	})
+
+	err = restoreRegistry(backupDir, files)
+
+	if err == nil || !strings.Contains(err.Error(), "previous repository") {
+		t.Fatalf("expected error about the previous repository, got: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(targetDir, registryRestorePreviousDir, "original")); err != nil || string(data) != "only copy" {
+		t.Fatalf("expected previous repository to be kept, got %q (%v)", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "repository", "current")); err != nil {
+		t.Fatalf("expected current repository to be untouched: %v", err)
+	}
+}

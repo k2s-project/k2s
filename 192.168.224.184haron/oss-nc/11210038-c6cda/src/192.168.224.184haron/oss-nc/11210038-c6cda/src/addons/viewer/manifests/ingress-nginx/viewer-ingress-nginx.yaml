@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: viewer-nginx-cluster-local
+  namespace: viewer
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: 'false'
+
+spec:
+  rules:
+    - host: k2s.cluster.local
+      http:
+        paths:
+          - path: /viewer
+            pathType: Prefix
+            backend:
+              service:
+                name: viewerwebapp
+                port:
+                  number: 80
+  ingressClassName: nginx

@@ -507,8 +507,13 @@ func replaceRegistryRepository(archivePath, repositoryDir string) error {
 		}
 	}
 
-	if _, err := linuxAddonCommandOutput("sudo", "rm", "-rf", stagingDir, previousDir); err != nil {
-		return fmt.Errorf("removing stale restore directories failed: %w", err)
+	// A leftover previous repository can be the only copy of the original images
+	// after an interrupted or failed swap, so never delete it automatically.
+	if _, err := linuxAddonCommandOutput("sudo", "test", "-e", previousDir); err == nil {
+		return fmt.Errorf("a previous repository from an earlier restore exists in '%s'; recover it as '%s' or remove it before restoring again", previousDir, repositoryDir)
+	}
+	if _, err := linuxAddonCommandOutput("sudo", "rm", "-rf", stagingDir); err != nil {
+		return fmt.Errorf("removing stale restore directory failed: %w", err)
 	}
 	if _, err := linuxAddonCommandOutput("sudo", "mkdir", "-p", stagingDir); err != nil {
 		return fmt.Errorf("creating '%s' failed: %w", stagingDir, err)

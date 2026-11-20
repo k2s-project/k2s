@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Workflow to delete caches created by feature branch or pull requests when the feature branch is deleted or when the pull request is completed.
+name: Repo - Delete caches on completion
+
+on:
+  delete:
+  pull_request:
+    types: 
+      - closed
+
+jobs:
+  delete-caches:
+    name: delete caches 
+    continue-on-error: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: snnaplab/delete-branch-cache-action@v1
+        with:
+          ref: refs/pull/${{ github.event.number }}/merge
+        if: github.event_name == 'pull_request'
+
+      - uses: snnaplab/delete-branch-cache-action@v1
+        with:
+          ref: refs/heads/${{ github.event.ref }}
+        if: github.event.ref_type == 'branch'
+
+      
+        

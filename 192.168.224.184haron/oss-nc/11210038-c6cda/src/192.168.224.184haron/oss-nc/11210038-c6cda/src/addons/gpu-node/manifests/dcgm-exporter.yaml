@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: "dcgm-exporter"
+  namespace: gpu-node
+  labels:
+    app.kubernetes.io/name: "dcgm-exporter"
+    app.kubernetes.io/version: "4.8.1"
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "dcgm-exporter"
+      app.kubernetes.io/version: "4.8.1"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: "dcgm-exporter"
+        app.kubernetes.io/version: "4.8.1"
+      name: "dcgm-exporter"
+    spec:
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      containers:
+        - image: "nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-ubi9"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: "DCGM_EXPORTER_LISTEN"
+              value: ":9400"
+            - name: "DCGM_EXPORTER_KUBERNETES"
+              value: "true"
+          name: "dcgm-exporter"
+          ports:
+            - name: "metrics"
+              containerPort: 9400
+          securityContext:
+            # DCGM requires root to read /var/lib/kubelet/pod-resources.
+            runAsNonRoot: false
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: "pod-gpu-resources"
+              readOnly: true
+              mountPath: "/var/lib/kubelet/pod-resources"
+      volumes:
+        - name: "pod-gpu-resources"
+          hostPath:
+            path: "/var/lib/kubelet/pod-resources"
+      nodeSelector:
+        "kubernetes.io/os": linux
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: dcgm-exporter
+  namespace: gpu-node
+  labels:
+    app.kubernetes.io/name: "dcgm-exporter"
+    app.kubernetes.io/version: "4.8.1"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: "dcgm-exporter"
+    app.kubernetes.io/version: "4.8.1"
+  ports:
+    - port: 9400
+      targetPort: 9400
+
+---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: dcgm-exporter
+#   namespace: gpu-node
+#   annotations:
+#     nginx.ingress.kubernetes.io/use-regex: "true"
+#     nginx.ingress.kubernetes.io/rewrite-target: /$2
+#   labels:
+#     app.kubernetes.io/name: "dcgm-exporter"
+#     app.kubernetes.io/version: "4.8.1"
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - http:
+#         paths:
+#         - backend:
+#             service:
+#               name: dcgm-exporter
+#               port:
+#                 number: 9400
+#           pathType: ImplementationSpecific
+#           path: /dcgm(/|$)(.*)

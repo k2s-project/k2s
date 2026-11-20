@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: csi.ceph.io/v1
+kind: ClientProfile
+metadata:
+  name: storage
+  namespace: ceph-csi-operator-system
+spec:
+  cephConnectionRef:
+    name: ceph-connection
+  cephFs:
+    subVolumeGroup: csi

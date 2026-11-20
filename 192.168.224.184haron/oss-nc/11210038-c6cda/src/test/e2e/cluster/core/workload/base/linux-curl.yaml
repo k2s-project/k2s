@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl
+spec:
+  selector:
+    matchLabels:
+      app: curl
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: curl
+    spec:
+      containers:
+        - name: curl
+          image: docker.io/curlimages/curl:8.5.0
+          command: [sh]
+          args: ["-c", "echo +++ curl is now available +++; tail -f /dev/null"]
+      nodeSelector:
+        kubernetes.io/os: linux
+      terminationGracePeriodSeconds: 5 #SIGKIL is not used and default is 30 seconds wait, so terminate early.
+

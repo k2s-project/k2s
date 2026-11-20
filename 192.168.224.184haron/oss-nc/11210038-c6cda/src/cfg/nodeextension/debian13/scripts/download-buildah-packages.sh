@@ -1,0 +1,207 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# download-buildah-packages.sh  -  Debian 13 (Trixie) variant
+#
+# Downloads buildah and its dependencies as .deb packages from the Debian APT
+# repository for offline installation.
+#
+# Debian 13 differences vs Debian 12:
+#   - buildah uses netavark + aardvark-dns as the network backend (not CNI plugins)
+#   - netavark and aardvark-dns are recommended packages (skipped by
+#     --no-install-recommends) so they are downloaded explicitly below
+#
+# Arguments:
+#   $1 - Target path on the remote machine to store downloaded .deb packages
+#        (e.g. /home/sk/apt-offline-k2s/buildah)
+#   $2 - Optional HTTP/HTTPS proxy URL
+
+BUILDAH_DEB_PACKAGES_PATH="${1:?Argument missing: BuildahDebPackagesPath}"
+PROXY="${2:-}"
+
+if [[ -n "${K2S_APT_CONFIG:-}" || "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+    sudo() {
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            case "${1:-}" in
+                dpkg) return 0 ;;
+                apt)
+                    if [[ "${2:-}" == "--fix-broken" ]]; then
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        if [[ -n "${K2S_APT_CONFIG:-}" ]]; then
+            command sudo env APT_CONFIG="$K2S_APT_CONFIG" "$@"
+        else
+            command sudo "$@"
+        fi
+    }
+fi
+
+log_info() {
+    echo "[BuildahPkg] $1"
+}
+
+log_info "Starting download of buildah packages"
+log_info "Target path: $BUILDAH_DEB_PACKAGES_PATH"
+
+cleanup_proxy_config() {
+    if [ -n "$PROXY" ]; then
+        sudo rm -f /etc/apt/apt.conf.d/95k2s-proxy
+    fi
+}
+
+trap cleanup_proxy_config EXIT
+
+# ---------------------------------------------------------------------------
+# Prepare target directory
+# ---------------------------------------------------------------------------
+if [ -d "$BUILDAH_DEB_PACKAGES_PATH" ]; then
+    rm -rf "$BUILDAH_DEB_PACKAGES_PATH"
+fi
+mkdir -p "$BUILDAH_DEB_PACKAGES_PATH"
+
+# APT sandbox config
+echo 'APT::Sandbox::User "root";' | sudo tee /etc/apt/apt.conf.d/10sandbox-for-k2s > /dev/null
+
+# Configure apt proxy if provided (ensures apt-get download uses the same proxy path)
+if [ -n "$PROXY" ]; then
+    log_info "Configuring apt proxy: $PROXY"
+    printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' "$PROXY" "$PROXY" | sudo tee /etc/apt/apt.conf.d/95k2s-proxy > /dev/null
+fi
+
+cd "$BUILDAH_DEB_PACKAGES_PATH"
+
+download_dependency_packages() {
+    local excluded_package="$1"
+    shift
+
+    local dependency_simulation
+    if ! dependency_simulation=$(cd "$BUILDAH_DEB_PACKAGES_PATH" && sudo DEBIAN_FRONTEND=noninteractive apt-get "$@" 2>/dev/null); then
+        log_info "WARNING: dependency simulation failed"
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            return 1
+        fi
+        return 0
+    fi
+
+    local dependencies
+    dependencies=$(printf '%s\n' "$dependency_simulation" | awk -v exclude="$excluded_package" '$1 == "Inst" && $2 != exclude { print $2 }' | sort -u)
+    if [[ -n "$dependencies" ]] && ! (cd "$BUILDAH_DEB_PACKAGES_PATH" && printf '%s\n' "$dependencies" | \
+        xargs -r sh -c 'if [ -n "${K2S_APT_CONFIG:-}" ]; then sudo env APT_CONFIG="$K2S_APT_CONFIG" apt-get download "$@"; else sudo apt-get download "$@"; fi' sh 2>/dev/null); then
+        log_info "WARNING: dependency download failed"
+        if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+download_packages() {
+    local package_name="$1"
+    local deb_pattern="${package_name%%=*}*.deb"
+
+    log_info "Downloading: $package_name"
+
+    cd "$BUILDAH_DEB_PACKAGES_PATH" && sudo apt-get download "$package_name" 2>/dev/null || true
+
+    if ls "$BUILDAH_DEB_PACKAGES_PATH"/${deb_pattern} >/dev/null 2>&1; then
+        local deb_files=("$BUILDAH_DEB_PACKAGES_PATH"/${deb_pattern})
+        if ! download_dependency_packages "$package_name" --reinstall install -y \
+            -o DPkg::Options::="--force-confnew" \
+            --no-install-recommends --no-install-suggests \
+            --simulate "${deb_files[@]}"; then
+            return 1
+        fi
+    else
+        log_info "ERROR: requested package archive is missing: $package_name"
+        return 1
+    fi
+}
+
+log_info "=== Downloading buildah and dependencies ==="
+
+if ! download_packages 'buildah'; then
+    log_info "ERROR: buildah dependency download failed"
+    exit 1
+fi
+
+# Explicitly download the recommended package crun (with retry + repair)
+log_info "Downloading recommended package: crun"
+for attempt in 1 2; do
+    if (cd "$BUILDAH_DEB_PACKAGES_PATH" && sudo apt-get download crun 2>/dev/null); then
+        break
+    fi
+
+    log_info "crun download attempt $attempt failed; running repair"
+    sudo dpkg --configure -a >/dev/null 2>&1 || true
+    sudo apt --fix-broken install -y >/dev/null 2>&1 || true
+
+    if [ "$attempt" -eq 2 ]; then
+        log_info "WARNING: failed to download crun after 2 attempts"
+    fi
+done
+
+# crun's dependencies (e.g. libyajl2) may be pre-installed on the control plane
+# and therefore missed by the simulate-reinstall approach above.
+# Discover them dynamically via a fresh repo simulation and download what is missing.
+log_info "Downloading missing dependencies of crun"
+if ! download_dependency_packages "" --simulate install \
+    --no-install-recommends --no-install-suggests \
+    crun; then
+    log_info "ERROR: crun dependency download failed"
+    exit 1
+fi
+
+# Explicitly download Debian 13 networking stack packages for buildah.
+# netavark is the default network backend for buildah 1.35+ (replaces CNI);
+# aardvark-dns provides DNS resolution within buildah-managed networks.
+# nftables provides the 'nft' binary that netavark invokes to program firewall
+# rules; without it builds fail with "unable to execute nft: No such file or directory".
+# All are recommended/runtime packages and therefore not captured by --no-install-recommends.
+log_info "Downloading Debian 13 networking packages: netavark, aardvark-dns, nftables"
+for pkg in netavark aardvark-dns nftables; do
+    for attempt in 1 2; do
+        if download_packages "$pkg"; then
+            break
+        fi
+
+        log_info "$pkg download attempt $attempt failed; running repair"
+        sudo dpkg --configure -a >/dev/null 2>&1 || true
+        sudo apt --fix-broken install -y >/dev/null 2>&1 || true
+
+        if [ "$attempt" -eq 2 ]; then
+            log_info "WARNING: failed to download $pkg after 2 attempts"
+            if [[ "${K2S_PACKAGE_DOWNLOAD_ONLY:-}" == true ]]; then
+                exit 1
+            fi
+        fi
+    done
+done
+
+# Ensure nftables runtime libraries are present in offline bundle.
+# They may be omitted when dependency simulation does not emit them reliably.
+log_info "Ensuring nftables runtime libraries are available"
+for dep in libnftables1 libnftnl11 libmnl0 libxtables12 libjansson4; do
+    for attempt in 1 2; do
+        if (cd "$BUILDAH_DEB_PACKAGES_PATH" && sudo apt-get download "$dep" 2>/dev/null); then
+            break
+        fi
+
+        log_info "$dep download attempt $attempt failed; running repair"
+        sudo dpkg --configure -a >/dev/null 2>&1 || true
+        sudo apt --fix-broken install -y >/dev/null 2>&1 || true
+
+        if [ "$attempt" -eq 2 ]; then
+            log_info "WARNING: failed to download $dep after 2 attempts"
+        fi
+    done
+done
+
+log_info "Downloaded packages:"
+ls -1 "$BUILDAH_DEB_PACKAGES_PATH"
+
+log_info "Finished downloading buildah packages successfully"

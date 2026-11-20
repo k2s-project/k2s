@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-manager
+  namespace: linkerd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cert-manager-secret-creator
+  namespace: linkerd
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cert-manager-secret-creator-binding
+  namespace: linkerd
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: linkerd
+roleRef:
+  kind: Role
+  name: cert-manager-secret-creator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  # This is the name of the Issuer resource; it's the way
+  # Certificate resources can find this issuer.
+  name: linkerd-trust-root-issuer
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  # This is the name of the Certificate resource, but the Secret
+  # we save the certificate into can be different.
+  name: linkerd-trust-anchor
+  namespace: cert-manager
+spec:
+  # This tells cert-manager which issuer to use for this Certificate:
+  # in this case, the Issuer named linkerd-trust-root-issuer.
+  issuerRef:
+    kind: Issuer
+    name: linkerd-trust-root-issuer
+
+  # The issued certificate will be saved in this Secret
+  secretName: linkerd-trust-anchor
+
+  # These are details about the certificate to be issued: check
+  # out the cert-manager docs for more, but realize that setting
+  # the private key's rotationPolicy to Always is _very_ important,
+  # and that for Linkerd you _must_ set isCA to true!
+  isCA: true
+  commonName: root.linkerd.cluster.local
+  duration: 87600h0m0s # 10 years
+  renewBefore: 7320h0m0s
+  privateKey:
+    rotationPolicy: Always
+    algorithm: ECDSA
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  # This is the name of the Issuer resource; it's the way
+  # Certificate resources can find this issuer.
+  name: linkerd-identity-issuer
+  namespace: cert-manager
+spec:
+  ca:
+    secretName: linkerd-trust-anchor
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  # This is the name of the Certificate resource, but the Secret
+  # we save the certificate into can be different.
+  name: linkerd-identity-issuer
+  namespace: linkerd
+spec:
+  # This tells cert-manager which issuer to use for this Certificate:
+  # in this case, the ClusterIssuer named linkerd-identity-issuer.
+  issuerRef:
+    name: linkerd-identity-issuer
+    kind: ClusterIssuer
+
+  # The issued certificate will be saved in this Secret.
+  secretName: linkerd-identity-issuer
+
+  # These are details about the certificate to be issued: check
+  # out the cert-manager docs for more, but realize that setting
+  # the private key's rotationPolicy to Always is _very_ important,
+  # and that for Linkerd you _must_ set isCA to true!
+  isCA: true
+  commonName: identity.linkerd.cluster.local
+  duration: 8760h0m0s # 1 year
+  renewBefore: 720h0m0s
+  privateKey:
+    rotationPolicy: Always
+    algorithm: ECDSA
+---
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  # This is the name of the Bundle and _also_ the name of the
+  # ConfigMap in which we'll write the trust bundle.
+  name: linkerd-identity-trust-roots
+  namespace: linkerd
+spec:
+  # This tells trust-manager where to find the public keys to copy into
+  # the trust bundle.
+  sources:
+    # This is the Secret that cert-manager will update when it rotates
+    # the trust anchor.
+    - secret:
+        name: "linkerd-trust-anchor"
+        key: "tls.crt"
+
+    # This is the Secret that we will use to hold the previous trust
+    # anchor; we'll manually update this Secret after we're finished
+    # restarting things.
+    - secret:
+        name: "linkerd-previous-anchor"
+        key: "tls.crt"
+
+  # This tells trust-manager the key to use when writing the trust
+  # bundle into the ConfigMap. The target stanza doesn't have a way
+  # to specify the name of the namespace, but thankfully Linkerd puts
+  # a unique label on the control plane's namespace.
+  target:
+    configMap:
+      key: "ca-bundle.crt"
+    namespaceSelector:
+      matchLabels:
+        linkerd.io/is-control-plane: "true"
+---

@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: ingress-traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/instance: traefik-ingress-traefik
+    helm.sh/chart: traefik-38.0.1
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+      app.kubernetes.io/instance: traefik-ingress-traefik
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  minReadySeconds: 0
+  template: 
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9100"
+      labels:
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/instance: traefik-ingress-traefik
+        helm.sh/chart: traefik-38.0.1
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccountName: traefik
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 60
+      hostNetwork: false
+      containers:
+      - image: public.ecr.aws/docker/library/traefik:v3.7.19
+        imagePullPolicy: IfNotPresent
+        name: traefik
+        resources:
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 9000
+            scheme: HTTP
+          failureThreshold: 1
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 9000
+            scheme: HTTP
+          failureThreshold: 3
+          initialDelaySeconds: 2
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 2
+        lifecycle:
+        ports:
+        - name: "metrics"
+          containerPort: 9100
+          protocol: "TCP"
+        - name: "traefik"
+          containerPort: 9000
+          protocol: "TCP"
+        - name: "web"
+          containerPort: 8080
+          protocol: "TCP"
+        - name: "websecure"
+          containerPort: 8443
+          protocol: "TCP"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: tmp
+            mountPath: /tmp
+        args:
+          - "--global.checknewversion"
+          - "--global.sendanonymoususage"
+          - "--entryPoints.metrics.address=:9100/tcp"
+          - "--entryPoints.traefik.address=:9000/tcp"
+          - "--entryPoints.web.address=:8080/tcp"
+          - "--entryPoints.websecure.address=:8443/tcp"
+          - "--api.dashboard=true"
+          - "--api.insecure=true"
+          - "--accesslog=true"
+          - "--ping=true"
+          - "--metrics.prometheus=true"
+          - "--metrics.prometheus.entrypoint=metrics"
+          - "--providers.kubernetescrd"
+          - "--providers.kubernetescrd.ingressclass=traefik"
+          - "--providers.kubernetescrd.allowEmptyServices=true"
+          - "--providers.kubernetesingress"
+          - "--providers.kubernetesingress.ingressclass=traefik"
+          - "--providers.kubernetesingress.allowEmptyServices=true"
+          - "--providers.kubernetesingress.ingressendpoint.publishedservice=ingress-traefik/traefik"
+          - "--providers.kubernetesgateway"
+          - "--providers.kubernetesgateway.statusaddress.service.name=traefik"
+          - "--providers.kubernetesgateway.statusaddress.service.namespace=ingress-traefik"
+          - "--entryPoints.websecure.http.tls=true"
+          - "--serverstransport.insecureskipverify=true"
+          - "--log.level=INFO"         
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      securityContext:
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532

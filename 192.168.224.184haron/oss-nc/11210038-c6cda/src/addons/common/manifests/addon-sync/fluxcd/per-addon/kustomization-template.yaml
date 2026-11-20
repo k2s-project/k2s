@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Per-addon Kustomization template — one instance per addon.
+#
+# Placeholder must be replaced by the consumer before
+# applying with kubectl:
+#   ADDON_NAME_PLACEHOLDER  — addon folder name (e.g. monitoring, rollout)
+#
+# When the OCIRepository (addon-sync-ADDON_NAME_PLACEHOLDER) selects a new
+# matching version via ref.semver on addons/<name>, Flux extracts the manifests
+# layer and applies ./gitops-sync/ which contains the sync-job.yaml with the
+# embedded ADDON_NAME.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: addon-sync-ADDON_NAME_PLACEHOLDER
+  namespace: k2s-addon-sync
+  labels:
+    app.kubernetes.io/name: addon-sync
+    app.kubernetes.io/component: kustomization
+    app.kubernetes.io/part-of: k2s
+    k2s.io/addon: ADDON_NAME_PLACEHOLDER
+spec:
+  interval: 1m
+  sourceRef:
+    kind: OCIRepository
+    name: addon-sync-ADDON_NAME_PLACEHOLDER
+  path: ./gitops-sync
+  prune: true
+  force: true
+  wait: true
+  timeout: 10m
+  targetNamespace: k2s-addon-sync

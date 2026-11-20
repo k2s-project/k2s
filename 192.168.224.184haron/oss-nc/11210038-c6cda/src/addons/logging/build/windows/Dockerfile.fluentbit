@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Build context requirements:
+#   - fluent-bit.exe 
+
+ARG BASE="mcr.microsoft.com/oss/kubernetes/windows-host-process-containers-base-image:v1.0.0"
+FROM $BASE
+
+ENV PATH="C:\\Windows\\system32;C:\\Windows;"
+COPY fluent-bit.exe .
+ENTRYPOINT ["fluent-bit.exe"]

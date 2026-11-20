@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# FluxCD overlay — deploys shared base (namespace, RBAC, ConfigMaps, Sync-Addons.ps1).
+#
+# Per-addon OCIRepository + Kustomization resources are NOT included here.
+# Register each addon once using the templates in per-addon/:
+#   Fill placeholders in ocirepository-template.yaml and kustomization-template.yaml,
+#   then: kubectl apply -f <filled-ocirepository>.yaml -f <filled-kustomization>.yaml
+#
+# Each per-addon OCIRepository polls addons/<name> via ref.semver. On a new digest,
+# the paired Kustomization applies gitops-sync/sync-job.yaml from the extracted
+# manifests layer, which pulls and installs the addon on the Windows host.
+#
+# Prerequisites:
+#   - rollout fluxcd addon enabled (Flux source-controller running)
+#   - Registry addon enabled (or external registry configured)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base

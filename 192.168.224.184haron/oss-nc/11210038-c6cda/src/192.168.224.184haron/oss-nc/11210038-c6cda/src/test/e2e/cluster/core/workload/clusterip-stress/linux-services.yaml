@@ -1,0 +1,417 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# 10 Linux Deployments + Services to stress-test concurrent ClusterIP allocation.
+# All are deployed simultaneously via kubectl apply to trigger parallel webhook calls.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-01
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-01
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-01
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-01"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-01
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-01
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-02
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-02
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-02
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-02"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-02
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-02
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-03
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-03
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-03
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-03"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-03
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-03
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-04
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-04
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-04
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-04"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-04
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-04
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-05
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-05
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-05
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-05"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-05
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-05
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-06
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-06
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-06
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-06"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-06
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-06
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-07
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-07
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-07
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-07"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-07
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-07
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-08
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-08
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-08
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-08"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-08
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-08
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-09
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-09
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-09
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-09"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-09
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-09
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stress-linux-10
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    matchLabels:
+      app: stress-linux-10
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: stress-linux-10
+    spec:
+      containers:
+        - name: albums
+          image: shsk2s.azurecr.io/example.albums-golang-linux:v1.5.0
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+            - name: RESOURCE
+              value: "stress-linux-10"
+      nodeSelector:
+        kubernetes.io/os: linux
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stress-linux-10
+  namespace: clusterip-stress-test
+spec:
+  selector:
+    app: stress-linux-10
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80

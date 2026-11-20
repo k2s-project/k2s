@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Authorizes the traefik ingress controller to reach the meshed app port (8080).
+# Requires the security addon (enhanced) AND the ingress traefik addon.
+#
+# WHY THIS IS NEEDED
+#   70-zero-trust-policy.yaml switches port 8080 to DEFAULT-DENY and only permits mTLS
+#   identities from the "hostprocess-examples" namespace. When you call the app THROUGH the
+#   traefik ingress, the client's identity no longer matters at the backend - traefik is the
+#   caller. traefik runs as ServiceAccount "traefik" in namespace "ingress-traefik" and is
+#   meshed by the security addon (linkerd.io/inject: enabled), so it presents THAT identity.
+#   Because that identity is outside "hostprocess-examples", the anchor proxy returns 403.
+#
+# This adds a SECOND AuthorizationPolicy (Linkerd authz policies are additive/OR) that grants
+# exactly traefik's identity access to the same GET-only HTTPRoute. Direct (meshed) clients from
+# hostprocess-examples keep working via the original policy; the binary stays unmodified.
+#
+# If traefik is NOT meshed on your cluster (no linkerd.io/inject on the traefik deployment),
+# it has no mTLS identity and this policy will not match. In that case, mesh traefik
+# (recommended) or replace the MeshTLSAuthentication below with a NetworkAuthentication that
+# allows the traefik pod network (see 15-health-probe-policy.yaml for the NetworkAuthentication
+# shape).
+---
+# traefik's Linkerd mTLS identity (ServiceAccount "traefik" in namespace "ingress-traefik").
+# Identity format: <serviceaccount>.<namespace>.serviceaccount.identity.linkerd.cluster.local
+apiVersion: policy.linkerd.io/v1alpha1
+kind: MeshTLSAuthentication
+metadata:
+  name: traefik-ingress-identity
+  namespace: hostprocess-examples
+spec:
+  identities:
+    - 'traefik.ingress-traefik.serviceaccount.identity.linkerd.cluster.local'
+---
+apiVersion: policy.linkerd.io/v1alpha1
+kind: AuthorizationPolicy
+metadata:
+  name: albums-hp-allow-traefik
+  namespace: hostprocess-examples
+spec:
+  # Same GET-only route defined in 70-zero-trust-policy.yaml.
+  targetRef:
+    group: policy.linkerd.io
+    kind: HTTPRoute
+    name: albums-hp-get-only
+  requiredAuthenticationRefs:
+    - group: policy.linkerd.io
+      kind: MeshTLSAuthentication
+      name: traefik-ingress-identity

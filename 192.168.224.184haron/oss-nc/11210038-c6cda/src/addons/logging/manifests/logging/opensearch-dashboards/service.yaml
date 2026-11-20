@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Source: opensearch-dashboards/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch-dashboards
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/instance: opensearch-dashboards
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5601
+    protocol: TCP
+    name: http-web
+    targetPort: 5601
+  selector:
+    app.kubernetes.io/name: opensearch-dashboards
+    release: "opensearch-dashboards"

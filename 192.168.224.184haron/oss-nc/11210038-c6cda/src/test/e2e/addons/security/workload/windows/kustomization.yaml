@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: k2s
+resources:
+  - ../base
+  - windows-albums.yaml
+  - windows-non-sec-albums.yaml

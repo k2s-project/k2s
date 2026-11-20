@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# BackendTLSPolicy configures TLS settings for backend connections
+# This enables NGINX Gateway Fabric to use HTTPS when connecting to argocd-server:443
+#
+# Certificate Validation Strategy:
+# ArgoCD server uses a self-signed certificate with CN=localhost
+# → Enable.ps1 extracts the certificate and creates argocd-ca-cert ConfigMap
+# → This policy references that ConfigMap for validation
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: argocd-backend-tls
+  namespace: rollout
+spec:
+  targetRefs:
+  - group: ""
+    kind: Service
+    name: argocd-server
+  validation:
+    caCertificateRefs:
+    - name: argocd-ca-cert
+      group: ""
+      kind: ConfigMap
+    hostname: localhost

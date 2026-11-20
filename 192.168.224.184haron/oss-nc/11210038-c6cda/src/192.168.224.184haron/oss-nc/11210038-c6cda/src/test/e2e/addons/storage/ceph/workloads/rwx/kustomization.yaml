@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ceph-share-pvc.yaml
+  - ceph-share-writer.yaml
+  - ceph-share-reader.yaml

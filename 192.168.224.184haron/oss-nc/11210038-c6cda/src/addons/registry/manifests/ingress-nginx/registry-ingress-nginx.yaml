@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    cert-manager.io/cluster-issuer: k2s-ca-issuer
+    cert-manager.io/common-name: k2s.registry.local
+  name: registry-nginx-local
+  namespace: registry
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - k2s.registry.local
+      secretName: k2s-registry-local-tls
+  rules:
+    - host: k2s.registry.local
+      http:
+        paths:
+        - backend:
+            service:
+              name: registry
+              port: 
+                number: 5000
+          pathType: Prefix
+          path: /

@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Anchor Pod (non-HostProcess): simple pause container to own the compartment/network.
+# Deployed separately before the HostProcess deployment so that cplauncher can
+# resolve its label and network compartment without racing against scheduling.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: albums-compartment-anchor
+  labels:
+    app: cp-albums-win # <== label selector used by cplauncher in the HostProcess deployment
+  annotations:
+    linkerd.io/inject: enabled
+spec:
+  nodeSelector:
+    kubernetes.io/os: windows
+  tolerations: # (optional) tolerate Windows specific taint
+    - key: 'OS'
+      operator: 'Equal'
+      value: 'Windows'
+      effect: 'NoSchedule'
+  containers:
+    - name: pause
+      image: shsk2s.azurecr.io/pause-win:v1.8.0
+      imagePullPolicy: IfNotPresent
+      # No custom command required: pause.exe in image keeps container alive.
+  restartPolicy: Always

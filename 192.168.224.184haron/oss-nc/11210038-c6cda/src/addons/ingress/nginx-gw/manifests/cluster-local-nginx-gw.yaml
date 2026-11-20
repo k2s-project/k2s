@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# This Gateway serves as the central ingress gateway for the cluster.
+# HTTPRoutes in any namespace can reference this Gateway by name to handle
+# traffic for k2s.cluster.local. See for example:
+#  addons/dashboard/manifests/ingress-nginx/dashboard-nginx-gw-route.yaml
+#  addons/logging/manifests/opensearch-dashboards/nginx-gw-route.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: nginx-cluster-local
+  namespace: nginx-gw
+  labels:
+    app.kubernetes.io/part-of: nginx-gw
+    app.kubernetes.io/name: nginx-gw
+    app.kubernetes.io/instance: nginx-gw
+spec:
+  gatewayClassName: nginx-gw
+  listeners:
+  - name: http
+    hostname: k2s.cluster.local
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    hostname: k2s.cluster.local
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: k2s-cluster-local-tls
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: registry-http
+    hostname: k2s.registry.local
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: registry-https
+    hostname: k2s.registry.local
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: k2s-registry-local-tls
+    allowedRoutes:
+      namespaces:
+        from: All

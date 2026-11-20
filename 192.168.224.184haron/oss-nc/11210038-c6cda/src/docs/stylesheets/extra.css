@@ -1,0 +1,14 @@
+/* SPDX-FileCopyrightText: © 2026 The K2s Authors
+SPDX-License-Identifier: Apache-2.0 */
+
+:root {
+    --md-primary-fg-color:        #326CE5;
+    --md-primary-fg-color--light: #7C9EE2;
+    --md-primary-fg-color--dark:  #1F448E;
+
+    --md-accent-fg-color:        #68B8E2;
+  }
+
+  .announcement {
+    color: orange;
+  }

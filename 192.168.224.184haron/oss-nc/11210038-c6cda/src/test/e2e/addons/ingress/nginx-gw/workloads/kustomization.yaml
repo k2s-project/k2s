@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+resources:
+  - nginx-gw-test-namespace.yaml
+  - nginx-gw-test-linux-albums.yaml

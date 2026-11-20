@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Host paths consumed by the HostProcess deployment (no cplauncher).
+# EDIT these values to match your host:
+#   ALBUMS_WIN - full path to the built albumswin.exe
+#   KUBECTL    - OPTIONAL: full path to kubectl.exe, used only if kubectl is not on the
+#                SYSTEM PATH. Typically <InstallFolder>\bin\windowsnode\kubetools\kubectl.exe
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hostprocess-examples
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hostprocess-launcher-env
+  namespace: hostprocess-examples
+data:
+  ALBUMS_WIN: 'C:\ws\k2s\test\e2e\cluster\hostprocess\albumswin\albumswin.exe'
+  # Uncomment and set if kubectl.exe is not resolvable on the SYSTEM PATH:
+  KUBECTL: 'C:\ws\k2s\bin\kube\kubectl.exe'

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2017 The Kubernetes Authors. https://github.com/kubernetes-csi/csi-driver-smb
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: SC_NAME
+provisioner: smb.csi.k8s.io
+parameters:
+  # On Windows, "*.default.svc.cluster.local" could not be recognized by csi-proxy
+  source: SC_SOURCE
+  # if csi.storage.k8s.io/provisioner-secret is provided, will create a sub directory
+  # with PV name under source
+  csi.storage.k8s.io/provisioner-secret-name: "smbcreds"
+  csi.storage.k8s.io/provisioner-secret-namespace: "storage-smb"
+  csi.storage.k8s.io/node-stage-secret-name: "smbcreds"
+  csi.storage.k8s.io/node-stage-secret-namespace: "storage-smb"
+reclaimPolicy: SC_RECLAIM_POLICY # default: Delete; available values: Delete, Retain
+volumeBindingMode: Immediate
+mountOptions:
+# mount options are injected below (placeholder line must stay at column 0)
+MOUNT_OPTIONS

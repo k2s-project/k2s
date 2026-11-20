@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# CA-signed certificate for k2s.cluster.local
+# This certificate is used by NGINX Gateway Fabric for TLS termination
+# Unlike NGINX Ingress and Traefik which auto-generate default certificates at runtime,
+# NGINX Gateway Fabric follows the Gateway API specification strictly, which requires
+# explicit certificate references in the Gateway resource. The Gateway API design is
+# security-first and fails closed - if you specify certificateRefs, the Secret MUST exist.
+#
+# Traditional ingress controllers (nginx/traefik) are permissive:
+# - NGINX Ingress: Automatically creates a fake self-signed certificate on startup
+# - Traefik: Auto-generates certificates on-the-fly for TLS entrypoints
+# - Both work without pre-configuration for convenience
+#
+# Gateway API / NGINX Gateway Fabric is explicit and declarative:
+# - Gateway resource MUST reference an existing Secret in spec.listeners[].tls.certificateRefs
+# - No automatic certificate generation (security and predictability over convenience)
+# - If the Secret is missing, TLS listeners will fail to bind, resulting in no TLS traffic
+#
+# This certificate is signed by the k2s-ca-issuer ClusterIssuer, which is automatically
+# installed by the ingress nginx-gw addon via Enable-CertManager function.
+# The CA root certificate is imported into the Windows trusted root store.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: k2s-cluster-local-tls
+  namespace: nginx-gw
+spec:
+  secretName: k2s-cluster-local-tls
+  duration: 2160h # 3 months
+  renewBefore: 720h # 30 days before expiry
+  isCA: false
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - k2s.cluster.local
+  issuerRef:
+    name: k2s-ca-issuer
+    kind: ClusterIssuer

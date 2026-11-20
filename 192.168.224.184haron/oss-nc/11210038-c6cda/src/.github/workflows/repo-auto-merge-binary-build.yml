@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# DEPRECATED: This workflow is no longer needed.
+# Go-built binaries are no longer committed to git, so there are no
+# auto-commit binary PRs to merge. Kept for reference only.
+
+name: "Repo - [DEPRECATED] Automerge from PR for binary build"
+
+on:
+  workflow_dispatch:
+#  pull_request:
+#    types: [opened, synchronize, reopened]
+  
+jobs:
+  auto-merge-temp-pr:
+    if: false  # disabled — binary auto-commit PRs are no longer created
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge PR
+        uses: pascalgn/automerge-action@v0.15.4
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUTOCOMMIT_TOKEN }}
+          MERGE_METHOD: merge
+          DELETE_BRANCH: true
+

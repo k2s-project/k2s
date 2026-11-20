@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dicom-nginx-gw-cluster-local-https
+  namespace: dicom
+spec:
+  parentRefs:
+    - name: nginx-cluster-local
+      namespace: nginx-gw
+      sectionName: https
+  hostnames:
+    - k2s.cluster.local
+  rules:
+    # OAuth2 callback routes
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /oauth2
+      backendRefs:
+        - name: oauth2-proxy
+          namespace: security
+          port: 4180
+    # DICOM application route with auth_request pattern
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /dicom
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.nginx.org
+            kind: SnippetsFilter
+            name: oauth2-auth-filter
+      backendRefs:
+        - name: dicom
+          port: 8042
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dicom-nginx-gw-cluster-local-http
+  namespace: dicom
+spec:
+  parentRefs:
+    - name: nginx-cluster-local
+      namespace: nginx-gw
+      sectionName: http
+  hostnames:
+    - k2s.cluster.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /dicom
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            add:
+              - name: X-Forwarded-Proto
+                value: http
+              - name: X-Forwarded-Host
+                value: k2s.cluster.local
+              - name: Access-Control-Allow-Origin
+                value: "*"
+      backendRefs:
+        - name: dicom
+          port: 8042
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: dicom-to-nginx-gw
+  namespace: nginx-gw
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: dicom
+  to:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: nginx-cluster-local
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: dicom-to-security-oauth2-proxy
+  namespace: security
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: dicom
+  to:
+    - group: ""
+      kind: Service
+      name: oauth2-proxy
+---
+#
+# NGINX Gateway API Ingress with Linkerd Authorization
+# =====================================================
+# Gateway API (nginx-gw) requires explicit Linkerd ServerAuthorization because
+# Linkerd doesn't automatically trust Gateway API traffic routing, unlike traditional Ingress.
+#
+# Traffic Flow:
+#   External Client → nginx-gw-controller (port 443) → dicom service (port 8042)
+#
+# Security Model:
+# - Layer 1: skip-inbound-ports allows external clients → nginx-gw (unauthenticated)
+# - Layer 2: ServerAuthorization allows both mesh members AND unauthenticated clients
+#
+# Result: DICOM service is accessible from outside the mesh (browsers, medical imaging clients)
+# as well as from within the mesh. This matches the behavior of traditional nginx/traefik Ingress.
+
+apiVersion: policy.linkerd.io/v1beta3
+kind: Server
+metadata:
+  name: dicom
+  namespace: dicom
+spec:
+  podSelector:
+    matchLabels:
+      app: orthanc
+  port: 8042
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: dicom-allow-all
+  namespace: dicom
+spec:
+  server:
+    name: dicom
+  # Allow unauthenticated access to match nginx/traefik behavior.
+  # DICOM server handles its own authentication if configured.
+  client:
+    unauthenticated: true

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+- ..\monitoring\prometheus
+- ..\monitoring\prometheus-operator
+- ..\monitoring\kube-state-metrics
+- ..\monitoring\prometheus-node-exporter
+- ..\monitoring\exporters
+- ..\monitoring\alertmanager

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -170,3 +171,28 @@ func TestAddPlacementMetadataPersistsOwnerOptions(t *testing.T) {
 }
 
 func ptr(value string) *string { return &value }
+
+func TestCreateZipFileRestrictsPermissionsOfExistingFile(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "backup.zip")
+	if err := os.WriteFile(zipPath, []byte("stale content"), 0o644); err != nil {
+		t.Fatalf("failed to prepare zip file: %v", err)
+	}
+
+	_, _, cleanup, err := createZipFile(zipPath)
+	if err != nil {
+		t.Fatalf("createZipFile() failed: %v", err)
+	}
+	cleanup()
+
+	info, err := os.Stat(zipPath)
+	if err != nil {
+		t.Fatalf("failed to stat zip file: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected mode 0600, got %v", info.Mode().Perm())
+	}
+	data, _ := os.ReadFile(zipPath)
+	if string(data) == "stale content" {
+		t.Fatal("expected existing content to be truncated")
+	}
+}

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Source: opensearch-dashboards/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/instance: opensearch-dashboards
+  name: opensearch-dashboards-dashboards-rolebinding
+  namespace: logging
+roleRef:
+  kind: Role
+  name: opensearch-dashboards-dashboards
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: opensearch-dashboards-dashboards
+  namespace: logging

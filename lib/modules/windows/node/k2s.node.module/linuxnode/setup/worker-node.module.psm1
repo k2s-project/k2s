@@ -469,10 +469,10 @@ function Start-LinuxWorkerNode {
         [switch] $ObtainCIDR = $false
     )
 
-    # Ensure KubeSwitch network profile is Private (Windows can reset it to Public)
+    # Ensure KubeSwitch is hidden (Windows can reset a Public profile), Private as fallback
     $switchName = Get-ControlPlaneNodeDefaultSwitchName
     $switchAlias = "vEthernet ($switchName)"
-    Set-InterfacePrivate -InterfaceAlias $switchAlias
+    Set-K2sInterfaceHiddenOrPrivate -InterfaceAlias $switchAlias
 
     # For bare-metal (HOST) nodes, restore routes on the Linux side so kubelet can reach the API server
     $nodeConfig = Get-NodeConfig -NodeName $NodeName

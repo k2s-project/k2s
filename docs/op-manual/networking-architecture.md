@@ -5,6 +5,27 @@ SPDX-License-Identifier: Apache-2.0
 
 # Networking Architecture for *K2s*
 
+## Hidden virtual network interfaces
+
+*K2s* hides the virtual network interfaces it creates on the Windows host: `vEthernet (KubeSwitch)`,
+`vEthernet (cbr0_ep)` and `vEthernet (Loopbackk2s)`. Hidden interfaces are not assigned a Windows network
+location (Public/Private/Domain), so firewall and security policies that are bound to network profiles are not
+affected by the *K2s* cluster network.
+
+The interfaces are hidden with the Windows command `netsh nlm set hidden`, which is available on newer Windows
+versions only. *K2s* checks if the command exists. If it does not, or if hiding fails, *K2s* behaves as before and
+sets the network profile of the interfaces to `Private`.
+
+Hidden interfaces are not listed by `Get-NetAdapter` unless `-IncludeHidden` is specified:
+
+```powershell
+Get-NetAdapter -IncludeHidden | Where-Object Name -like 'vEthernet (*'
+netsh nlm set hidden alias "vEthernet (KubeSwitch)" action unhide category private
+```
+
+The second command reverts the hiding of an interface. The interfaces are hidden again on the next `k2s start`.
+The diagnostics created by `k2s system dump` include the hidden adapters.
+
 ## Hyper-V control-plane startup
 
 When `k2s start` recreates KubeSwitch, the virtual adapter can appear before

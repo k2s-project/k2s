@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Linux-host counterpart of ci-windows-cluster.yml for the experimental Linux host variant
+# Linux-host counterpart of ci-e2e-windows-cluster.yml for the experimental Linux host variant
 # (the "reverted setup": control plane runs natively on the host, amd64, Linux-only).
 #
 # Mirrors ci/tests/40-test-linuxonly.yaml from k2s-support: install with --linux-only, then run
@@ -18,7 +18,7 @@
 # Addon tests are not available on this variant yet. The addon input is kept for parity with the
 # Windows workflow; any value other than "none" fails the run before anything is provisioned.
 
-name: CI - Linux Cluster
+name: CI - E2E Linux Cluster
 
 # Never run untrusted pull-request code on an elevated self-hosted runner.
 on:
@@ -118,7 +118,7 @@ jobs:
           fi
           next=$((KVM_ATTEMPT + 1))
           echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
-          gh workflow run ci-linux-cluster.yml --ref "$GITHUB_REF_NAME" \
+          gh workflow run ci-e2e-linux-cluster.yml --ref "$GITHUB_REF_NAME" \
             -f addon="$K2S_ADDON_SELECTION" -f kvm_attempt="$next"
           echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"
 

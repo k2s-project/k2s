@@ -192,7 +192,7 @@ change network state. Evidence appears under `NODE-NET DIAG` in test output.
 
 ## Windows Cluster GitHub Actions Workflow
 
-The **CI - Windows Cluster** workflow (`.github/workflows/ci-windows-cluster.yml`)
+The **CI - E2E Windows Cluster** workflow (`.github/workflows/ci-e2e-windows-cluster.yml`)
 builds all ten Windows executables, runs `k2s install`, verifies that both the
 Linux control plane and Windows worker are Ready, and runs the existing
 `test/e2e/cluster/core` acceptance suite. The suite deploys Linux and Windows
@@ -314,7 +314,7 @@ The runner's `.env`, JIT config and diagnostic credentials must remain outside
 
 Create the `k2s-windows-e2e` GitHub environment with required reviewers and
 deployment branch restrictions, and restrict the runner group to trusted
-repositories/workflows. Under **Actions > CI - Windows Cluster > Run workflow**,
+repositories/workflows. Under **Actions > CI - E2E Windows Cluster > Run workflow**,
 select a reviewed branch. To test a PR, dispatch its reviewed head branch
 within this repository; do not execute untrusted fork code on this runner.
 There are deliberately no `pull_request` or `pull_request_target` triggers.

@@ -23,6 +23,13 @@ on:
         description: "Include NVIDIA Container Toolkit packages"
         type: boolean
         default: true
+  # Called by ci-linux-cluster-node-arm64.yml, which consumes the package artifact of the same run.
+  workflow_call:
+    inputs:
+      include_gpu:
+        description: "Include NVIDIA Container Toolkit packages"
+        type: boolean
+        default: true
 
 env:
   GOVERSION: "1.27.4"
@@ -84,7 +91,8 @@ jobs:
       - name: Determine package version for naming
         id: version
         run: |
-          version="$(git describe --tags --always)"
+          # Product version from the VERSION file, as in the amd64 package name (k2s-<version>-node-...).
+          version="$(tr -d '\r\n[:space:]' < VERSION)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build the arm64 node package
@@ -98,11 +106,11 @@ jobs:
           sudo install -m 755 /tmp/k2s-cli "$GITHUB_WORKSPACE/k2s"
           sudo "$GITHUB_WORKSPACE/k2s" system package --node-package --os debian13 --arch arm64 $gpu_flag \
             --target-dir "$NODE_PACKAGE_ROOT/out" \
-            --name "k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+            --name "k2s-${{ steps.version.outputs.version }}-node-debian13-arm64.zip"
 
       - name: Verify package contents
         run: |
-          zip_path="$NODE_PACKAGE_ROOT/out/k2s-${{ steps.version.outputs.version }}-packages-debian13-arm64.zip"
+          zip_path="$NODE_PACKAGE_ROOT/out/k2s-${{ steps.version.outputs.version }}-node-debian13-arm64.zip"
           mkdir -p "$NODE_PACKAGE_ROOT/extract"
           unzip -q "$zip_path" -d "$NODE_PACKAGE_ROOT/extract"
           find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | while read -r deb; do

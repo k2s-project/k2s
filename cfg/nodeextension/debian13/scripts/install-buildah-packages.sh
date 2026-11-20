@@ -33,12 +33,76 @@ wait_for_dpkg_lock() {
 
 wait_for_dpkg_lock
 
+# Links packages with an absent or incompatible installed version into a new directory and prints
+# that directory. Buildah/runtime packages use the bundled version exactly; other packages are
+# retained when their installed version is at least as new as the bundled dependency version.
+stage_missing_debs() {
+    local source_dir="$1" target_dir deb package package_version installed_status installed_version
+    local nftables_deb='' libnftables_deb='' reconcile_nftables=false
+    target_dir="$(mktemp -d)"
+
+    for deb in "$source_dir"/*.deb; do
+        [ -e "$deb" ] || continue
+        case "$(dpkg-deb -f "$deb" Package)" in
+            nftables) nftables_deb="$deb" ;;
+            libnftables1) libnftables_deb="$deb" ;;
+        esac
+    done
+    if [[ -n "$nftables_deb" && -n "$libnftables_deb" ]]; then
+        for deb in "$nftables_deb" "$libnftables_deb"; do
+            package="$(dpkg-deb -f "$deb" Package)"
+            package_version="$(dpkg-deb -f "$deb" Version)"
+            installed_status="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
+            installed_version=''
+            if [[ "$installed_status" == 'install ok installed' ]]; then
+                installed_version="$(dpkg-query -W -f='${Version}' "$package")"
+            fi
+            [[ "$installed_version" == "$package_version" ]] || reconcile_nftables=true
+        done
+    fi
+
+    for deb in "$source_dir"/*.deb; do
+        [ -e "$deb" ] || continue
+        package="$(dpkg-deb -f "$deb" Package)"
+        package_version="$(dpkg-deb -f "$deb" Version)"
+        installed_status="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
+        if [[ "$installed_status" == 'install ok installed' ]]; then
+            installed_version="$(dpkg-query -W -f='${Version}' "$package")"
+            case "$package" in
+                buildah|crun|netavark|aardvark-dns|nftables)
+                    [[ "$installed_version" == "$package_version" ]] && continue
+                    ;;
+                libnftables1)
+                    if [[ -n "$nftables_deb" && -n "$libnftables_deb" ]]; then
+                        [[ "$reconcile_nftables" == false ]] && continue
+                    else
+                        [[ "$installed_version" == "$package_version" ]] && continue
+                    fi
+                    ;;
+                *)
+                    dpkg --compare-versions "$installed_version" ge "$package_version" && continue
+                    ;;
+            esac
+        elif [[ "$package" == nftables || "$package" == libnftables1 ]]; then
+            if [[ -n "$nftables_deb" && -n "$libnftables_deb" ]]; then
+                [[ "$reconcile_nftables" == false ]] && continue
+            fi
+        fi
+        deb="$(realpath "$deb")"
+        ln -s "$deb" "$target_dir/"
+    done
+    echo "$target_dir"
+}
+
+BUILDAH_MISSING_DEBS_PATH="$(stage_missing_debs "$BUILDAH_DEB_PACKAGES_PATH")"
+echo "[BuildahInstall] Packages not yet installed on this node: $(ls "$BUILDAH_MISSING_DEBS_PATH" | wc -l)"
+
 # Multi-pass dpkg: alphabetical glob order can place a package before its deps
 # are configured. Three passes let each iteration configure more packages.
 # --no-remove prevents apt --fix-broken from evicting buildah.
 for pass in 1 2 3; do
     echo "[BuildahInstall] dpkg install pass $pass"
-    sudo DEBIAN_FRONTEND=noninteractive dpkg --force-confnew -i "$BUILDAH_DEB_PACKAGES_PATH"/*.deb 2>&1 || true
+    sudo DEBIAN_FRONTEND=noninteractive dpkg --force-confnew -i "$BUILDAH_MISSING_DEBS_PATH"/*.deb 2>&1 || true
 done
 
 sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y --no-remove 2>&1 || true

@@ -9,13 +9,18 @@
 # Defaults (VM_NET_MODE=user): the amd64 guest of ci-linux-cluster.yml, KVM, user-mode NAT,
 # SSH forwarded to 127.0.0.1.
 #
-# VM_NET_MODE=bridge: the guest is one NIC on a bridge, with a static address on one subnet. The runner
-# is the gateway (VM_BRIDGE_GATEWAY=yes: routes and NATs), so several guests on one runner share a subnet
-# and K2s sees one default route and one address per node.
+# VM_NET_MODE=bridge: the guest is one NIC on a bridge, with a static address on one subnet.
+# ci-linux-cluster-node-arm64.yml uses it on two GitHub runners that form one L2 segment:
+#   control-plane runner  bridge with the gateway 10.10.0.1 (VM_BRIDGE_GATEWAY=yes): routes and NATs
+#   worker runner         bridge with 10.10.0.2 (VM_BRIDGE_GATEWAY=no)
+#   both runners          VXLAN device (VM_OVERLAY_PEER=<other runner's address>) joins the bridges
+#                         over the private network that Tailscale provides on the runners
+# So the worker sits in the control plane's subnet, and K2s sees one default route and one address
+# per node, which the API server advertisement and the pod network rely on.
 #
 # Subcommands:
 #   prepare     install QEMU tools, fetch the Debian cloud image, create overlay + cloud-init seed
-#   start       create the bridge and tap devices if needed, boot the guest in the background
+#   start       create the bridge, overlay and tap devices if needed, boot the guest in the background
 #   wait-ssh    block until the guest accepts SSH
 #   exec        read a bash script from stdin and run it in the guest (as $VM_USER, sudo available)
 #   push        copy a local file/dir to the guest:  push <local> <remote>
@@ -41,6 +46,10 @@ VM_BRIDGE_ADDR="${VM_BRIDGE_ADDR:-10.10.0.1/24}"
 VM_BRIDGE_SUBNET="${VM_BRIDGE_SUBNET:-10.10.0.0/24}"
 VM_BRIDGE_GATEWAY="${VM_BRIDGE_GATEWAY:-yes}"
 VM_TAP="${VM_TAP:-}"
+VM_OVERLAY_DEV="${VM_OVERLAY_DEV:-k2s-vx0}"
+VM_OVERLAY_ID="${VM_OVERLAY_ID:-42}"
+VM_OVERLAY_LOCAL="${VM_OVERLAY_LOCAL:-}"
+VM_OVERLAY_PEER="${VM_OVERLAY_PEER:-}"
 
 case "$VM_ARCH" in
   amd64|arm64) ;;
@@ -182,6 +191,17 @@ network_up() {
   # The runner's FORWARD policy may drop traffic it does not know about, so accept the bridge explicitly.
   sudo iptables -C FORWARD -i "$VM_BRIDGE" -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -i "$VM_BRIDGE" -j ACCEPT
   sudo iptables -C FORWARD -o "$VM_BRIDGE" -j ACCEPT 2>/dev/null || sudo iptables -I FORWARD -o "$VM_BRIDGE" -j ACCEPT
+
+  if [[ -n "$VM_OVERLAY_PEER" ]]; then
+    [[ -n "$VM_OVERLAY_LOCAL" ]] || die "VM_OVERLAY_PEER needs VM_OVERLAY_LOCAL (this runner's address)."
+    if ! ip link show "$VM_OVERLAY_DEV" >/dev/null 2>&1; then
+      sudo ip link add "$VM_OVERLAY_DEV" type vxlan id "$VM_OVERLAY_ID" dstport 4789 \
+        local "$VM_OVERLAY_LOCAL" nolearning
+      # Unknown and broadcast frames go to the peer runner, which is all a two-runner segment needs.
+      sudo bridge fdb append 00:00:00:00:00:00 dev "$VM_OVERLAY_DEV" dst "$VM_OVERLAY_PEER"
+    fi
+    sudo ip link set "$VM_OVERLAY_DEV" mtu "$VM_NET_MTU" master "$VM_BRIDGE" up
+  fi
 
   if ! ip link show "$VM_TAP" >/dev/null 2>&1; then
     sudo ip tuntap add dev "$VM_TAP" mode tap user "$(id -un)"

@@ -23,7 +23,7 @@ on:
         description: "Include NVIDIA Container Toolkit packages"
         type: boolean
         default: true
-  # Lets other workflows reuse this build and its 'debian13-arm64-node-package' artifact.
+  # Allows other workflows to reuse this build and its 'debian13-arm64-node-package' artifact.
   workflow_call:
     inputs:
       include_gpu:

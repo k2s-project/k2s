@@ -350,9 +350,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/flannel-io/cni-plugin/releases/download/v1.9.1-flannel3/flannel-amd64.exe",
+      "group": "https://github.com/flannel-io/cni-plugin/releases/download/v1.10.0-flannel1/flannel-amd64.exe",
       "name": "flannel",
-      "version": "v1.9.1-flannel3",
+      "version": "v1.10.0-flannel1",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -369,7 +369,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/flannel-io/cni-plugin@v1.9.1-flannel3",
+      "purl": "pkg:github/flannel-io/cni-plugin@v1.10.0-flannel1",
       "type": "application"
     },
     {

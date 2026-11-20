@@ -168,7 +168,9 @@ nodeRegistration:
 EOF
 )" || return 1
   k2s_log INFO "Joining $K2S_NODE_IP to the cluster."
-  k2s_node_ssh "config=\$(mktemp) && sudo tee \"\$config\" >/dev/null && sudo kubeadm join --config=\"\$config\"; result=\$?; rm -f \"\$config\"; exit \"\$result\"" <<< "$join_config" \
+  # The kubelet drop-in directory must exist before the join (the Windows path creates it the same way).
+  # The config file is created by root: a file made by the SSH user in /tmp cannot be written by sudo tee.
+  k2s_node_ssh "sudo mkdir -p /etc/kubernetes/kubelet.conf.d && config=\$(sudo mktemp) && sudo tee \"\$config\" >/dev/null && sudo kubeadm join --config=\"\$config\"; result=\$?; sudo rm -f \"\$config\"; exit \"\$result\"" <<< "$join_config" \
     || { k2s_log ERROR "kubeadm join failed on $K2S_NODE_IP."; return 1; }
 }
 

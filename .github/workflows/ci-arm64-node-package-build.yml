@@ -23,7 +23,7 @@ on:
         description: "Include NVIDIA Container Toolkit packages"
         type: boolean
         default: true
-  # Called by ci-linux-cluster-node-arm64.yml, which consumes the package artifact of the same run.
+  # Lets other workflows reuse this build and its 'debian13-arm64-node-package' artifact.
   workflow_call:
     inputs:
       include_gpu:

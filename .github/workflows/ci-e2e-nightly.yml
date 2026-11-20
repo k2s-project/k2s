@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Nightly run of the ci-e2e-* workflows, each one repeated three times to expose flaky results.
+#
+# - The three workflows run in parallel with each other. The repetitions of one workflow run one after
+#   another (max-parallel: 1): the Windows workflow takes one runner VM from the K2s CI cluster, and its
+#   concurrency group keeps only one pending run, so parallel repetitions would be cancelled.
+# - A failed repetition does not stop the following ones (fail-fast: false).
+# - Core suite only (addon=none) on all variants.
+# - A Linux runner without /dev/kvm fails the repetition (NO_KVM) instead of re-dispatching it; see the
+#   'nightly' input of the called workflows.
+#
+# The morning e-mail of the K2s CI (k2s-support, ci/email) reads this workflow's jobs through the GitHub API
+# and reports the results per workflow. It parses the job names 'Windows (run N) / ...', 'Linux (run N) / ...'
+# and 'Linux arm64 node (run N) / ...'. Keep these names in sync with ci/email/send-failed-workflow-email.ps1
+# in k2s-support.
+#
+# Scheduled workflows only run from the default branch. GitHub cron has no time zone: 22:00 UTC is
+# 23:00 CET in winter and 00:00 CEST in summer.
+
+name: CI - E2E Nightly
+
+run-name: CI - E2E Nightly (${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }})
+
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'Repetitions per workflow. The nightly schedule always uses 3.'
+        type: choice
+        required: true
+        default: '3'
+        options:
+          - '1'
+          - '2'
+          - '3'
+      workflows:
+        description: 'Which workflows to run. The nightly schedule always runs all.'
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - windows
+          - linux
+          - arm64
+      windows_timeout_minutes:
+        description: 'Timeout of one Windows repetition. Three sequential repetitions must fit between the start and the morning e-mail.'
+        type: number
+        required: true
+        default: 180
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k2s-nightly-e2e
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows (run ${{ matrix.run }})
+    if: ${{ inputs.workflows == '' || inputs.workflows == 'all' || inputs.workflows == 'windows' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        run: ${{ fromJSON(inputs.repeats == '1' && '[1]' || inputs.repeats == '2' && '[1,2]' || '[1,2,3]') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-e2e-windows-cluster.yml
+    with:
+      addon: none
+      timeout_minutes: ${{ inputs.windows_timeout_minutes || 180 }}
+
+  linux:
+    name: Linux (run ${{ matrix.run }})
+    if: ${{ inputs.workflows == '' || inputs.workflows == 'all' || inputs.workflows == 'linux' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        run: ${{ fromJSON(inputs.repeats == '1' && '[1]' || inputs.repeats == '2' && '[1,2]' || '[1,2,3]') }}
+    permissions:
+      contents: read
+      actions: write # requested by the called workflow (re-dispatch in non-nightly mode); not used here
+    uses: ./.github/workflows/ci-e2e-linux-cluster.yml
+    with:
+      addon: none
+      nightly: true
+
+  arm64:
+    name: Linux arm64 node (run ${{ matrix.run }})
+    if: ${{ inputs.workflows == '' || inputs.workflows == 'all' || inputs.workflows == 'arm64' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        run: ${{ fromJSON(inputs.repeats == '1' && '[1]' || inputs.repeats == '2' && '[1,2]' || '[1,2,3]') }}
+    permissions:
+      contents: read
+      actions: write # requested by the called workflow (re-dispatch in non-nightly mode); not used here
+    uses: ./.github/workflows/ci-e2e-linux-cluster-node-arm64.yml
+    with:
+      nightly: true

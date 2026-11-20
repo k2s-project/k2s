@@ -318,7 +318,11 @@ spec:
             - matchFields:
               - key: metadata.name
                 operator: In
-                values: ["%s", "%s"]
+                values: ["%s"]
+            - matchFields:
+              - key: metadata.name
+                operator: In
+                values: ["%s"]
       topologySpreadConstraints:
       - maxSkew: 1
         topologyKey: kubernetes.io/hostname

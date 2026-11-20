@@ -5,7 +5,7 @@
 #
 # - Job 'arm64-node-package' builds the arm64 node package (ci-arm64-node-package-build.yml, native arm64).
 # - Job 'install-add-and-check' (ubuntu-24.04, amd64) runs two Debian 13 guests on the runner:
-#     control plane: amd64, KVM, 4 GB RAM. K2s is installed with --linux-only (same setup as ci-linux-cluster.yml).
+#     control plane: amd64, KVM, 4 GB RAM. K2s is installed with --linux-only (same setup as ci-e2e-linux-cluster.yml).
 #     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add' joins it.
 #   Both guests share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24.
 # - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64, flannel and kube-proxy run on it,
@@ -13,7 +13,7 @@
 #
 # The arm64 package is built without GPU packages: the worker has no GPU and the test does not need them.
 
-name: CI - Linux Cluster with arm64 Node
+name: CI - E2E Linux Cluster with arm64 Node
 
 on:
   workflow_dispatch:
@@ -83,7 +83,7 @@ jobs:
           fi
           next=$((KVM_ATTEMPT + 1))
           echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
-          gh workflow run ci-linux-cluster-node-arm64.yml --ref "$GITHUB_REF_NAME" -f kvm_attempt="$next"
+          gh workflow run ci-e2e-linux-cluster-node-arm64.yml --ref "$GITHUB_REF_NAME" -f kvm_attempt="$next"
           echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout

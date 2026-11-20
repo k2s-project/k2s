@@ -6,7 +6,7 @@
 # refuses any host that is not Debian 13 (lib/modules/linux/cluster/lifecycle.sh), and
 # GitHub-hosted runners do not offer a Debian host image, so the runner boots a Debian guest.
 #
-# Defaults (VM_NET_MODE=user): the amd64 guest of ci-linux-cluster.yml, KVM, user-mode NAT,
+# Defaults (VM_NET_MODE=user): the amd64 guest of ci-e2e-linux-cluster.yml, KVM, user-mode NAT,
 # SSH forwarded to 127.0.0.1.
 #
 # VM_NET_MODE=bridge: the guest is one NIC on a bridge, with a static address on one subnet. The runner

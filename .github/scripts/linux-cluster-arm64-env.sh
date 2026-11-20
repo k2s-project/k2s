@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Sourced by the steps of ci-linux-cluster-node-arm64.yml. Both guests run on the same GitHub-hosted runner
+# Sourced by the steps of ci-e2e-linux-cluster-node-arm64.yml. Both guests run on the same GitHub-hosted runner
 # and share its bridge, so they are on one subnet with the runner as gateway:
 #   cp_vm  control plane: Debian 13 amd64 guest with KVM, runs K2s (linux-only install); 4 GB RAM
 #   wk_vm  worker:        Debian 13 arm64 guest under QEMU TCG (no KVM); 2 GB RAM; joined with 'k2s node add'

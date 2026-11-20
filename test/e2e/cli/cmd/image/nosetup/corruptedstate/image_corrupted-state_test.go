@@ -54,7 +54,7 @@ var _ = Describe("image", Ordered, func() {
 
 		currentDir, err := kos.ExecutableDir()
 		Expect(err).ToNot(HaveOccurred())
-		installDir := filepath.Join(currentDir, "..\\..\\..\\..\\..\\..\\..\\..")
+		installDir := filepath.Join(currentDir, "..", "..", "..", "..", "..", "..", "..", "..")
 
 		GinkgoWriter.Println("Current test dir: <", currentDir, ">, install dir: <", installDir, ">")
 

@@ -6,16 +6,22 @@
 package provider
 
 import (
+	"bytes"
+	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,14 +34,24 @@ import (
 )
 
 const (
-	winVMIP = "172.19.1.101"
-	sshUser = "remote"
+	defaultLinuxRegistriesDir = "/etc/containers/registries.conf.d"
+	defaultContainersAuthFile = "/root/.config/containers/auth.json"
 )
 
 type linuxImageProvider struct {
 	installDir string
 	configDir  string
 	stdWriter  output.StreamWriter
+	winWorker  *winWorkerClient
+
+	// Optional hooks for unit testing; nil uses production defaults.
+	localRunner     cmdRunner
+	runScriptFn     func(script string, showOutput bool, args ...string) error
+	linuxImagesFn   func(nodeName string) ([]ContainerImage, error)
+	httpClient      *http.Client
+	registriesDir   string
+	authFilePath    string
+	clusterActiveFn func(ctx context.Context) bool
 }
 
 func newLinuxImageProvider(cfg ProviderConfig) *linuxImageProvider {
@@ -43,69 +59,155 @@ func newLinuxImageProvider(cfg ProviderConfig) *linuxImageProvider {
 		installDir: cfg.InstallDir,
 		configDir:  cfg.ConfigDir,
 		stdWriter:  cfg.StdWriter,
+		winWorker:  newWinWorkerClient(cfg.InstallDir, cfg.ConfigDir, cfg.StdWriter),
+	}
+}
+
+func (p *linuxImageProvider) worker() *winWorkerClient {
+	if p.winWorker == nil {
+		p.winWorker = newWinWorkerClient(p.installDir, p.configDir, p.stdWriter)
+	}
+	return p.winWorker
+}
+
+func (p *linuxImageProvider) effectiveLocalRunner() cmdRunner {
+	if p.localRunner != nil {
+		return p.localRunner
+	}
+	return &execCmdRunner{}
+}
+
+func (p *linuxImageProvider) effectiveHTTPClient(timeout time.Duration) *http.Client {
+	if p.httpClient != nil {
+		return p.httpClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		Timeout: timeout,
+	}
+}
+
+func (p *linuxImageProvider) effectiveRegistriesDir() string {
+	if p.registriesDir != "" {
+		return p.registriesDir
+	}
+	return defaultLinuxRegistriesDir
+}
+
+func (p *linuxImageProvider) effectiveAuthFilePath() string {
+	if p.authFilePath != "" {
+		return p.authFilePath
+	}
+	return defaultContainersAuthFile
+}
+
+type capturingStreamWriter struct {
+	delegate output.StreamWriter
+	buf      bytes.Buffer
+}
+
+func (w *capturingStreamWriter) WriteStdOut(message string) {
+	w.buf.WriteString(message)
+	w.buf.WriteByte('\n')
+	if w.delegate != nil {
+		w.delegate.WriteStdOut(message)
+	}
+}
+
+func (w *capturingStreamWriter) WriteStdErr(message string) {
+	w.buf.WriteString(message)
+	w.buf.WriteByte('\n')
+	if w.delegate != nil {
+		w.delegate.WriteStdErr(message)
+	}
+}
+
+func (w *capturingStreamWriter) Flush() {
+	if w.delegate != nil {
+		w.delegate.Flush()
 	}
 }
 
 func (p *linuxImageProvider) runScript(script string, showOutput bool, args ...string) error {
-	return bash.NewScript(script).
+	if p.runScriptFn != nil {
+		return p.runScriptFn(script, showOutput, args...)
+	}
+	capture := &capturingStreamWriter{delegate: p.stdWriter}
+	err := bash.NewScript(script).
 		WithArgs(args...).
 		WithShowLogs(showOutput).
-		WithStdWriter(p.stdWriter).
+		WithStdWriter(capture).
 		Exec()
+	if err != nil {
+		out := strings.TrimSpace(capture.buf.String())
+		if out != "" {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return err
+	}
+	return nil
+}
+
+func (p *linuxImageProvider) runLocalCmd(ctx context.Context, showOutput bool, name string, args ...string) (string, error) {
+	var stdoutBuf, stderrBuf bytes.Buffer
+	var stdoutW io.Writer = &stdoutBuf
+	var stderrW io.Writer = &stderrBuf
+	if showOutput {
+		stdoutW = io.MultiWriter(&stdoutBuf, os.Stdout)
+		stderrW = io.MultiWriter(&stderrBuf, os.Stderr)
+	}
+	err := p.effectiveLocalRunner().Run(ctx, name, args, stdoutW, stderrW)
+	out := strings.TrimSpace(stdoutBuf.String())
+	if err != nil {
+		errOut := strings.TrimSpace(stderrBuf.String())
+		if errOut != "" {
+			return out, fmt.Errorf("%s failed: %w: %s", name, err, errOut)
+		}
+		if out != "" {
+			return out, fmt.Errorf("%s failed: %w: %s", name, err, out)
+		}
+		return out, fmt.Errorf("%s failed: %w", name, err)
+	}
+	return out, nil
 }
 
 func (p *linuxImageProvider) scriptPath(script string) string {
 	return filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "image", script)
 }
 
-// sshCmd executes a command on the Windows VM via SSH.
-// Uses cmd.Output() intentionally so only stdout is captured on success;
-// callers (e.g. crictl images -o json) require clean stdout without SSH banners or warnings.
-// On failure, stderr from ExitError is captured and returned in the error message.
-func sshCmd(command string) (string, error) {
-	cmd := exec.Command("ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=10",
-		fmt.Sprintf("%s@%s", sshUser, winVMIP),
-		command,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(exitErr.Stderr))
-		}
-		return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(out))
-	}
-	return string(out), nil
-}
-
 func (p *linuxImageProvider) List(cfg ImageListConfig) (*ImageListResult, error) {
-	slog.Debug("[Image] Listing images (Linux)")
+	ctx := context.Background()
+	slog.Debug("[Image] Listing images (Linux)", "nodes", cfg.Nodes, "includeK8s", cfg.IncludeK8sImages)
+
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return nil, err
+	}
+
+	explicitNodes := strings.TrimSpace(cfg.Nodes) != ""
+	baseline := p.loadK8sBaselineImages()
 	result := &ImageListResult{}
 
-	// List images on the local Linux node via buildah or crictl
-	linuxImages, err := listLinuxImages()
-	if err != nil {
-		slog.Warn("[Image] Could not list Linux node images", "error", err)
-	} else {
-		for _, img := range linuxImages {
-			if !cfg.IncludeK8sImages && isK8sImage(img.Repository) {
-				continue
-			}
-			result.ContainerImages = append(result.ContainerImages, img)
-		}
-	}
+	var linuxErr, winErr error
+	var succeededCount int
 
-	// List images on the Windows VM via SSH + crictl if not LinuxOnly
-	if !p.isLinuxOnly() {
-		winImages, err := listWindowsVMImages()
+	if target.IncludeLinux {
+		linuxImages, err := p.getLinuxImages(target.LinuxNodeName)
 		if err != nil {
-			slog.Debug("[Image] Could not list Windows VM images (VM may be offline)", "error", err)
+			linuxErr = fmt.Errorf("listing Linux node images: %w", err)
+			if explicitNodes {
+				return nil, linuxErr
+			}
+			slog.Warn("[Image] Could not list Linux node images", "error", err)
 		} else {
-			for _, img := range winImages {
-				if !cfg.IncludeK8sImages && isK8sImage(img.Repository) {
+			succeededCount++
+			for _, img := range linuxImages {
+				if img.Node == "" {
+					img.Node = target.LinuxNodeName
+				}
+				if !cfg.IncludeK8sImages && isK8sBaselineImage(img.Repository, img.Tag, baseline) {
 					continue
 				}
 				result.ContainerImages = append(result.ContainerImages, img)
@@ -113,31 +215,80 @@ func (p *linuxImageProvider) List(cfg ImageListConfig) (*ImageListResult, error)
 		}
 	}
 
+	if target.IncludeWindows {
+		winImages, err := p.listWindowsImages(ctx, target.WindowsNodeName)
+		if err != nil {
+			winErr = fmt.Errorf("listing Windows worker images: %w", err)
+			if explicitNodes {
+				return nil, winErr
+			}
+			slog.Warn("[Image] Could not list Windows worker images", "error", err)
+		} else {
+			succeededCount++
+			for _, img := range winImages {
+				if img.Node == "" {
+					img.Node = target.WindowsNodeName
+				}
+				if !cfg.IncludeK8sImages && (isK8sBaselineImage(img.Repository, img.Tag, baseline) || isWindowsPauseImage(img.Repository)) {
+					continue
+				}
+				result.ContainerImages = append(result.ContainerImages, img)
+			}
+		}
+	}
+
+	if succeededCount == 0 && (linuxErr != nil || winErr != nil) {
+		return nil, errors.Join(linuxErr, winErr)
+	}
+
+	registryName, pushed := p.queryLocalRegistry(ctx, target.LinuxNodeName)
+	if registryName != "" {
+		result.ContainerRegistry = registryName
+		result.PushedImages = pushed
+	}
+
 	return result, nil
 }
 
 func (p *linuxImageProvider) Pull(cfg ImagePullConfig) error {
-	if cfg.Windows {
-		if p.isLinuxOnly() {
-			return fmt.Errorf("pulling Windows container images is not supported on Linux hosts (Windows container images can only be used on Windows worker nodes)")
-		}
-		slog.Info("[Image] Pulling image on Windows VM", "image", cfg.ImageName)
-		_, err := sshCmd(fmt.Sprintf("crictl pull %s", cfg.ImageName))
+	ctx := context.Background()
+	requestedNodes := splitNodeSelector(cfg.Nodes)
+	target, err := p.worker().resolveNodeTarget(ctx, requestedNodes, cfg.Windows, false)
+	if err != nil {
 		return err
 	}
-	slog.Info("[Image] Pulling image on Linux node", "image", cfg.ImageName)
 
+	var linuxErr error
+	if target.IncludeLinux {
+		slog.Info("[Image] Pulling image on Linux node", "image", cfg.ImageName)
+		linuxErr = p.pullLinuxImage(ctx, cfg)
+		if linuxErr != nil {
+			// Auto-fallback to Windows worker on OS/platform mismatch when no explicit node or --windows was requested.
+			if len(requestedNodes) == 0 && !cfg.Windows && !p.worker().isLinuxOnly() && isPlatformMismatchError(linuxErr) {
+				slog.Info("[Image] Linux pull failed with platform mismatch; falling back to Windows worker", "image", cfg.ImageName, "error", linuxErr)
+				return p.pullWindowsImage(ctx, cfg.ImageName, cfg.ShowOutput)
+			}
+			return linuxErr
+		}
+	}
+
+	if target.IncludeWindows {
+		slog.Info("[Image] Pulling image on Windows worker", "image", cfg.ImageName)
+		if err := p.pullWindowsImage(ctx, cfg.ImageName, cfg.ShowOutput); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *linuxImageProvider) pullLinuxImage(ctx context.Context, cfg ImagePullConfig) error {
 	script := p.scriptPath("Pull-Image.sh")
 	if _, err := os.Stat(script); err == nil {
 		return p.runScript(script, cfg.ShowOutput, "-n", cfg.ImageName)
 	}
-
-	cmd := exec.Command("crictl", "pull", cfg.ImageName)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	return cmd.Run()
+	_, err := p.runLocalCmd(ctx, cfg.ShowOutput, "crictl", "pull", cfg.ImageName)
+	return err
 }
 
 func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
@@ -145,11 +296,48 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 		return p.removeFromRegistry(cfg)
 	}
 
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
+	}
+
+	runLinux := target.IncludeLinux
+	runWindows := target.IncludeWindows
+
+	if target.IncludeLinux && target.IncludeWindows {
+		onLinux, onWin, err := p.locateImageOnNodes(ctx, target, strings.TrimSpace(cfg.Nodes) != "", cfg.ImageId, cfg.ImageName)
+		if err != nil {
+			return err
+		}
+		if onLinux || onWin {
+			runLinux = onLinux
+			runWindows = onWin
+		} else {
+			return fmt.Errorf("image not found on cluster nodes (id=%q, name=%q)", cfg.ImageId, cfg.ImageName)
+		}
+	}
+
+	var errs []error
+	if runLinux {
+		if err := p.removeLinuxImage(ctx, cfg); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if runWindows {
+		if err := p.removeWindowsImage(ctx, cfg); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (p *linuxImageProvider) removeLinuxImage(ctx context.Context, cfg ImageRemoveConfig) error {
 	ref := cfg.ImageId
 	if ref == "" {
 		ref = cfg.ImageName
 	}
-	slog.Info("[Image] Removing image", "ref", ref)
+	slog.Info("[Image] Removing image on Linux node", "ref", ref)
 
 	script := p.scriptPath("Remove-Image.sh")
 	if _, err := os.Stat(script); err == nil {
@@ -172,12 +360,7 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 			args = append(args, "--force")
 		}
 		args = append(args, ref)
-		cmd := exec.Command("buildah", args...)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		if err := cmd.Run(); err == nil {
+		if _, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", args...); err == nil {
 			return nil
 		}
 		if !strings.HasPrefix(ref, "localhost/") {
@@ -186,12 +369,7 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 				retryArgs = append(retryArgs, "--force")
 			}
 			retryArgs = append(retryArgs, "localhost/"+ref)
-			retryCmd := exec.Command("buildah", retryArgs...)
-			if cfg.ShowOutput {
-				retryCmd.Stdout = os.Stdout
-				retryCmd.Stderr = os.Stderr
-			}
-			if err := retryCmd.Run(); err == nil {
+			if _, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", retryArgs...); err == nil {
 				return nil
 			}
 		}
@@ -203,42 +381,39 @@ func (p *linuxImageProvider) Remove(cfg ImageRemoveConfig) error {
 			selectors = append(selectors, "localhost/"+ref)
 		}
 		for _, sel := range selectors {
-			out, err := exec.Command("crictl", "ps", "-a", "-q", "--image", sel).Output()
+			out, err := p.runLocalCmd(ctx, false, "crictl", "ps", "-a", "-q", "--image", sel)
 			if err == nil {
-				for _, cid := range strings.Fields(string(out)) {
-					_ = exec.Command("crictl", "stop", cid).Run()
-					_ = exec.Command("crictl", "rm", cid).Run()
+				for _, cid := range strings.Fields(out) {
+					_, _ = p.runLocalCmd(ctx, false, "crictl", "stop", cid)
+					_, _ = p.runLocalCmd(ctx, false, "crictl", "rm", cid)
 				}
 			}
 		}
 	}
 
-	cmd := exec.Command("crictl", "rmi", ref)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err == nil {
+	if _, err := p.runLocalCmd(ctx, cfg.ShowOutput, "crictl", "rmi", ref); err == nil {
 		return nil
-	}
-	if !strings.HasPrefix(ref, "localhost/") {
-		retryCmd := exec.Command("crictl", "rmi", "localhost/"+ref)
-		if cfg.ShowOutput {
-			retryCmd.Stdout = os.Stdout
-			retryCmd.Stderr = os.Stderr
-		}
-		if err := retryCmd.Run(); err == nil {
+	} else if !strings.HasPrefix(ref, "localhost/") {
+		if _, retryErr := p.runLocalCmd(ctx, cfg.ShowOutput, "crictl", "rmi", "localhost/"+ref); retryErr == nil {
 			return nil
 		}
+		return err
+	} else {
+		return err
 	}
-	return cmd.Run()
 }
 
 func (p *linuxImageProvider) Build(cfg ImageBuildConfig) error {
+	ctx := context.Background()
 	if cfg.Windows {
-		return fmt.Errorf("building Windows container images is not supported on Linux hosts (Windows container images can only be built on Windows worker nodes)")
+		if p.worker().isLinuxOnly() {
+			return errors.New("building Windows container images is not supported on a Linux-only installation")
+		}
+		slog.Info("[Image] Building Windows image on Windows worker", "name", cfg.ImageName, "input", cfg.InputFolder)
+		return p.buildWindowsImage(ctx, cfg)
 	}
-	slog.Info("[Image] Building image", "name", cfg.ImageName, "input", cfg.InputFolder)
+
+	slog.Info("[Image] Building Linux image", "name", cfg.ImageName, "input", cfg.InputFolder)
 
 	script := p.scriptPath("Build-Image.sh")
 	if _, err := os.Stat(script); err == nil {
@@ -255,13 +430,20 @@ func (p *linuxImageProvider) Build(cfg ImageBuildConfig) error {
 		if cfg.Push {
 			args = append(args, "--push")
 		}
-		for k, v := range cfg.BuildArgs {
-			args = append(args, "--build-arg", k+"="+v)
+		if len(cfg.BuildArgs) > 0 {
+			keys := make([]string, 0, len(cfg.BuildArgs))
+			for k := range cfg.BuildArgs {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				args = append(args, "--build-arg", k+"="+cfg.BuildArgs[k])
+			}
 		}
 		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
-	args := []string{"build"}
+	args := []string{"bud", "--layers"}
 	if cfg.Dockerfile != "" {
 		args = append(args, "-f", cfg.Dockerfile)
 	}
@@ -277,43 +459,43 @@ func (p *linuxImageProvider) Build(cfg ImageBuildConfig) error {
 	}
 	args = append(args, cfg.InputFolder)
 
-	cmd := exec.Command("nerdctl", args...)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("nerdctl build failed: %w", err)
+	if _, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", args...); err != nil {
+		return fmt.Errorf("buildah build failed: %w", err)
 	}
 
 	if cfg.Push && name != "" {
-		pushCmd := exec.Command("nerdctl", "push", name)
-		if cfg.ShowOutput {
-			pushCmd.Stdout = os.Stdout
-			pushCmd.Stderr = os.Stderr
-		}
-		return pushCmd.Run()
+		_, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", "push", name)
+		return err
 	}
 
 	return nil
 }
 
 func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
-	path := cfg.TarPath
-	if path == "" {
-		path = cfg.DirPath
-	}
-	slog.Info("[Image] Importing image", "path", path, "windows", cfg.Windows)
-
-	if cfg.Windows {
-		if p.isLinuxOnly() {
-			return fmt.Errorf("importing Windows container images is not supported on Linux hosts (Windows container images can only be used on Windows worker nodes)")
-		}
-		// Import on Windows VM via SSH
-		_, err := sshCmd(fmt.Sprintf(`ctr -n k8s.io images import "%s"`, path))
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), cfg.Windows, false)
+	if err != nil {
 		return err
 	}
 
+	if target.IncludeLinux {
+		slog.Info("[Image] Importing image on Linux node", "tar", cfg.TarPath, "dir", cfg.DirPath)
+		if err := p.importLinuxImage(ctx, cfg); err != nil {
+			return err
+		}
+	}
+
+	if target.IncludeWindows {
+		slog.Info("[Image] Importing image on Windows worker", "tar", cfg.TarPath, "dir", cfg.DirPath)
+		if err := p.importWindowsImages(ctx, cfg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *linuxImageProvider) importLinuxImage(ctx context.Context, cfg ImageImportConfig) error {
 	script := p.scriptPath("Import-Image.sh")
 	if _, err := os.Stat(script); err == nil {
 		var args []string
@@ -326,26 +508,57 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
-	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "import", path)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	path := cfg.TarPath
+	if path == "" {
+		return errors.New("tar file path must be specified when Import-Image.sh is unavailable")
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+	transport := "oci-archive:"
+	if cfg.DockerArchive {
+		transport = "docker-archive:"
 	}
-	return nil
+	_, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", "pull", transport+path)
+	return err
 }
 
 func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
-	ref := cfg.ImageId
-	if ref == "" {
-		ref = cfg.ImageName
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
 	}
-	slog.Info("[Image] Exporting image", "ref", ref, "output", cfg.OutputPath)
 
+	onLinux, onWindows, err := p.locateImageOnNodes(ctx, target, strings.TrimSpace(cfg.Nodes) != "", cfg.ImageId, cfg.ImageName)
+	if err != nil {
+		return err
+	}
+	if !onLinux && !onWindows {
+		return fmt.Errorf("image not found (id=%q, name=%q)", cfg.ImageId, cfg.ImageName)
+	}
+
+	linuxOut := cfg.OutputPath
+	winOut := cfg.OutputPath
+	if onLinux && onWindows {
+		linuxOut = formatDualExportPath(cfg.OutputPath, "linux")
+		winOut = formatDualExportPath(cfg.OutputPath, "windows")
+	}
+
+	if onLinux {
+		slog.Info("[Image] Exporting image from Linux node", "id", cfg.ImageId, "name", cfg.ImageName, "output", linuxOut)
+		if err := p.exportLinuxImage(ctx, cfg, linuxOut); err != nil {
+			return err
+		}
+	}
+	if onWindows {
+		slog.Info("[Image] Exporting image from Windows worker", "id", cfg.ImageId, "name", cfg.ImageName, "output", winOut)
+		if err := p.exportWindowsImage(ctx, cfg, winOut); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *linuxImageProvider) exportLinuxImage(ctx context.Context, cfg ImageExportConfig, outputPath string) error {
 	script := p.scriptPath("Export-Image.sh")
 	if _, err := os.Stat(script); err == nil {
 		var args []string
@@ -355,8 +568,8 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		if cfg.ImageName != "" {
 			args = append(args, "-n", cfg.ImageName)
 		}
-		if cfg.OutputPath != "" {
-			args = append(args, "-t", cfg.OutputPath)
+		if outputPath != "" {
+			args = append(args, "-t", outputPath)
 		}
 		if cfg.DockerArchive {
 			args = append(args, "--docker-archive")
@@ -364,34 +577,54 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
+	ref := cfg.ImageId
+	if ref == "" {
+		ref = cfg.ImageName
+	}
+	format := "oci-archive"
 	if cfg.DockerArchive {
-		cmd := exec.Command("nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		format = "docker-archive"
+	}
+	_, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", "push", ref, fmt.Sprintf("%s:%s", format, outputPath))
+	return err
+}
+
+func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
 	}
 
-	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "export", cfg.OutputPath, ref)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	runLinux := target.IncludeLinux
+	runWindows := target.IncludeWindows
+
+	if target.IncludeLinux && target.IncludeWindows {
+		onLinux, onWin, err := p.locateImageOnNodes(ctx, target, strings.TrimSpace(cfg.Nodes) != "", cfg.ImageId, cfg.ImageName)
+		if err != nil {
+			return err
+		}
+		if !onLinux && !onWin {
+			return fmt.Errorf("image not found on cluster nodes (id=%q, name=%q)", cfg.ImageId, cfg.ImageName)
+		}
+		runLinux = onLinux
+		runWindows = onWin
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+
+	if runLinux {
+		if err := p.tagLinuxImage(ctx, cfg); err != nil {
+			return err
+		}
+	}
+	if runWindows {
+		if err := p.tagWindowsImage(ctx, cfg); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
+func (p *linuxImageProvider) tagLinuxImage(ctx context.Context, cfg ImageTagConfig) error {
 	ref := cfg.ImageId
 	if ref == "" {
 		ref = cfg.ImageName
@@ -400,7 +633,7 @@ func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
 	if target == "" {
 		target = cfg.ImageName
 	}
-	slog.Info("[Image] Tagging image", "ref", ref, "target", target)
+	slog.Info("[Image] Tagging image on Linux node", "ref", ref, "target", target)
 
 	script := p.scriptPath("Tag-Image.sh")
 	if _, err := os.Stat(script); err == nil {
@@ -417,20 +650,51 @@ func (p *linuxImageProvider) Tag(cfg ImageTagConfig) error {
 		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
-	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "tag", ref, target)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	return cmd.Run()
+	_, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", "tag", ref, target)
+	return err
 }
 
 func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
+	}
+
+	runLinux := target.IncludeLinux
+	runWindows := target.IncludeWindows
+
+	if target.IncludeLinux && target.IncludeWindows {
+		onLinux, onWin, err := p.locateImageOnNodes(ctx, target, strings.TrimSpace(cfg.Nodes) != "", cfg.ImageId, cfg.ImageName)
+		if err != nil {
+			return err
+		}
+		if !onLinux && !onWin {
+			return fmt.Errorf("image not found on cluster nodes (id=%q, name=%q)", cfg.ImageId, cfg.ImageName)
+		}
+		runLinux = onLinux
+		runWindows = onWin
+	}
+
+	if runLinux {
+		if err := p.pushLinuxImage(ctx, cfg); err != nil {
+			return err
+		}
+	}
+	if runWindows {
+		if err := p.pushWindowsImage(ctx, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *linuxImageProvider) pushLinuxImage(ctx context.Context, cfg ImagePushConfig) error {
 	ref := cfg.ImageId
 	if ref == "" {
 		ref = cfg.ImageName
 	}
-	slog.Info("[Image] Pushing image", "name", ref)
+	slog.Info("[Image] Pushing image from Linux node", "ref", ref)
 
 	script := p.scriptPath("Push-Image.sh")
 	if _, err := os.Stat(script); err == nil {
@@ -444,63 +708,91 @@ func (p *linuxImageProvider) Push(cfg ImagePushConfig) error {
 		return p.runScript(script, cfg.ShowOutput, args...)
 	}
 
-	cmd := exec.Command("nerdctl", "push", ref)
-	if cfg.ShowOutput {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	}
-	return cmd.Run()
+	_, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", "push", ref)
+	return err
 }
 
 func (p *linuxImageProvider) Repair(cfg ImageRepairConfig) error {
-	return errors.New("image repair is not supported on Linux hosts")
+	ctx := context.Background()
+	var issues []string
+
+	if _, err := p.runLocalCmd(ctx, false, "systemctl", "is-active", "--quiet", "crio"); err != nil {
+		issues = append(issues, fmt.Sprintf("Linux CRI-O service is not active: %v", err))
+	}
+	if _, err := p.runLocalCmd(ctx, false, "crictl", "images"); err != nil {
+		issues = append(issues, fmt.Sprintf("Linux crictl images check failed: %v", err))
+	}
+
+	if !p.worker().isLinuxOnly() {
+		if err := p.checkWindowsContainerdHealth(ctx); err != nil {
+			issues = append(issues, fmt.Sprintf("Windows worker containerd check failed: %v", err))
+		}
+	}
+
+	if len(issues) > 0 {
+		return fmt.Errorf("container runtime health check failed:\n - %s", strings.Join(issues, "\n - "))
+	}
+	slog.Info("[Image] Container runtime health checks passed")
+	return nil
 }
 
 func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {
-	slog.Info("[Image] Cleaning non-K8s images")
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
+	}
 
+	var errs []error
+	if target.IncludeLinux {
+		slog.Info("[Image] Cleaning non-K8s images on Linux node")
+		if err := p.cleanLinuxImages(ctx, cfg); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if target.IncludeWindows {
+		slog.Info("[Image] Cleaning non-K8s images on Windows worker")
+		if err := p.cleanWindowsImages(ctx, cfg); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (p *linuxImageProvider) cleanLinuxImages(ctx context.Context, cfg ImageCleanConfig) error {
 	script := p.scriptPath("Clean-Images.sh")
 	if _, err := os.Stat(script); err == nil {
 		return p.runScript(script, cfg.ShowOutput)
 	}
 
+	baseline := p.loadK8sBaselineImages()
 	if _, err := exec.LookPath("buildah"); err == nil {
-		buildahImages, err := listBuildahImages()
+		buildahImages, err := listBuildahImages(getNodeName())
 		if err == nil {
 			cleaned := make(map[string]bool)
 			for _, img := range buildahImages {
-				if isK8sImage(img.Repository) || cleaned[img.ImageId] {
+				if isK8sBaselineImage(img.Repository, img.Tag, baseline) || cleaned[img.ImageId] {
 					continue
 				}
 				cleaned[img.ImageId] = true
-				cmd := exec.Command("buildah", "rmi", "-f", img.ImageId)
-				if cfg.ShowOutput {
-					cmd.Stdout = os.Stdout
-					cmd.Stderr = os.Stderr
-				}
-				if err := cmd.Run(); err != nil {
+				if _, err := p.runLocalCmd(ctx, cfg.ShowOutput, "buildah", "rmi", "-f", img.ImageId); err != nil {
 					slog.Warn("[Image] Could not remove buildah image", "id", img.ImageId, "error", err)
 				}
 			}
 		}
 	}
 
-	images, err := listCrictlImages()
+	images, err := listCrictlImages(getNodeName())
 	if err != nil {
 		return err
 	}
 
 	for _, img := range images {
-		if isK8sImage(img.Repository) {
+		if isK8sBaselineImage(img.Repository, img.Tag, baseline) {
 			continue
 		}
-		cmd := exec.Command("crictl", "rmi", img.ImageId)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-		}
-		if err := cmd.Run(); err != nil {
-			slog.Warn("[Image] Could not remove image", "id", img.ImageId, "error", err)
+		if _, err := p.runLocalCmd(ctx, cfg.ShowOutput, "crictl", "rmi", img.ImageId); err != nil {
+			slog.Warn("[Image] Could not remove crictl image", "id", img.ImageId, "error", err)
 		}
 	}
 
@@ -508,37 +800,143 @@ func (p *linuxImageProvider) Clean(cfg ImageCleanConfig) error {
 }
 
 func (p *linuxImageProvider) RegistryAdd(cfg ImageRegistryAddConfig) error {
-	script := p.scriptPath(filepath.Join("registry", "Add-Registry.sh"))
-	args := []string{"--registry", cfg.RegistryName}
-	if cfg.Username != "" {
-		args = append(args, "--username", cfg.Username)
-	}
-	if cfg.Password != "" {
-		args = append(args, "--password", cfg.Password)
-	}
-	if cfg.SkipVerify {
-		args = append(args, "--skip-verify")
-	}
-	if cfg.PlainHttp {
-		args = append(args, "--plain-http")
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
 	}
 
-	if err := p.runScript(script, cfg.ShowOutput, args...); err != nil {
-		return fmt.Errorf("failed to add registry '%s': %w", cfg.RegistryName, err)
+	if target.IncludeLinux {
+		script := p.scriptPath(filepath.Join("registry", "Add-Registry.sh"))
+		args := []string{"--registry", cfg.RegistryName}
+		if cfg.Username != "" {
+			args = append(args, "--username", cfg.Username)
+		}
+		if cfg.Password != "" {
+			args = append(args, "--password", cfg.Password)
+		}
+		if cfg.SkipVerify {
+			args = append(args, "--skip-verify")
+		}
+		if cfg.PlainHttp {
+			args = append(args, "--plain-http")
+		}
+
+		if err := p.runScript(script, cfg.ShowOutput, args...); err != nil {
+			return fmt.Errorf("failed to add registry '%s' on Linux node: %w", cfg.RegistryName, err)
+		}
 	}
 
-	// Persist registry in setup.json
-	return p.addRegistryToConfig(cfg.RegistryName)
+	if target.IncludeWindows {
+		if err := p.addWindowsRegistry(ctx, cfg); err != nil {
+			return fmt.Errorf("failed to add registry '%s' on Windows worker: %w", cfg.RegistryName, err)
+		}
+	}
+
+	if strings.TrimSpace(cfg.Nodes) == "" {
+		return p.addRegistryToConfig(cfg.RegistryName)
+	}
+	return nil
 }
 
 func (p *linuxImageProvider) RegistryRemove(cfg ImageRegistryRemoveConfig) error {
-	script := p.scriptPath(filepath.Join("registry", "Remove-Registry.sh"))
-	if err := p.runScript(script, cfg.ShowOutput, "--registry", cfg.RegistryName); err != nil {
-		return fmt.Errorf("failed to remove registry '%s': %w", cfg.RegistryName, err)
+	ctx := context.Background()
+	target, err := p.worker().resolveNodeTarget(ctx, splitNodeSelector(cfg.Nodes), false, true)
+	if err != nil {
+		return err
 	}
 
-	// Remove registry from setup.json
-	return p.removeRegistryFromConfig(cfg.RegistryName)
+	if target.IncludeLinux {
+		script := p.scriptPath(filepath.Join("registry", "Remove-Registry.sh"))
+		if err := p.runScript(script, cfg.ShowOutput, "--registry", cfg.RegistryName); err != nil {
+			return fmt.Errorf("failed to remove registry '%s' on Linux node: %w", cfg.RegistryName, err)
+		}
+	}
+
+	if target.IncludeWindows {
+		if err := p.removeWindowsRegistry(ctx, cfg); err != nil {
+			return fmt.Errorf("failed to remove registry '%s' on Windows worker: %w", cfg.RegistryName, err)
+		}
+	}
+
+	if strings.TrimSpace(cfg.Nodes) == "" {
+		return p.removeRegistryFromConfig(cfg.RegistryName)
+	}
+	return nil
+}
+
+func (p *linuxImageProvider) RegistryList(ctx context.Context, cfg ImageRegistryListConfig) ([]string, error) {
+	if len(cfg.Nodes) == 0 {
+		regs := p.getRegistriesFromConfig()
+		if regs == nil {
+			return []string{}, nil
+		}
+		return regs, nil
+	}
+
+	target, err := p.worker().resolveNodeTarget(ctx, cfg.Nodes, false, true)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool)
+	var combined []string
+	addUnique := func(items []string) {
+		for _, item := range items {
+			trimmed := strings.TrimSpace(item)
+			if trimmed != "" && !seen[trimmed] {
+				seen[trimmed] = true
+				combined = append(combined, trimmed)
+			}
+		}
+	}
+
+	if target.IncludeLinux {
+		linuxRegs, err := p.listLinuxRegistries()
+		if err != nil {
+			return nil, fmt.Errorf("listing registries on Linux node: %w", err)
+		}
+		addUnique(linuxRegs)
+	}
+
+	if target.IncludeWindows {
+		winRegs, err := p.listWindowsRegistries(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing registries on Windows worker: %w", err)
+		}
+		addUnique(winRegs)
+	}
+
+	sort.Strings(combined)
+	if combined == nil {
+		return []string{}, nil
+	}
+	return combined, nil
+}
+
+func (p *linuxImageProvider) ResetWinStorage(ctx context.Context, cfg ImageResetWinStorageConfig) error {
+	if p.worker().isLinuxOnly() {
+		return errors.New("Resetting WinContainerStorage for Linux-only setup is not supported.")
+	}
+
+	if p.isClusterRunning(ctx) {
+		return errors.New("cluster is still running; please stop the cluster before resetting Windows container storage")
+	}
+
+	return p.resetWindowsStorage(ctx, cfg)
+}
+
+func (p *linuxImageProvider) isClusterRunning(ctx context.Context) bool {
+	if p.clusterActiveFn != nil {
+		return p.clusterActiveFn(ctx)
+	}
+	if _, err := p.runLocalCmd(ctx, false, "systemctl", "is-active", "--quiet", "kubelet"); err == nil {
+		return true
+	}
+	if _, err := p.runLocalCmd(ctx, false, "kubectl", "cluster-info"); err == nil {
+		return true
+	}
+	return false
 }
 
 func (p *linuxImageProvider) addRegistryToConfig(registry string) error {
@@ -605,28 +1003,148 @@ func (p *linuxImageProvider) removeRegistryFromConfig(registry string) error {
 	return kJson.ToFile(configPath, cfgMap)
 }
 
-func (p *linuxImageProvider) isLinuxOnly() bool {
-	configDir := p.configDir
-	if configDir == "" {
-		configDir = host.K2sConfigDir()
+// ---------- helpers ----------
+
+func splitNodeSelector(nodes string) []string {
+	if strings.TrimSpace(nodes) == "" {
+		return nil
 	}
-	if configDir != "" {
-		configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-		cfgMap, err := kJson.FromFile[map[string]any](configPath)
-		if err == nil {
-			if val, ok := (*cfgMap)["LinuxOnly"]; ok {
-				if b, ok := val.(bool); ok {
-					return b
+	parts := strings.Split(nodes, ",")
+	var out []string
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func isPlatformMismatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	patterns := []string{
+		"no image found in manifest list",
+		"no matching manifest",
+		"platform",
+		"not match",
+		"unsupported",
+		"os/arch",
+		"image os",
+	}
+	for _, pat := range patterns {
+		if strings.Contains(msg, pat) {
+			return true
+		}
+	}
+	return strings.Contains(msg, " os ")
+}
+
+func formatDualExportPath(outputPath, suffix string) string {
+	ext := filepath.Ext(outputPath)
+	if ext == "" {
+		return outputPath + "_" + suffix + ".tar"
+	}
+	base := strings.TrimSuffix(outputPath, ext)
+	return base + "_" + suffix + ext
+}
+
+func (p *linuxImageProvider) getLinuxImages(nodeName string) ([]ContainerImage, error) {
+	if p.linuxImagesFn != nil {
+		return p.linuxImagesFn(nodeName)
+	}
+	return listLinuxImages(nodeName)
+}
+
+func (p *linuxImageProvider) locateImageOnNodes(ctx context.Context, target *nodeTarget, explicitNodes bool, imageID, imageName string) (onLinux bool, onWindows bool, err error) {
+	var linuxErr, winErr error
+	var succeededCount int
+
+	if target.IncludeLinux {
+		imgs, lErr := p.getLinuxImages(target.LinuxNodeName)
+		if lErr != nil {
+			linuxErr = fmt.Errorf("querying Linux node images: %w", lErr)
+			if explicitNodes {
+				return false, false, linuxErr
+			}
+			slog.Warn("[Image] Could not query Linux node images", "error", lErr)
+		} else {
+			succeededCount++
+			for _, img := range imgs {
+				if imageMatchesFilter(img, imageID, imageName) {
+					onLinux = true
+					break
 				}
 			}
 		}
 	}
-	return true
+	if target.IncludeWindows {
+		imgs, wErr := p.listWindowsImages(ctx, target.WindowsNodeName)
+		if wErr != nil {
+			winErr = fmt.Errorf("querying Windows worker images: %w", wErr)
+			if explicitNodes {
+				return false, false, winErr
+			}
+			slog.Warn("[Image] Could not query Windows worker images", "error", wErr)
+		} else {
+			succeededCount++
+			for _, img := range imgs {
+				if imageMatchesFilter(img, imageID, imageName) {
+					onWindows = true
+					break
+				}
+			}
+		}
+	}
+	if succeededCount == 0 && (linuxErr != nil || winErr != nil) {
+		return false, false, errors.Join(linuxErr, winErr)
+	}
+	return onLinux, onWindows, nil
 }
 
-// ---------- helpers ----------
+func imageMatchesFilter(img ContainerImage, imageID, imageName string) bool {
+	if imageID != "" {
+		cleanID := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(imageID)), "sha256:")
+		imgID := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(img.ImageId)), "sha256:")
+		if cleanID != "" && imgID != "" && (strings.HasPrefix(imgID, cleanID) || strings.HasPrefix(cleanID, imgID)) {
+			return true
+		}
+	}
+	if imageName != "" {
+		want := strings.ToLower(strings.TrimSpace(imageName))
+		repo := strings.ToLower(img.Repository)
+		tag := strings.ToLower(img.Tag)
+		full := repo + ":" + tag
+		if full == want || repo == want {
+			return true
+		}
+		if strings.TrimPrefix(full, "localhost/") == want || strings.TrimPrefix(repo, "localhost/") == want {
+			return true
+		}
+		if strings.TrimPrefix(full, "docker.io/library/") == want || strings.TrimPrefix(repo, "docker.io/library/") == want {
+			return true
+		}
+		if strings.TrimPrefix(full, "docker.io/") == want || strings.TrimPrefix(repo, "docker.io/") == want {
+			return true
+		}
+		if !strings.Contains(lastPathSegment(want), ":") {
+			wantLatest := want + ":latest"
+			if full == wantLatest ||
+				strings.TrimPrefix(full, "localhost/") == wantLatest ||
+				strings.TrimPrefix(full, "docker.io/library/") == wantLatest ||
+				strings.TrimPrefix(full, "docker.io/") == wantLatest {
+				return true
+			}
+		}
+	}
+	return false
+}
 
-func listLinuxImages() ([]ContainerImage, error) {
+func listLinuxImages(nodeName string) ([]ContainerImage, error) {
+	if nodeName == "" {
+		nodeName = getNodeName()
+	}
 	var combined []ContainerImage
 	seen := make(map[string]bool)
 
@@ -651,7 +1169,7 @@ func listLinuxImages() ([]ContainerImage, error) {
 
 	var buildahErr, crictlErr error
 	if _, err := exec.LookPath("buildah"); err == nil {
-		bImages, err := listBuildahImages()
+		bImages, err := listBuildahImages(nodeName)
 		if err == nil {
 			addImages(bImages)
 		} else {
@@ -661,7 +1179,7 @@ func listLinuxImages() ([]ContainerImage, error) {
 	}
 
 	if _, err := exec.LookPath("crictl"); err == nil {
-		cImages, err := listCrictlImages()
+		cImages, err := listCrictlImages(nodeName)
 		if err == nil {
 			addImages(cImages)
 		} else {
@@ -736,7 +1254,10 @@ func (f flexibleSize) String() string {
 	return string(f)
 }
 
-func listBuildahImages() ([]ContainerImage, error) {
+func listBuildahImages(nodeName string) ([]ContainerImage, error) {
+	if nodeName == "" {
+		nodeName = getNodeName()
+	}
 	output, err := exec.Command("buildah", "images", "--json").Output()
 	if err != nil {
 		return nil, fmt.Errorf("buildah images: %w", err)
@@ -765,22 +1286,12 @@ func listBuildahImages() ([]ContainerImage, error) {
 		}
 
 		for _, repoTag := range names {
-			repo := "<none>"
-			tag := "<none>"
-			if repoTag != "" && repoTag != "<none>:<none>" {
-				lastColon := strings.LastIndex(repoTag, ":")
-				if lastColon != -1 {
-					repo = repoTag[:lastColon]
-					tag = repoTag[lastColon+1:]
-				} else {
-					repo = repoTag
-				}
-			}
+			repo, tag := splitRepoTag(repoTag)
 			images = append(images, ContainerImage{
 				ImageId:    shortId,
 				Repository: repo,
 				Tag:        tag,
-				Node:       getNodeName(),
+				Node:       nodeName,
 				Size:       string(img.Size),
 			})
 		}
@@ -789,12 +1300,18 @@ func listBuildahImages() ([]ContainerImage, error) {
 	return images, nil
 }
 
-func listCrictlImages() ([]ContainerImage, error) {
+func listCrictlImages(nodeName string) ([]ContainerImage, error) {
+	if nodeName == "" {
+		nodeName = getNodeName()
+	}
 	output, err := exec.Command("crictl", "images", "-o", "json").Output()
 	if err != nil {
 		return nil, fmt.Errorf("crictl images: %w", err)
 	}
+	return parseCrictlImagesJSON(output, nodeName)
+}
 
+func parseCrictlImagesJSON(data []byte, nodeName string) ([]ContainerImage, error) {
 	var result struct {
 		Images []struct {
 			Id          string       `json:"id"`
@@ -804,7 +1321,7 @@ func listCrictlImages() ([]ContainerImage, error) {
 		} `json:"images"`
 	}
 
-	if err := json.Unmarshal(output, &result); err != nil {
+	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("parsing crictl output: %w", err)
 	}
 
@@ -821,22 +1338,12 @@ func listCrictlImages() ([]ContainerImage, error) {
 		}
 
 		for _, repoTag := range tags {
-			repo := "<none>"
-			tag := "<none>"
-			if repoTag != "" && repoTag != "<none>:<none>" {
-				lastColon := strings.LastIndex(repoTag, ":")
-				if lastColon != -1 {
-					repo = repoTag[:lastColon]
-					tag = repoTag[lastColon+1:]
-				} else {
-					repo = repoTag
-				}
-			}
+			repo, tag := splitRepoTag(repoTag)
 			images = append(images, ContainerImage{
 				ImageId:    shortId,
 				Repository: repo,
 				Tag:        tag,
-				Node:       getNodeName(),
+				Node:       nodeName,
 				Size:       string(img.Size),
 			})
 		}
@@ -845,59 +1352,20 @@ func listCrictlImages() ([]ContainerImage, error) {
 	return images, nil
 }
 
-func listWindowsVMImages() ([]ContainerImage, error) {
-	output, err := sshCmd("crictl images -o json")
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Images []struct {
-			Id       string       `json:"id"`
-			RepoTags []string     `json:"repoTags"`
-			Size     flexibleSize `json:"size"`
-		} `json:"images"`
-	}
-
-	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		return nil, fmt.Errorf("parsing Windows VM crictl output: %w", err)
-	}
-
-	var images []ContainerImage
-	for _, img := range result.Images {
-		shortId := strings.TrimPrefix(img.Id, "sha256:")
-		if len(shortId) > 12 {
-			shortId = shortId[:12]
-		}
-
-		tags := img.RepoTags
-		if len(tags) == 0 {
-			tags = []string{"<none>:<none>"}
-		}
-
-		for _, repoTag := range tags {
-			repo := "<none>"
-			tag := "<none>"
-			if repoTag != "" && repoTag != "<none>:<none>" {
-				lastColon := strings.LastIndex(repoTag, ":")
-				if lastColon != -1 {
-					repo = repoTag[:lastColon]
-					tag = repoTag[lastColon+1:]
-				} else {
-					repo = repoTag
-				}
-			}
-			images = append(images, ContainerImage{
-				ImageId:    shortId,
-				Repository: repo,
-				Tag:        tag,
-				Node:       "windows",
-				Size:       string(img.Size),
-			})
+func splitRepoTag(repoTag string) (repo string, tag string) {
+	repo = "<none>"
+	tag = "<none>"
+	if repoTag != "" && repoTag != "<none>:<none>" {
+		lastColon := strings.LastIndex(repoTag, ":")
+		lastSlash := strings.LastIndex(repoTag, "/")
+		if lastColon != -1 && lastColon > lastSlash {
+			repo = repoTag[:lastColon]
+			tag = repoTag[lastColon+1:]
+		} else {
+			repo = repoTag
 		}
 	}
-
-	return images, nil
+	return repo, tag
 }
 
 func getNodeName() string {
@@ -906,6 +1374,68 @@ func getNodeName() string {
 		return strings.ToLower(h)
 	}
 	return "linux"
+}
+
+func (p *linuxImageProvider) loadK8sBaselineImages() map[string]bool {
+	baseline := make(map[string]bool)
+	if p.installDir == "" {
+		return baseline
+	}
+	jsonPath := filepath.Join(p.installDir, "cfg", "kubernetes-images.json")
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return baseline
+	}
+
+	var strList []string
+	if err := json.Unmarshal(data, &strList); err == nil {
+		for _, item := range strList {
+			if trimmed := strings.ToLower(strings.TrimSpace(item)); trimmed != "" {
+				baseline[trimmed] = true
+			}
+		}
+		return baseline
+	}
+
+	var objMap map[string]any
+	if err := json.Unmarshal(data, &objMap); err == nil {
+		for _, v := range objMap {
+			if list, ok := v.([]any); ok {
+				for _, elem := range list {
+					if s, ok := elem.(string); ok {
+						if trimmed := strings.ToLower(strings.TrimSpace(s)); trimmed != "" {
+							baseline[trimmed] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return baseline
+}
+
+func isK8sBaselineImage(repo, tag string, baseline map[string]bool) bool {
+	if isK8sImage(repo) {
+		return true
+	}
+	if len(baseline) == 0 {
+		return false
+	}
+	lowerRepo := strings.ToLower(repo)
+	if baseline[lowerRepo] {
+		return true
+	}
+	if tag != "" && tag != "<none>" {
+		if baseline[lowerRepo+":"+strings.ToLower(tag)] {
+			return true
+		}
+	}
+	return false
+}
+
+func isWindowsPauseImage(repo string) bool {
+	lower := strings.ToLower(repo)
+	return strings.Contains(lower, "pause-win") || strings.Contains(lower, "/pause")
 }
 
 func isK8sImage(repo string) bool {
@@ -924,6 +1454,159 @@ func isK8sImage(repo string) bool {
 		}
 	}
 	return false
+}
+
+func (p *linuxImageProvider) listLinuxRegistries() ([]string, error) {
+	regDir := p.effectiveRegistriesDir()
+	entries, err := os.ReadDir(regDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	locRegex := regexp.MustCompile(`(?m)^\s*location\s*=\s*["']?([^"'\s]+)["']?`)
+	var registries []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".conf") {
+			continue
+		}
+		fname := entry.Name()
+		if fname == "crio.conf" || fname == "shortnames.conf" || strings.HasPrefix(fname, "00-") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(regDir, fname))
+		if err != nil {
+			continue
+		}
+		if m := locRegex.FindSubmatch(data); len(m) > 1 {
+			registries = append(registries, string(m[1]))
+		} else {
+			registries = append(registries, strings.TrimSuffix(fname, ".conf"))
+		}
+	}
+	return registries, nil
+}
+
+func (p *linuxImageProvider) queryLocalRegistry(ctx context.Context, nodeName string) (string, []PushedImage) {
+	var registryHost string
+	for _, r := range p.getRegistriesFromConfig() {
+		if r == "k2s.registry.local" || r == "k2s.registry.local:30500" || strings.HasPrefix(r, "k2s.registry.local:") {
+			registryHost = r
+			break
+		}
+	}
+	if registryHost == "" {
+		return "", nil
+	}
+
+	client := p.effectiveHTTPClient(3 * time.Second)
+	authHeader := p.lookupRegistryBasicAuth(registryHost)
+
+	var baseURLs []string
+	if strings.Contains(registryHost, ":") {
+		baseURLs = append(baseURLs, "http://"+registryHost)
+	} else {
+		baseURLs = append(baseURLs, "https://"+registryHost, "http://"+registryHost)
+	}
+	baseURLs = append(baseURLs, "http://127.0.0.1:30500")
+
+	for _, baseURL := range baseURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v2/_catalog", nil)
+		if err != nil {
+			continue
+		}
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
+		var catalog struct {
+			Repositories []string `json:"repositories"`
+		}
+		decErr := json.NewDecoder(resp.Body).Decode(&catalog)
+		resp.Body.Close()
+		if decErr != nil {
+			continue
+		}
+
+		var pushed []PushedImage
+		for _, repo := range catalog.Repositories {
+			tagReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v2/%s/tags/list", baseURL, repo), nil)
+			if err != nil {
+				continue
+			}
+			if authHeader != "" {
+				tagReq.Header.Set("Authorization", authHeader)
+			}
+			tagResp, err := client.Do(tagReq)
+			if err != nil {
+				continue
+			}
+			if tagResp.StatusCode != http.StatusOK {
+				tagResp.Body.Close()
+				continue
+			}
+			var tagList struct {
+				Tags []string `json:"tags"`
+			}
+			tErr := json.NewDecoder(tagResp.Body).Decode(&tagList)
+			tagResp.Body.Close()
+			if tErr != nil {
+				continue
+			}
+			for _, tag := range tagList.Tags {
+				pushed = append(pushed, PushedImage{
+					Name: fmt.Sprintf("%s/%s", registryHost, repo),
+					Tag:  tag,
+					Node: nodeName,
+				})
+			}
+		}
+		return registryHost, pushed
+	}
+
+	return registryHost, nil
+}
+
+func (p *linuxImageProvider) lookupRegistryBasicAuth(registryHost string) string {
+	data, err := os.ReadFile(p.effectiveAuthFilePath())
+	if err != nil {
+		return ""
+	}
+	var authCfg struct {
+		Auths map[string]struct {
+			Auth     string `json:"auth"`
+			Username string `json:"username"`
+			Password string `json:"password"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &authCfg); err != nil {
+		return ""
+	}
+	candidates := []string{
+		registryHost,
+		"https://" + registryHost,
+		"http://" + registryHost,
+	}
+	for _, key := range candidates {
+		if entry, ok := authCfg.Auths[key]; ok {
+			if entry.Auth != "" {
+				return "Basic " + entry.Auth
+			}
+			if entry.Username != "" {
+				return "Basic " + base64.StdEncoding.EncodeToString([]byte(entry.Username+":"+entry.Password))
+			}
+		}
+	}
+	return ""
 }
 
 func (p *linuxImageProvider) getRegistriesFromConfig() []string {
@@ -968,6 +1651,7 @@ func (p *linuxImageProvider) removeFromRegistry(cfg ImageRemoveConfig) error {
 	if strings.HasPrefix(trimmed, registryHost+"/") {
 		trimmed = strings.TrimPrefix(trimmed, registryHost+"/")
 	} else if idx := strings.Index(trimmed, "/"); idx != -1 && strings.Contains(trimmed[:idx], ".") {
+		registryHost = trimmed[:idx]
 		trimmed = trimmed[idx+1:]
 	}
 
@@ -986,20 +1670,21 @@ func (p *linuxImageProvider) removeFromRegistry(cfg ImageRemoveConfig) error {
 	}
 	urls = append(urls, "http://127.0.0.1:30500", "http://k2s.registry.local:30500")
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr, Timeout: 10 * time.Second}
+	client := p.effectiveHTTPClient(10 * time.Second)
+	authHeader := p.lookupRegistryBasicAuth(registryHost)
 
 	var lastErr error
 	for _, baseURL := range urls {
 		manifestURL := fmt.Sprintf("%s/v2/%s/manifests/%s", baseURL, repo, tag)
-		req, err := http.NewRequest("GET", manifestURL, nil)
+		req, err := http.NewRequest(http.MethodGet, manifestURL, nil)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
@@ -1018,10 +1703,13 @@ func (p *linuxImageProvider) removeFromRegistry(cfg ImageRemoveConfig) error {
 		}
 
 		delURL := fmt.Sprintf("%s/v2/%s/manifests/%s", baseURL, repo, deleteRef)
-		delReq, err := http.NewRequest("DELETE", delURL, nil)
+		delReq, err := http.NewRequest(http.MethodDelete, delURL, nil)
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if authHeader != "" {
+			delReq.Header.Set("Authorization", authHeader)
 		}
 		delResp, err := client.Do(delReq)
 		if err != nil {

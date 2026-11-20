@@ -6,12 +6,9 @@ package image
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strconv"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
-
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
 
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
@@ -136,7 +133,7 @@ func importImage(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := validateNodeSelector(nodeSelector, runtimeConfig); err != nil {
+	if err := common.ValidateNodeSelector(nodeSelector, runtimeConfig); err != nil {
 		return err
 	}
 
@@ -154,58 +151,4 @@ func importImage(cmd *cobra.Command, args []string) error {
 	cmdSession.Finish()
 
 	return nil
-}
-
-func buildImportPsCmd(cmd *cobra.Command, isWindowsImage bool) (psCmd string, params []string, err error) {
-	psCmd = utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "Import-Image.ps1"))
-
-	imagePath, err := cmd.Flags().GetString(tarFlag)
-	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", tarFlag, err)
-	}
-
-	dir, err := cmd.Flags().GetString(dirFlag)
-	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", dirFlag, err)
-	}
-
-	if imagePath != "" && dir != "" {
-		params = append(params, " -ImagePath '"+imagePath+"'")
-	} else if imagePath != "" {
-		params = append(params, " -ImagePath '"+imagePath+"'")
-	} else if dir != "" {
-		params = append(params, " -ImageDir '"+dir+"'")
-	} else {
-		return "", nil, errors.New("no path to oci archive provided")
-	}
-
-	showOutput, err := strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
-	if err != nil {
-		return "", nil, err
-	}
-
-	isDockerArchive, err := strconv.ParseBool(cmd.Flags().Lookup(dockerArchiveFlag).Value.String())
-	if err != nil {
-		return "", nil, err
-	}
-
-	nodeSelector, err := parseNodeSelector(cmd)
-	if err != nil {
-		return "", nil, err
-	}
-	params = appendNodesParam(params, nodeSelector)
-
-	if showOutput {
-		params = append(params, " -ShowLogs")
-	}
-
-	if isWindowsImage {
-		params = append(params, " -Windows")
-	}
-
-	if isDockerArchive {
-		params = append(params, " -DockerArchive")
-	}
-
-	return
 }

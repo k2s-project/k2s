@@ -73,6 +73,18 @@ func (m *mockImageProvider) RegistryRemove(config provider.ImageRegistryRemoveCo
 	return m.Called(config).Error(0)
 }
 
+func (m *mockImageProvider) RegistryList(ctx context.Context, config provider.ImageRegistryListConfig) ([]string, error) {
+	args := m.Called(ctx, config)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]string), args.Error(1)
+}
+
+func (m *mockImageProvider) ResetWinStorage(ctx context.Context, config provider.ImageResetWinStorageConfig) error {
+	return m.Called(ctx, config).Error(0)
+}
+
 func setupTestCmdContext(cmd *cobra.Command, mockImg *mockImageProvider, linuxOnly bool, cpHostname string) string {
 	tempDir, err := os.MkdirTemp("", "k2s-image-test-*")
 	if err != nil {

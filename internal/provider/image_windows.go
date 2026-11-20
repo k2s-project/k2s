@@ -6,11 +6,14 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	"github.com/k2s-project/k2s/internal/host"
 	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
@@ -334,5 +337,51 @@ func (p *windowsImageProvider) RegistryRemove(cfg ImageRegistryRemoveConfig) err
 	if cfg.ShowOutput {
 		params = append(params, " -ShowLogs")
 	}
+	return p.execPS(psCmd, params...)
+}
+
+func (p *windowsImageProvider) RegistryList(ctx context.Context, cfg ImageRegistryListConfig) ([]string, error) {
+	psCmd := p.scriptPath(filepath.Join("registry", "List-Registries.ps1"))
+	var params []string
+	if len(cfg.Nodes) > 0 {
+		params = append(params, " -Nodes "+utils.EscapeWithSingleQuotes(strings.Join(cfg.Nodes, ",")))
+	}
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+	if err := p.execPS(psCmd, params...); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (p *windowsImageProvider) ResetWinStorage(ctx context.Context, cfg ImageResetWinStorageConfig) error {
+	psCmd := p.scriptPath("ResetWinContainerStorage.ps1")
+
+	dockerDir := cfg.Docker
+	if dockerDir == "" {
+		dockerDir = filepath.Join(host.SystemDrive(), "docker")
+	}
+
+	maxRetries := cfg.MaxRetry
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
+
+	params := []string{
+		" -Containerd " + utils.EscapeWithSingleQuotes(cfg.Containerd),
+		" -Docker " + utils.EscapeWithSingleQuotes(dockerDir),
+		" -MaxRetries " + strconv.FormatInt(int64(maxRetries), 10),
+	}
+	if cfg.ShowOutput {
+		params = append(params, " -ShowLogs")
+	}
+	if cfg.ForceZap {
+		params = append(params, " -ForceZap")
+	}
+	if cfg.Force {
+		params = append(params, " -Force")
+	}
+
 	return p.execPS(psCmd, params...)
 }

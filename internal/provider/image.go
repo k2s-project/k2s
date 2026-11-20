@@ -3,6 +3,8 @@
 
 package provider
 
+import "context"
+
 // ImageProvider abstracts container image operations.
 // On Windows: delegates to PowerShell scripts via SSH to VMs.
 // On Linux: uses crictl/nerdctl locally + SSH to Windows VM.
@@ -42,6 +44,12 @@ type ImageProvider interface {
 
 	// RegistryRemove removes access to a container registry.
 	RegistryRemove(config ImageRegistryRemoveConfig) error
+
+	// RegistryList returns configured container registries for the specified nodes.
+	RegistryList(ctx context.Context, cfg ImageRegistryListConfig) ([]string, error)
+
+	// ResetWinStorage resets containerd and docker image storage on Windows nodes.
+	ResetWinStorage(ctx context.Context, cfg ImageResetWinStorageConfig) error
 }
 
 // ImageListConfig holds parameters for listing container images.
@@ -168,4 +176,20 @@ type ImageRegistryRemoveConfig struct {
 	RegistryName string
 	Nodes        string
 	ShowOutput   bool
+}
+
+// ImageRegistryListConfig holds parameters for listing configured container registries.
+type ImageRegistryListConfig struct {
+	Nodes      []string
+	ShowOutput bool
+}
+
+// ImageResetWinStorageConfig holds parameters for resetting Windows container storage.
+type ImageResetWinStorageConfig struct {
+	Containerd string
+	Docker     string
+	MaxRetry   int
+	ForceZap   bool
+	Force      bool
+	ShowOutput bool
 }

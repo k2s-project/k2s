@@ -58,8 +58,38 @@ wait_for_dpkg_lock
 # ---------------------------------------------------------------------------
 # Install .deb packages
 # ---------------------------------------------------------------------------
+# Links packages with an absent or incompatible installed version into a new directory and prints
+# that directory. Kubernetes and runtime packages use the bundled version exactly; other packages
+# are retained when their installed version is at least as new as the bundled dependency version.
+stage_missing_debs() {
+    local source_dir="$1" target_dir deb package package_version installed_status installed_version
+    target_dir="$(mktemp -d)"
+    for deb in "$source_dir"/*.deb; do
+        [ -e "$deb" ] || continue
+        package="$(dpkg-deb -f "$deb" Package)"
+        package_version="$(dpkg-deb -f "$deb" Version)"
+        installed_status="$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)"
+        if [[ "$installed_status" == 'install ok installed' ]]; then
+            installed_version="$(dpkg-query -W -f='${Version}' "$package")"
+            case "$package" in
+                kubelet|kubeadm|kubectl|cri-o|cri-tools)
+                    [[ "$installed_version" == "$package_version" ]] && continue
+                    ;;
+                *)
+                    dpkg --compare-versions "$installed_version" ge "$package_version" && continue
+                    ;;
+            esac
+        fi
+        deb="$(realpath "$deb")"
+        ln -s "$deb" "$target_dir/"
+    done
+    echo "$target_dir"
+}
+
 echo "[InstallK8s] Installing deb packages from $K8S_DEB_PACKAGES_PATH"
-sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$K8S_DEB_PACKAGES_PATH"/*.deb || true
+MISSING_DEBS_PATH="$(stage_missing_debs "$K8S_DEB_PACKAGES_PATH")"
+echo "[InstallK8s] Packages not yet installed on this node: $(ls "$MISSING_DEBS_PATH" | wc -l)"
+sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$MISSING_DEBS_PATH"/*.deb || true
 sudo DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y
 
 if ! command -v crictl >/dev/null 2>&1; then

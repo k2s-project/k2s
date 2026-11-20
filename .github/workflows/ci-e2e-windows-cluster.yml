@@ -37,6 +37,11 @@ on:
         type: string
         required: false
         default: 'none'
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
+        type: number
+        required: false
+        default: 1
       timeout_minutes:
         description: 'Job timeout. The nightly caps it so that a hung run cannot block the repetitions that follow.'
         type: number
@@ -216,7 +221,7 @@ jobs:
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}-test-results
+          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}-test-results
           path: ${{ runner.temp }}/k2s-test-results/
           if-no-files-found: warn
           retention-days: 7
@@ -226,7 +231,7 @@ jobs:
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}-k2s-log
+          name: windows-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}-k2s-log
           path: C:/var/log/k2s.log
           if-no-files-found: warn
           retention-days: 7

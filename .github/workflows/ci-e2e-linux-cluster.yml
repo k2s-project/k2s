@@ -69,6 +69,11 @@ on:
         type: boolean
         required: false
         default: false
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
+        type: number
+        required: false
+        default: 1
 
 permissions:
   contents: read
@@ -313,7 +318,7 @@ jobs:
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: linux-cluster-${{ github.run_id }}-${{ github.run_attempt }}-test-results
+          name: linux-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}-test-results
           path: ${{ runner.temp }}/k2s-results-export/
           if-no-files-found: warn
           retention-days: 7

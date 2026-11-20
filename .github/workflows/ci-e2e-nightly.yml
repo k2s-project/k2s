@@ -74,6 +74,7 @@ jobs:
     uses: ./.github/workflows/ci-e2e-windows-cluster.yml
     with:
       addon: none
+      run: ${{ matrix.run }}
       timeout_minutes: ${{ inputs.windows_timeout_minutes || 180 }}
 
   linux:
@@ -91,6 +92,7 @@ jobs:
     with:
       addon: none
       nightly: true
+      run: ${{ matrix.run }}
 
   arm64:
     name: Linux arm64 node (run ${{ matrix.run }})
@@ -106,3 +108,4 @@ jobs:
     uses: ./.github/workflows/ci-e2e-linux-cluster-node-arm64.yml
     with:
       nightly: true
+      run: ${{ matrix.run }}

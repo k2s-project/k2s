@@ -36,6 +36,11 @@ on:
         type: boolean
         required: false
         default: false
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
+        type: number
+        required: false
+        default: 1
 
 permissions:
   contents: read
@@ -50,6 +55,7 @@ jobs:
     uses: ./.github/workflows/ci-arm64-node-package-build.yml
     with:
       include_gpu: false
+      run: ${{ inputs.run || 1 }}
 
   install-add-and-check:
     name: Control plane (amd64, KVM) and arm64 worker on one runner
@@ -145,7 +151,7 @@ jobs:
         uses: actions/download-artifact@v4
         timeout-minutes: 10
         with:
-          name: debian13-arm64-node-package
+          name: debian13-arm64-node-package-${{ inputs.run || 1 }}
           path: ${{ runner.temp }}/node-package
 
       - name: Start control-plane guest (amd64, KVM, 4 GB)
@@ -336,7 +342,7 @@ jobs:
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: linux-cluster-node-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          name: linux-cluster-node-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}
           path: ${{ runner.temp }}/k2s-results-export/
           if-no-files-found: warn
           retention-days: 7

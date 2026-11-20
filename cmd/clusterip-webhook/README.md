@@ -45,11 +45,16 @@ The webhook binary supports two modes:
 
 ### Webhook Server (default)
 
-Runs the admission webhook HTTP server:
+Runs the admission webhook server:
 
 ```
-/clusterip-webhook --addr=:8443 --tls-cert=/certs/tls.crt --tls-key=/certs/tls.key
+/clusterip-webhook --addr=:8443 --health-addr=:8080 --tls-cert=/certs/tls.crt --tls-key=/certs/tls.key \
+    --client-ca-file=/client-ca/ca.crt
 ```
+
+- `--addr` serves the admission endpoints `/mutate` and `/mutate-workload`. A caller must present a client certificate that chains to a CA in `--client-ca-file`, otherwise the TLS handshake fails and no request is processed.
+- `--client-ca-file` must contain nothing but valid CA certificates. The webhook exits if the file is missing or invalid.
+- `--health-addr` serves `/healthz` over plain HTTP for the kubelet probes, which cannot present a client certificate.
 
 ### Certificate Init (`--init-cert`)
 
@@ -70,6 +75,7 @@ This mode:
 
 - The Deployment uses an **emptyDir** volume for `/certs`, avoiding a dependency on a pre-existing Secret
 - The **init container** generates fresh TLS certificates on every Pod creation
+- The Deployment mounts the ConfigMap `clusterip-webhook-client-ca` (key `ca.crt`) for `--client-ca-file`. It holds the public certificate of the CA that issues the client certificate of the kube-apiserver. This CA is separate from the serving CA of the init container. The ConfigMap is not optional, so the Pod does not start without it
 - Certificate renewal is triggered by recreating the Pod (e.g., `kubectl rollout restart`)
 - `k2s system certificate renew` includes the webhook in its renewal flow
 - The webhook uses `failurePolicy: Ignore` so cluster operations continue if the webhook is temporarily unavailable

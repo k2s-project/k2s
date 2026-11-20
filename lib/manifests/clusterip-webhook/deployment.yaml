@@ -39,7 +39,7 @@ spec:
           effect: NoSchedule
       initContainers:
         - name: init-cert
-          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.13
+          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.14
           imagePullPolicy: IfNotPresent
           args:
             - --init-cert
@@ -68,35 +68,45 @@ spec:
               memory: 64Mi
       containers:
         - name: webhook
-          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.13
+          image: shsk2s.azurecr.io/clusterip-webhook:v1.3.14
           imagePullPolicy: IfNotPresent
           args:
             - --addr=:8443
+            - --health-addr=:8080
             - --linux-subnet=172.21.0.0/24
             - --windows-subnet=172.21.1.0/24
             - --reserved-ips=50
             - --tls-cert=/certs/tls.crt
             - --tls-key=/certs/tls.key
+            - --client-ca-file=/client-ca/ca.crt
           ports:
             - name: https
               containerPort: 8443
+              protocol: TCP
+            - name: health
+              containerPort: 8080
               protocol: TCP
           volumeMounts:
             - name: tls-certs
               mountPath: /certs
               readOnly: true
+            - name: client-ca
+              mountPath: /client-ca
+              readOnly: true
+          # The admission port requires a client certificate, which the kubelet
+          # cannot present. The probes therefore use the plain HTTP health port.
           livenessProbe:
             httpGet:
               path: /healthz
-              port: https
-              scheme: HTTPS
+              port: health
+              scheme: HTTP
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /healthz
-              port: https
-              scheme: HTTPS
+              port: health
+              scheme: HTTP
             initialDelaySeconds: 3
             periodSeconds: 5
           resources:
@@ -117,6 +127,14 @@ spec:
       volumes:
         - name: tls-certs
           emptyDir: {}
+        # Public certificate of the CA that issues the client certificate of the
+        # kube-apiserver. Not optional: the webhook must not start without it.
+        - name: client-ca
+          configMap:
+            name: clusterip-webhook-client-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
 ---
 apiVersion: v1
 kind: Service

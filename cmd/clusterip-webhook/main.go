@@ -63,11 +63,13 @@ var (
 
 func main() {
 	var addr string
+	var healthAddr string
 	var linuxSubnet string
 	var windowsSubnet string
 	var reservedIPs int
 	var tlsCert string
 	var tlsKey string
+	var clientCAFile string
 
 	var initCert bool
 	var webhookName string
@@ -76,11 +78,13 @@ func main() {
 
 	versionFlag := cli.NewVersionFlag(cliName)
 	flag.StringVar(&addr, "addr", ":8443", "address to listen on")
+	flag.StringVar(&healthAddr, "health-addr", defaultHealthAddr, "address of the plain HTTP listener that serves /healthz")
 	flag.StringVar(&linuxSubnet, "linux-subnet", defaultLinuxSubnet, "CIDR for Linux service ClusterIPs")
 	flag.StringVar(&windowsSubnet, "windows-subnet", defaultWindowsSubnet, "CIDR for Windows service ClusterIPs")
 	flag.IntVar(&reservedIPs, "reserved-ips", defaultReservedIPs, "number of IPs reserved at the start of each subnet")
 	flag.StringVar(&tlsCert, "tls-cert", certFile, "path to TLS certificate")
 	flag.StringVar(&tlsKey, "tls-key", keyFile, "path to TLS private key")
+	flag.StringVar(&clientCAFile, "client-ca-file", defaultClientCAFile, "path to the CA certificate that the client certificate of the kube-apiserver must chain to")
 	flag.BoolVar(&initCert, "init-cert", false, "generate TLS certificate and patch webhook config, then exit")
 	flag.StringVar(&webhookName, "webhook-name", "k2s-webhook", "name of the MutatingWebhookConfiguration to patch (init-cert mode)")
 	flag.StringVar(&serviceName, "service-name", "clusterip-webhook", "service name for TLS certificate SANs (init-cert mode)")
@@ -112,6 +116,12 @@ func main() {
 	slog.Info("Starting", "name", cliName, "version", ve.GetVersion().String(), "addr", addr,
 		"linuxSubnet", linuxSubnet, "windowsSubnet", windowsSubnet, "reservedIPs", reservedIPs)
 
+	clientCAs, err := loadClientCAs(clientCAFile)
+	if err != nil {
+		slog.Error("Failed to load client CA", "error", err, "clientCA", clientCAFile)
+		os.Exit(1)
+	}
+
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		slog.Error("Failed to create in-cluster config", "error", err)
@@ -140,30 +150,18 @@ func main() {
 		cache:     NewOSCache(cacheTTL),
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mutate", handler.handleMutate)
-	mux.HandleFunc("/mutate-workload", handler.handleMutateWorkload)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ok")
-	})
-
 	tlsCertPair, err := tls.LoadX509KeyPair(tlsCert, tlsKey)
 	if err != nil {
 		slog.Error("Failed to load TLS certificate", "error", err, "cert", tlsCert, "key", tlsKey)
 		os.Exit(1)
 	}
 
-	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{tlsCertPair},
-			MinVersion:   tls.VersionTLS12,
-		},
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+	server, err := newAdmissionServer(addr, handler, tlsCertPair, clientCAs)
+	if err != nil {
+		slog.Error("Failed to create admission server", "error", err)
+		os.Exit(1)
 	}
+	healthServer := newHealthServer(healthAddr)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -172,6 +170,14 @@ func main() {
 		slog.Info("Listening", "addr", addr)
 		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	go func() {
+		slog.Info("Serving health checks", "addr", healthAddr)
+		if err := healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Health server failed", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -294,8 +300,13 @@ func (h *WebhookHandler) mutateService(request *admissionv1.AdmissionRequest) *a
 		}
 	}
 
+	// A dry-run Service is never persisted, so it must leave the reservations untouched.
+	dryRun := request.DryRun != nil && *request.DryRun
+
 	// Include IPs allocated by concurrent in-flight admissions not yet persisted.
-	h.allocator.cleanupExpiredInFlight()
+	if !dryRun {
+		h.allocator.cleanupExpiredInFlight()
+	}
 	for ip := range h.allocator.inFlight {
 		usedIPs[ip] = true
 	}
@@ -313,7 +324,9 @@ func (h *WebhookHandler) mutateService(request *admissionv1.AdmissionRequest) *a
 		}
 	}
 
-	h.allocator.markInFlight(ip)
+	if !dryRun {
+		h.allocator.markInFlight(ip)
+	}
 	h.allocator.mu.Unlock()
 
 	slog.Info("Allocating ClusterIP",

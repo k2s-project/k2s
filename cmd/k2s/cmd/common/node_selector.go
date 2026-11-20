@@ -4,11 +4,14 @@
 package common
 
 import (
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	contracts "github.com/k2s-project/k2s/internal/contracts/config"
 )
 
 // ParseNodeSelector reads the nodes/node flags (identified by nodeFlagName and nodesFlagName) and
@@ -51,4 +54,54 @@ func IsNodeSelectorEmpty(selector string) bool {
 		}
 	}
 	return true
+}
+
+// ValidateNodeSelector validates a node selector against the runtime configuration.
+// On Linux-only installations, it rejects multi-node selectors, Windows-worker selectors,
+// and unknown non-local hostnames.
+func ValidateNodeSelector(nodeSelector string, runtimeConfig *contracts.K2sRuntimeConfig) error {
+	if IsNodeSelectorEmpty(nodeSelector) {
+		return nil
+	}
+
+	if runtimeConfig == nil || runtimeConfig.InstallConfig() == nil || !runtimeConfig.InstallConfig().LinuxOnly() {
+		return nil
+	}
+
+	if strings.Contains(nodeSelector, ",") {
+		return fmt.Errorf("multi-node selection '%s' is not supported on a Linux-only installation; only the local Linux host is available", nodeSelector)
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(nodeSelector))
+	if isWindowsWorkerSelector(lower) {
+		return fmt.Errorf("node '%s' is a Windows worker node; Linux-only installations do not contain Windows worker nodes", nodeSelector)
+	}
+
+	var cpHostname string
+	if runtimeConfig.ControlPlaneConfig() != nil {
+		cpHostname = strings.ToLower(runtimeConfig.ControlPlaneConfig().Hostname())
+	}
+	localHost, _ := os.Hostname()
+	localHost = strings.ToLower(localHost)
+
+	if lower != "linux" && (cpHostname == "" || lower != cpHostname) && (localHost == "" || lower != localHost) {
+		hostname := ""
+		if runtimeConfig.ControlPlaneConfig() != nil {
+			hostname = runtimeConfig.ControlPlaneConfig().Hostname()
+		}
+		if hostname == "" {
+			hostname = localHost
+		}
+		return fmt.Errorf("node '%s' is not part of this cluster; Linux-only installation only targets the local host node ('%s')", nodeSelector, hostname)
+	}
+
+	return nil
+}
+
+func isWindowsWorkerSelector(lower string) bool {
+	return lower == "windows" ||
+		lower == "win-worker" ||
+		lower == "k2s-win-worker" ||
+		strings.HasPrefix(lower, "win-worker-") ||
+		strings.HasPrefix(lower, "winworker")
 }

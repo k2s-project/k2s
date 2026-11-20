@@ -58,6 +58,17 @@ var _ = Describe("common", func() {
 
 			Expect(params).To(Equal([]string{" -ImagePath 'image.tar'"}))
 		})
+
+		It("validates Linux-only node selectors without false-positiving on 'darwin'", func() {
+			installConfig := config.NewK2sInstallConfig("k2s", true, "1.0.0", false, false)
+			cpConfig := config.NewK2sControlPlaneConfig("darwin")
+			runtimeConfig := config.NewK2sRuntimeConfig(nil, installConfig, cpConfig)
+
+			Expect(ValidateNodeSelector("darwin", runtimeConfig)).To(Succeed())
+			Expect(ValidateNodeSelector("windows", runtimeConfig)).To(HaveOccurred())
+			Expect(ValidateNodeSelector("win-worker", runtimeConfig)).To(HaveOccurred())
+			Expect(ValidateNodeSelector("k2s-win-worker", runtimeConfig)).To(HaveOccurred())
+		})
 	})
 
 	Describe("CmdFailure", Label("unit"), func() {

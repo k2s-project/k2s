@@ -5,10 +5,8 @@ package image
 
 import (
 	"os"
-	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/stretchr/testify/mock"
 
@@ -19,73 +17,6 @@ import (
 var _ = Describe("import", Ordered, func() {
 	BeforeAll(func() {
 		importCmd.Flags().BoolP(common.OutputFlagName, common.OutputFlagShorthand, false, common.OutputFlagUsage)
-	})
-	Describe("buildImportCmd", func() {
-		BeforeEach(func() {
-			resetImportFlags()
-
-			DeferCleanup(resetImportFlags)
-		})
-
-		Context("with tar archieve", func() {
-			It("returns correct import command", func() {
-				importCmd.Flags().Set(tarFlag, "myImage")
-
-				cmd, params, err := buildImportPsCmd(importCmd, false)
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(cmd).To(Equal("&'" + filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "Import-Image.ps1") + "'"))
-				Expect(params).To(ConsistOf(" -ImagePath 'myImage'"))
-			})
-		})
-
-		Context("with directory", func() {
-			It("returns correct import command", func() {
-				importCmd.Flags().Set(dirFlag, "myDir")
-
-				cmd, params, err := buildImportPsCmd(importCmd, false)
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(cmd).To(Equal("&'" + filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "Import-Image.ps1") + "'"))
-				Expect(params).To(ConsistOf(" -ImageDir 'myDir'"))
-			})
-		})
-
-		Context("with tar archieve and directory", func() {
-			It("returns correct import command", func() {
-				importCmd.Flags().Set(tarFlag, "myImage")
-				importCmd.Flags().Set(dirFlag, "myDir")
-
-				cmd, params, err := buildImportPsCmd(importCmd, false)
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(cmd).To(Equal("&'" + filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "Import-Image.ps1") + "'"))
-				Expect(params).To(ConsistOf(" -ImagePath 'myImage'"))
-			})
-		})
-
-		Context("without tar archieve and without directory", func() {
-			It("returns error", func() {
-				cmd, params, err := buildImportPsCmd(importCmd, false)
-
-				Expect(err).To(MatchError("no path to oci archive provided"))
-				Expect(cmd).To(BeEmpty())
-				Expect(params).To(BeNil())
-			})
-		})
-
-		Context("with all flags", func() {
-			It("returns correct import command", func() {
-				importCmd.Flags().Set(tarFlag, "myImage")
-				importCmd.Flags().Set(dockerArchiveFlag, "true")
-
-				cmd, params, err := buildImportPsCmd(importCmd, true)
-
-				Expect(err).ToNot(HaveOccurred())
-				Expect(cmd).To(Equal("&'" + filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "Import-Image.ps1") + "'"))
-				Expect(params).To(ConsistOf(" -ImagePath 'myImage'", " -Windows", " -DockerArchive"))
-			})
-		})
 	})
 
 	Describe("importImage", func() {

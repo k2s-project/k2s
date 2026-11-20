@@ -6,13 +6,9 @@ package image
 import (
 	"errors"
 	"fmt"
-	"log/slog"
-	"path/filepath"
 	"strconv"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
-
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
 
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
@@ -93,10 +89,6 @@ func pullImage(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	psCmd, params := buildPullPsCmd(imageToPull, pullForWindows, showOutput, nodeSelector)
-
-	slog.Debug("PS command created", "command", psCmd, "params", params)
-
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
 	runtimeConfig, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir())
 	if err != nil {
@@ -113,7 +105,7 @@ func pullImage(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("pulling Windows container images is not supported on a Linux-only installation")
 	}
 
-	if err := validateNodeSelector(nodeSelector, runtimeConfig); err != nil {
+	if err := common.ValidateNodeSelector(nodeSelector, runtimeConfig); err != nil {
 		return err
 	}
 
@@ -145,21 +137,4 @@ func validatePullArgs(args []string) error {
 
 func getImageToPull(args []string) string {
 	return args[0]
-}
-
-func buildPullPsCmd(imageToPull string, pullForWindows bool, showOutput bool, nodeSelector string) (psCmd string, params []string) {
-	psCmd = utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "Pull-Image.ps1"))
-
-	params = append(params, " -ImageName "+imageToPull)
-	params = appendNodesParam(params, nodeSelector)
-
-	if pullForWindows {
-		params = append(params, " -Windows")
-	}
-
-	if showOutput {
-		params = append(params, " -ShowLogs")
-	}
-
-	return
 }

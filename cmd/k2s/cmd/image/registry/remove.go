@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 
@@ -64,19 +63,9 @@ func removeRegistry(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unable to parse flag '%s': %w", common.OutputFlagName, err)
 	}
 
-	nodesSelection, err := cmd.Flags().GetString(nodesFlag)
+	nodesParam, err := common.ParseNodeSelector(cmd, nodeFlag, nodesFlag)
 	if err != nil {
-		return fmt.Errorf("unable to parse flag '%s': %w", nodesFlag, err)
-	}
-
-	nodeSelection, err := cmd.Flags().GetString(nodeFlag)
-	if err != nil {
-		return fmt.Errorf("unable to parse flag '%s': %w", nodeFlag, err)
-	}
-
-	nodesParam := strings.TrimSpace(nodesSelection)
-	if nodesParam == "" {
-		nodesParam = strings.TrimSpace(nodeSelection)
+		return err
 	}
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
@@ -91,7 +80,7 @@ func removeRegistry(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := validateNodeSelector(nodesParam, runtimeConfig); err != nil {
+	if err := common.ValidateNodeSelector(nodesParam, runtimeConfig); err != nil {
 		return err
 	}
 

@@ -125,9 +125,13 @@ func listImages(cmd *cobra.Command, args []string) error {
 	terminalPrinter := terminal.NewTerminalPrinter()
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
-	_, err = config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir())
+	runtimeConfig, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir())
 	if err != nil {
 		return handleListImagesRuntimeConfigErr(err, outputOption, terminalPrinter.Println)
+	}
+
+	if err := common.ValidateNodeSelector(nodeSelector, runtimeConfig); err != nil {
+		return err
 	}
 
 	getImagesFunc := func() (*LoadedImages, error) {

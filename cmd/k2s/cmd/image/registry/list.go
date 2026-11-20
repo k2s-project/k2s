@@ -6,19 +6,14 @@ package registry
 import (
 	"errors"
 	"fmt"
-	"log/slog"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
-
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
-	"github.com/k2s-project/k2s/internal/providers/powershell"
+	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/k2s-project/k2s/internal/terminal"
 
 	"github.com/spf13/cobra"
@@ -52,19 +47,9 @@ func init() {
 }
 
 func listRegistries(cmd *cobra.Command, args []string) error {
-	nodeSelection, err := cmd.Flags().GetString(nodeFlag)
+	nodesParam, err := common.ParseNodeSelector(cmd, nodeFlag, nodesFlag)
 	if err != nil {
-		return fmt.Errorf("unable to parse flag '%s': %w", nodeFlag, err)
-	}
-
-	nodesSelection, err := cmd.Flags().GetString(nodesFlag)
-	if err != nil {
-		return fmt.Errorf("unable to parse flag '%s': %w", nodesFlag, err)
-	}
-
-	nodesParam := strings.TrimSpace(nodesSelection)
-	if nodesParam == "" {
-		nodesParam = strings.TrimSpace(nodeSelection)
+		return err
 	}
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
@@ -79,24 +64,47 @@ func listRegistries(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := validateNodeSelector(nodesParam, runtimeConfig); err != nil {
-		return err
-	}
-
-	// On Linux host or Linux-only setup, never invoke PowerShell; print registries directly from config
-	if runtime.GOOS == "linux" || runtimeConfig.InstallConfig().LinuxOnly() {
+	if nodesParam == "" {
 		return printRegistries(runtimeConfig.ClusterConfig().Registries())
 	}
 
-	// If node(s) specified on Windows host, call PowerShell script
-	if nodesParam != "" {
-		return listRegistriesOnNodes(cmd, nodesParam)
+	if err := common.ValidateNodeSelector(nodesParam, runtimeConfig); err != nil {
+		return err
 	}
 
-	return printRegistries(runtimeConfig.ClusterConfig().Registries())
+	showOutput, err := strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
+	if err != nil {
+		return fmt.Errorf("unable to parse flag '%s': %w", common.OutputFlagName, err)
+	}
+
+	registries, err := context.Providers().Image.RegistryList(cmd.Context(), provider.ImageRegistryListConfig{
+		Nodes:      splitNodes(nodesParam),
+		ShowOutput: showOutput,
+	})
+	if err != nil {
+		return err
+	}
+
+	if registries != nil {
+		return printRegistries(registries)
+	}
+
+	return nil
 }
 
-func printRegistries(registries []cconfig.Registry) error {
+func splitNodes(nodesParam string) []string {
+	parts := strings.Split(nodesParam, ",")
+	var nodes []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			nodes = append(nodes, trimmed)
+		}
+	}
+	return nodes
+}
+
+func printRegistries[T ~string](registries []T) error {
 	terminalPrinter := terminal.NewTerminalPrinter()
 
 	if len(registries) == 0 {
@@ -107,36 +115,6 @@ func printRegistries(registries []cconfig.Registry) error {
 	terminalPrinter.PrintHeader("Configured registries:")
 	for _, v := range registries {
 		terminalPrinter.Printfln(" - %s", v)
-	}
-
-	return nil
-}
-
-func listRegistriesOnNodes(cmd *cobra.Command, nodesParam string) error {
-	psCmd := utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "registry", "List-Registries.ps1"))
-
-	showOutput, err := strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
-	if err != nil {
-		return fmt.Errorf("unable to parse flag '%s': %w", common.OutputFlagName, err)
-	}
-
-	params := []string{
-		" -Nodes " + utils.EscapeWithSingleQuotes(nodesParam),
-	}
-
-	if showOutput {
-		params = append(params, " -ShowLogs")
-	}
-
-	slog.Debug("PS command created", "command", psCmd, "params", params)
-
-	cmdResult, err := powershell.ExecutePsWithStructuredResult[*common.CmdResult](psCmd, "CmdResult", common.NewPtermWriter(), params...)
-	if err != nil {
-		return err
-	}
-
-	if cmdResult.Failure != nil {
-		return cmdResult.Failure
 	}
 
 	return nil

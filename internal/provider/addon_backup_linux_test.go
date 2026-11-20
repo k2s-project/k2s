@@ -15,9 +15,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/k2s-project/k2s/internal/definitions"
 )
@@ -57,11 +59,14 @@ func stubAddonCommands(t *testing.T, kubectl func(args []string) ([]byte, error)
 	return fake
 }
 
+var requestTimeoutPattern = regexp.MustCompile(`--request-timeout=\d+s`)
+
 func (f *fakeAddonCommands) kubectlCalls() []string {
 	var calls []string
 	for _, call := range f.calls {
 		if strings.HasPrefix(call, "kubectl ") {
-			calls = append(calls, strings.TrimPrefix(call, "kubectl "))
+			// The request timeout depends on the time left, so keep it out of exact comparisons.
+			calls = append(calls, requestTimeoutPattern.ReplaceAllString(strings.TrimPrefix(call, "kubectl "), "--request-timeout=<n>s"))
 		}
 	}
 	return calls
@@ -440,7 +445,7 @@ func TestRestoreRegistry_ReplacesRepositoryWithBackupContent(t *testing.T) {
 
 	want := []string{
 		"scale statefulset registry -n registry --replicas=0",
-		"get pods -n registry -l app=registry -o name",
+		"get pods -n registry -l app=registry -o name --request-timeout=<n>s",
 		"apply --server-side --force-conflicts --field-manager=k2s-addon-restore -f " + filepath.Join(backupDir, registryConfigBackupFile),
 		"scale statefulset registry -n registry --replicas=1",
 		"rollout status statefulset registry -n registry --timeout=300s",
@@ -694,8 +699,11 @@ func TestRestoreRegistry_AbortsWhenPodsDoNotTerminate(t *testing.T) {
 		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
 	})
 
+	previousPoll := registryPodsPollInterval
+	registryPodsPollInterval = time.Millisecond
+	t.Cleanup(func() { registryPodsPollInterval = previousPoll })
 	previous := registryPodsTerminationTimeout
-	registryPodsTerminationTimeout = 0
+	registryPodsTerminationTimeout = 10 * time.Millisecond
 	t.Cleanup(func() { registryPodsTerminationTimeout = previous })
 
 	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
@@ -715,7 +723,87 @@ func TestRestoreRegistry_AbortsWhenPodsDoNotTerminate(t *testing.T) {
 	}
 	want := []string{
 		"scale statefulset registry -n registry --replicas=0",
-		"get pods -n registry -l app=registry -o name",
+		"get pods -n registry -l app=registry -o name --request-timeout=<n>s",
+		"scale statefulset registry -n registry --replicas=1",
+	}
+	// The pods are polled until the deadline, so repeated polls collapse into one.
+	if got := slices.Compact(fake.kubectlCalls()); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestRestoreRegistry_AbortsWhenTerminationDeadlineIsExpired(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+	backupDir := t.TempDir()
+	writeTestArchive(t, filepath.Join(backupDir, registryRepositoryArchive), []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+
+	previous := registryPodsTerminationTimeout
+	registryPodsTerminationTimeout = 0
+	t.Cleanup(func() { registryPodsTerminationTimeout = previous })
+
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		if args[0] == "get" {
+			t.Errorf("expected no request after the deadline expired, got: %v", args)
+		}
+		return nil, nil
+	})
+
+	err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+	if err == nil || !strings.Contains(err.Error(), "did not terminate") {
+		t.Fatalf("expected termination timeout error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+		t.Fatalf("expected repository data to be untouched: %v", statErr)
+	}
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"scale statefulset registry -n registry --replicas=1",
+	}
+	if got := fake.kubectlCalls(); !slices.Equal(got, want) {
+		t.Fatalf("unexpected kubectl calls:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestRestoreRegistry_KeepsRepositoryAndScalesUpWhenExtractionFails(t *testing.T) {
+	dataDir := useRegistryDataDir(t)
+	writeTestFile(t, filepath.Join(dataDir, "repository", "keep"), "data")
+	backupDir := t.TempDir()
+	writeTestArchive(t, filepath.Join(backupDir, registryRepositoryArchive), []tar.Header{
+		{Name: "repository/", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+	fake := stubAddonCommands(t, func(args []string) ([]byte, error) {
+		return nil, nil
+	})
+	original := linuxAddonCommandOutput
+	linuxAddonCommandOutput = func(name string, args ...string) ([]byte, error) {
+		if name == "sudo" && len(args) > 0 && args[0] == "tar" {
+			fake.calls = append(fake.calls, name+" "+strings.Join(args, " "))
+			return nil, errors.New("no space left on device")
+		}
+		return original(name, args...)
+	}
+	t.Cleanup(func() { linuxAddonCommandOutput = original })
+
+	err := restoreRegistry(backupDir, []string{registryRepositoryArchive})
+
+	if err == nil || !strings.Contains(err.Error(), "extracting") {
+		t.Fatalf("expected extraction error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repository", "keep")); statErr != nil {
+		t.Fatalf("expected repository data to be untouched: %v", statErr)
+	}
+	for _, leftover := range []string{registryRestoreStagingDir, registryRestorePreviousDir} {
+		if _, statErr := os.Stat(filepath.Join(dataDir, leftover)); !os.IsNotExist(statErr) {
+			t.Fatalf("expected '%s' to be removed, got stat error: %v", leftover, statErr)
+		}
+	}
+	want := []string{
+		"scale statefulset registry -n registry --replicas=0",
+		"get pods -n registry -l app=registry -o name --request-timeout=<n>s",
 		"scale statefulset registry -n registry --replicas=1",
 	}
 	if got := fake.kubectlCalls(); !slices.Equal(got, want) {

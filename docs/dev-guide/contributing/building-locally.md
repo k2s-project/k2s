@@ -90,7 +90,7 @@ GOOS=linux go build ./cmd/k2s
 ```
 
 !!! note
-    On Linux, the CLI uses native Go APIs (kubeadm, kubectl, libvirt/KVM, SSH) instead of PowerShell. The platform-specific logic is encapsulated in the [Provider Architecture](../architecture.md#provider-architecture).
+    On Linux, the CLI does not use PowerShell: cluster lifecycle operations are dispatched to Bash scripts under `lib/scripts/linux/debian/` (using the modules in `lib/modules/linux/`), while status, addon, and health-check operations run natively in Go. The platform-specific logic is encapsulated in the [Provider Architecture](../architecture.md#provider-architecture).
 
 ## Building Natively on Linux (no PowerShell)
 

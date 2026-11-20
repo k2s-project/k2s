@@ -37,7 +37,10 @@ const (
 	registryConfigBackupFile  = "registry-config.json"
 	registryConfigMapName     = "registry-config"
 
-	registryPodsPollInterval = 2 * time.Second
+	// Directories inside the registry data directory used to swap the
+	// repository during restore.
+	registryRestoreStagingDir  = ".repository-restore"
+	registryRestorePreviousDir = ".repository-previous"
 )
 
 var (
@@ -46,6 +49,7 @@ var (
 	linuxRegistryDataDir = "/registry"
 
 	registryPodsTerminationTimeout = 180 * time.Second
+	registryPodsPollInterval       = 2 * time.Second
 
 	// kubectlConflictPattern matches an HTTP 409 from the API server, e.g.
 	// "Error from server (Conflict): ... the object has been modified".
@@ -450,21 +454,15 @@ func restoreRegistry(backupDir string, files []string) error {
 	}
 	if !waitForNoRegistryPods() {
 		// Do not touch the data directory while a pod may still write to it.
-		if _, err := linuxAddonCommandOutput("kubectl", "scale", "statefulset", registryStatefulSet, "-n", registryNamespace, "--replicas=1"); err != nil {
-			slog.Warn("[AddonRestore] Scaling registry StatefulSet back up failed", "error", err)
-		}
+		scaleUpRegistryAfterFailure()
 		return fmt.Errorf("registry pods did not terminate within %s; registry data was left unchanged", registryPodsTerminationTimeout)
 	}
 
 	slog.Info("[AddonRestore] Restoring registry repository", "dir", repositoryDir)
-	if _, err := linuxAddonCommandOutput("sudo", "mkdir", "-p", repositoryDir); err != nil {
-		return fmt.Errorf("creating '%s' failed: %w", repositoryDir, err)
-	}
-	if _, err := linuxAddonCommandOutput("sudo", "find", repositoryDir, "-mindepth", "1", "-delete"); err != nil {
-		return fmt.Errorf("clearing '%s' failed: %w", repositoryDir, err)
-	}
-	if _, err := linuxAddonCommandOutput("sudo", "tar", "-xzf", archivePath, "-C", linuxRegistryDataDir); err != nil {
-		return fmt.Errorf("extracting '%s' failed: %w", registryRepositoryArchive, err)
+	if err := replaceRegistryRepository(archivePath, repositoryDir); err != nil {
+		// The previous repository is still in place, so the registry can serve it again.
+		scaleUpRegistryAfterFailure()
+		return err
 	}
 
 	// Older Windows backups may carry the ConfigMap as YAML.
@@ -489,17 +487,72 @@ func restoreRegistry(backupDir string, files []string) error {
 	return nil
 }
 
+// scaleUpRegistryAfterFailure brings the registry back after a failed restore
+// step, so that the addon stays usable and the restore can be retried.
+func scaleUpRegistryAfterFailure() {
+	if _, err := linuxAddonCommandOutput("kubectl", "scale", "statefulset", registryStatefulSet, "-n", registryNamespace, "--replicas=1"); err != nil {
+		slog.Warn("[AddonRestore] Scaling registry StatefulSet back up failed", "error", err)
+	}
+}
+
+// replaceRegistryRepository extracts the archive next to the live repository
+// and swaps the two directories, so a failed extraction (for example when the
+// disk is full) leaves the existing repository untouched.
+func replaceRegistryRepository(archivePath, repositoryDir string) error {
+	stagingDir := filepath.Join(linuxRegistryDataDir, registryRestoreStagingDir)
+	previousDir := filepath.Join(linuxRegistryDataDir, registryRestorePreviousDir)
+	cleanup := func() {
+		if _, err := linuxAddonCommandOutput("sudo", "rm", "-rf", stagingDir, previousDir); err != nil {
+			slog.Warn("[AddonRestore] Removing temporary restore directories failed", "error", err)
+		}
+	}
+
+	if _, err := linuxAddonCommandOutput("sudo", "rm", "-rf", stagingDir, previousDir); err != nil {
+		return fmt.Errorf("removing stale restore directories failed: %w", err)
+	}
+	if _, err := linuxAddonCommandOutput("sudo", "mkdir", "-p", stagingDir); err != nil {
+		return fmt.Errorf("creating '%s' failed: %w", stagingDir, err)
+	}
+	if _, err := linuxAddonCommandOutput("sudo", "tar", "-xzf", archivePath, "-C", stagingDir); err != nil {
+		cleanup()
+		return fmt.Errorf("extracting '%s' failed: %w", registryRepositoryArchive, err)
+	}
+	if _, err := linuxAddonCommandOutput("sudo", "mkdir", "-p", repositoryDir); err != nil {
+		cleanup()
+		return fmt.Errorf("creating '%s' failed: %w", repositoryDir, err)
+	}
+	if _, err := linuxAddonCommandOutput("sudo", "mv", repositoryDir, previousDir); err != nil {
+		cleanup()
+		return fmt.Errorf("moving '%s' aside failed: %w", repositoryDir, err)
+	}
+	if _, err := linuxAddonCommandOutput("sudo", "mv", filepath.Join(stagingDir, "repository"), repositoryDir); err != nil {
+		if _, rollbackErr := linuxAddonCommandOutput("sudo", "mv", previousDir, repositoryDir); rollbackErr != nil {
+			return fmt.Errorf("replacing '%s' failed: %w (rolling back failed, previous data is in '%s': %v)", repositoryDir, err, previousDir, rollbackErr)
+		}
+		cleanup()
+		return fmt.Errorf("replacing '%s' failed: %w", repositoryDir, err)
+	}
+	cleanup()
+	return nil
+}
+
 func waitForNoRegistryPods() bool {
 	deadline := time.Now().Add(registryPodsTerminationTimeout)
 	for {
-		out, err := linuxAddonCommandOutput("kubectl", "get", "pods", "-n", registryNamespace, "-l", "app=registry", "-o", "name")
+		// Bound every request by the remaining time, so an unresponsive API server cannot outlast the deadline.
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		requestTimeout := fmt.Sprintf("--request-timeout=%ds", int((remaining+time.Second-1)/time.Second))
+		out, err := linuxAddonCommandOutput("kubectl", "get", "pods", "-n", registryNamespace, "-l", "app=registry", "-o", "name", requestTimeout)
 		if err == nil && strings.TrimSpace(string(out)) == "" {
 			return true
 		}
-		if time.Now().After(deadline) {
+		if !time.Now().Before(deadline) {
 			return false
 		}
-		time.Sleep(registryPodsPollInterval)
+		time.Sleep(min(registryPodsPollInterval, time.Until(deadline)))
 	}
 }
 

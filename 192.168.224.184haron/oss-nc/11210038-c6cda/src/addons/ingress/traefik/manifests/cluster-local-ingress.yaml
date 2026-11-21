@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# This Ingress serves as central ingress host for the cluster.
+# Any ingress, in any namespace, can use the same hostname, and it will be
+# merged with this one. See for example:
+#  addons/dashboard/manifests/ingress-nginx/dashboard-traefik-ingress.yaml
+#  addons/logging/manifests/opensearch-dashboards/traefik.yaml
+# The certificate is taken from k8s secret 'k2s-cluster-local-tls'
+# This secret will be created by cert-manager, if it is running.
+# If cert-manager is not running, the secret will not be present and traefik
+# will use an own self-signed certificate.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    # addon security installs cert-manager, which will create the secret
+    # based on these annotations and the tls configuration below.
+    cert-manager.io/cluster-issuer: k2s-ca-issuer
+    cert-manager.io/common-name: k2s.cluster.local
+  name: traefik-cluster-local
+  namespace: ingress-traefik
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: k2s.cluster.local
+  tls:
+    - hosts:
+        - k2s.cluster.local
+      secretName: k2s-cluster-local-tls

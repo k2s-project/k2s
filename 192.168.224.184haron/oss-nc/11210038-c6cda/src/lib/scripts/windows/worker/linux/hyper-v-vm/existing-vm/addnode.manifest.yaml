@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+metadata:
+  name: add-linux-worker-node-existing-vm
+  displayName: Add Linux worker node (existing Hyper-V VM on KubeSwitch)
+  summary: Adds an existing Hyper-V VM already connected to KubeSwitch as a worker node.
+
+spec:
+  script:
+    path: lib/scripts/windows/worker/linux/hyper-v-vm/existing-vm/Add.ps1
+    entry: Add.ps1
+  host:
+    os: windows
+    requiresAdministrator: true
+  target:
+    role: worker
+    os: linux
+    provisioning: existing-vm
+  parameters:
+    - name: UserName
+      type: string
+      required: true
+      description: SSH username used to connect to the Linux VM.
+    - name: IpAddress
+      type: string
+      required: true
+      description: IPv4 address of the Linux VM on KubeSwitch (must be in masterNetworkCIDR range).
+    - name: NodeName
+      type: string
+      required: false
+      description: Optional hostname override. If set, it must match the remote hostname.
+    - name: Proxy
+      type: string
+      required: false
+      description: Optional HTTP proxy (transparent proxy is used automatically for KubeSwitch VMs).
+    - name: NodePackagePath
+      type: string
+      required: false
+      description: Path to a pre-built node package for offline installation.
+    - name: ShowLogs
+      type: switch
+      required: false
+      description: Emits logs to the console while the script runs.
+  prerequisites:
+    - K2s cluster is already installed and running on the Windows host.
+    - The target Hyper-V VM is running and connected to KubeSwitch.
+    - The VM has an IP address in the KubeSwitch CIDR range (e.g., 172.19.1.x).
+    - SSH connectivity from the Windows host to the VM is available.
+    - The Windows host public key exists locally and is present in ~/.ssh/authorized_keys on the VM.
+    - The target machine is not already part of the cluster.
+    - The target Linux distribution is supported by K2s worker provisioning.
+  behavior:
+    autoDetection:
+      - Detects the VM by matching the IP address to VMs attached to KubeSwitch.
+      - Detects the remote hostname and uses it as node name.
+      - Detects the installed Linux distribution before provisioning.
+      - Automatically uses transparent proxy (http://172.19.1.1:8181) for VMs on KubeSwitch.
+    postInstall:
+      - Joins the node to the cluster.
+      - Starts the worker node and obtains the worker Pod CIDR.
+  examples:
+    - description: Add a Hyper-V VM on KubeSwitch as a worker node.
+      command: k2s node add --ip-addr 172.19.1.50 --username remote
+    - description: Run the underlying PowerShell script directly.
+      command: .\lib\scripts\windows\worker\linux\hyper-v-vm\existing-vm\Add.ps1 -UserName remote -IpAddress 172.19.1.50 -ShowLogs

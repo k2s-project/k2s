@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "description": "Pinned, reproducible build inputs for the K2s Headlamp plugin OCI images. Single source of truth consumed by Build-HeadlampPluginImages.ps1 and validated by headlamp-plugin-images.unit.tests.ps1. Keep image/version/pluginDir in lock-step with addons/dashboard/addon.manifest.yaml (additionalImages) and Get-RegisteredHeadlampPlugins in dashboard.module.psm1. prebuilt.url is the canonical compiled-bundle artifact: the GitHub Release asset published by headlamp-k8s/plugins (https://github.com/headlamp-k8s/plugins/releases/download/<plugin>-<version>/<asset>.tar.gz). ArtifactHub is NOT used for acquisition (it is only an upstream catalog whose archive-url points back at these same GitHub assets, and it does not list every plugin). prebuilt.localPath points to a repository-vendored bundle tarball under build/plugins/ (preferred, offline, reproducible from a clean checkout); the build falls back to prebuilt.url when the vendored file is absent. Both are validated against prebuilt.sha256.",
+  "registry": "shsk2s.azurecr.io",
+  "baseImage": "docker.io/library/busybox:1.36",
+  "plugins": [
+    {
+      "name": "flux",
+      "pluginDir": "flux-plugin",
+      "version": "0.8.0",
+      "image": "shsk2s.azurecr.io/headlamp-plugin-flux:0.8.0",
+      "detectionSource": "github-releases",
+      "acquisition": "prebuilt",
+      "upstreamReleaseRef": {
+        "owner": "headlamp-k8s",
+        "repo": "plugins",
+        "tagPattern": "flux-{version}"
+      },
+      "source": {
+        "type": "git",
+        "repo": "https://github.com/headlamp-k8s/plugins.git",
+        "ref": "flux-0.8.0",
+        "subdir": "flux"
+      },
+      "prebuilt": {
+        "url": "https://github.com/headlamp-k8s/plugins/releases/download/flux-0.8.0/headlamp-k8s-flux-0.8.0.tar.gz",
+        "localPath": "plugins/flux-0.8.0.tar.gz",
+        "sha256": "48abf409e6f6e5b7898532d036e38c3d8b4329d646f2b3bf9af10f5f5a2b924f"
+      }
+    },
+    {
+      "name": "cert-manager",
+      "pluginDir": "cert-manager-plugin",
+      "version": "0.1.1",
+      "image": "shsk2s.azurecr.io/headlamp-plugin-cert-manager:0.1.1",
+      "detectionSource": "github-releases",
+      "acquisition": "prebuilt",
+      "upstreamReleaseRef": {
+        "owner": "headlamp-k8s",
+        "repo": "plugins",
+        "tagPattern": "cert-manager-{version}"
+      },
+      "source": {
+        "type": "git",
+        "repo": "https://github.com/headlamp-k8s/plugins.git",
+        "ref": "cert-manager-0.1.1",
+        "subdir": "cert-manager"
+      },
+      "prebuilt": {
+        "url": "https://github.com/headlamp-k8s/plugins/releases/download/cert-manager-0.1.1/headlamp-k8s-cert-manager-0.1.1.tar.gz",
+        "localPath": "plugins/cert-manager-0.1.1.tar.gz",
+        "sha256": "2b06caae0a207e2c30ce0d21bc4d672ae0a71a2cffc23a4585199110533032ab"
+      }
+    },
+    {
+      "name": "prometheus",
+      "pluginDir": "prometheus-plugin",
+      "version": "0.9.1",
+      "image": "shsk2s.azurecr.io/headlamp-plugin-prometheus:0.9.1",
+      "detectionSource": "github-releases",
+      "acquisition": "prebuilt",
+      "upstreamReleaseRef": {
+        "owner": "headlamp-k8s",
+        "repo": "plugins",
+        "tagPattern": "prometheus-{version}"
+      },
+      "source": {
+        "type": "git",
+        "repo": "https://github.com/headlamp-k8s/plugins.git",
+        "ref": "prometheus-0.9.1",
+        "subdir": "prometheus"
+      },
+      "prebuilt": {
+        "url": "https://github.com/headlamp-k8s/plugins/releases/download/prometheus-0.9.1/prometheus-0.9.1.tar.gz",
+        "localPath": "plugins/prometheus-0.9.1.tar.gz",
+        "sha256": "06afabe42da69e8e0c5c2632acc3fee020566825d2ae71ff8e4f3dd7f78fc4ae"
+      }
+    },
+    {
+      "name": "keda",
+      "pluginDir": "keda-plugin",
+      "version": "0.1.2",
+      "image": "shsk2s.azurecr.io/headlamp-plugin-keda:0.1.2",
+      "detectionSource": "github-releases",
+      "acquisition": "prebuilt",
+      "upstreamReleaseRef": {
+        "owner": "headlamp-k8s",
+        "repo": "plugins",
+        "tagPattern": "keda-{version}"
+      },
+      "source": {
+        "type": "git",
+        "repo": "https://github.com/headlamp-k8s/plugins.git",
+        "ref": "keda-0.1.2",
+        "subdir": "keda"
+      },
+      "prebuilt": {
+        "url": "https://github.com/headlamp-k8s/plugins/releases/download/keda-0.1.2/headlamp-k8s-keda-0.1.2.tar.gz",
+        "localPath": "plugins/keda-0.1.2.tar.gz",
+        "sha256": "979996aa0d0efdbc852baf6977e178c955264e346fea2c82df94b2d58ef57501"
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Headlamp service exposes a React application on port 4466 (HTTP).
+# Headlamp is configured with --base-url=/dashboard so it correctly
+# constructs relative paths when served under the /dashboard/ prefix.
+# No path rewriting is needed: the /dashboard/ prefix is preserved when
+# forwarding to Headlamp because Headlamp expects it via --base-url.
+#
+# Secure variant (with security/OIDC addon active).
+# No bearer-token middleware needed — Headlamp handles OIDC/token authentication natively.
+# This ingress will be merged with ingress provided in:
+# addons/ingress/traefik/manifests/cluster-local-ingress.yaml
+# and exposes the Headlamp dashboard on:
+# https://k2s.cluster.local/dashboard/
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dashboard-traefik-cluster-local
+  namespace: dashboard
+  annotations:
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: k2s.cluster.local
+      http:
+        paths:
+          - path: /dashboard/
+            pathType: Prefix
+            backend:
+              service:
+                name: headlamp
+                port:
+                  number: 4466

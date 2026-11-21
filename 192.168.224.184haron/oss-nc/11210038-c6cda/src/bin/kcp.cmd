@@ -1,0 +1,7 @@
+@echo off
+REM SPDX-FileCopyrightText: © 2024 The K2s Authors
+REM SPDX-License-Identifier: Apache-2.0
+@echo on
+@echo cleanup of all succeeded pods...
+@kubectl delete pod --field-selector=status.phase==Succeeded -A
+@kubectl delete pod --field-selector=status.phase==Evicted -A

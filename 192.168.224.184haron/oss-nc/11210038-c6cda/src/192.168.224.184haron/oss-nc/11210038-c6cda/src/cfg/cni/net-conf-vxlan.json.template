@@ -1,0 +1,9 @@
+{
+  "Network": "NETWORK.ADDRESS",
+  "Backend": {
+    "name": "vxlan0",
+    "type": "vxlan",
+    "VNI": 4096,
+    "Port": 4789
+  }
+}

@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Build vfprules.dll
+
+name: "Build - vfprules.dll"
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+    paths:
+      - "cmd/vfprules/vfprules/**"
+
+jobs:
+  build-vfp-dll:
+    name: Build vfp dll
+    timeout-minutes: 30
+    continue-on-error: false
+    runs-on: windows-latest
+    env:
+      CI_COMMIT_MESSAGE: "ci: auto-commit vfprules.dll"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        # use an older version since under windows it caues an key verification error
+      - uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.AUTOCOMMITKEY }}
+
+      - name: Set up Windows SDK
+        uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
+        with:
+          sdk-version: 22621
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Configure repo
+        run: |
+          git config --local user.email github-actions@github.com
+          git config --local user.name github-actions
+          git remote -v
+
+      - name: Show all diff
+        run: |
+          git diff --exit-code -- .
+
+      - name: Current working directory
+        run: |
+          ls
+
+      - name: Build vfprules.dll
+        run: |
+          msbuild .\cmd\vfprules\vfprules\vfprules.vcxproj -t:rebuild -verbosity:diag -property:Configuration=Release /property:Platform=x64
+          ls .\bin\cni\vfprules.dll
+
+      - name: Commit dll
+        run: |
+          git status
+          git add bin/cni/vfprules.dll
+          git commit -m "${{ env.CI_COMMIT_MESSAGE }}"
+          git push

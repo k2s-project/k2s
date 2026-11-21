@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds and validates all K2s executables
+# Go-built binaries are no longer committed to git — they must be built locally after clone.
+# This workflow validates that all executables build and tests pass.
+
+name: "Build - All K2s artifacts"
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 17 * * *'  # 19:30 local = 17:30 UTC
+    
+env:
+  GOVERSION: "1.27.4"
+
+
+jobs:
+  build-k2s-artifacts:
+    name: Build K2s Artifacts
+    timeout-minutes: 30
+    continue-on-error: false
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Golang
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{env.GOVERSION}}
+        cache-dependency-path: "**/*.sum"
+
+    - name: Current working directory
+      run: |
+        ls
+
+    - name: Run go mod tidy
+      run: |
+        rm go.sum
+        go mod tidy
+
+    - name: Build all k2s executables
+      run: |
+        .\smallsetup\common\BuildGoExe.ps1 -BuildAll
+        ls
+
+    - name: Run ci Acceptance Tests
+      shell: powershell
+      run: |
+        $ErrorActionPreference = "Continue"
+        .\test\execute_all_tests.ps1 -Tags ci -ExcludeTags unit, integration -V -ThrowOnFailure
+
+    # Some executables are missing which are downloaded when installing
+    # - name: Create catalog file
+    #   run: PackageInspector scan . -out cat -cdfPath .\build\catalog\k2s.cdf -name .\build\catalog\k2s.cat -ca1 "K2s-Catalog"

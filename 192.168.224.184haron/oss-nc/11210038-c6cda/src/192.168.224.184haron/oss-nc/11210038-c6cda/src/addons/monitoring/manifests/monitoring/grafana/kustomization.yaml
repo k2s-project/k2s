@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+
+resources:
+  - dashboards.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - configmap-dashboard-provider.yaml
+  - configmap.yaml
+  - configmaps-datasources.yaml
+  - role.yaml
+  - rolebinding.yaml
+  - secret.yaml
+  - service.yaml
+  - serviceaccount.yaml
+  - servicemonitor.yaml
+  - deployment.yaml

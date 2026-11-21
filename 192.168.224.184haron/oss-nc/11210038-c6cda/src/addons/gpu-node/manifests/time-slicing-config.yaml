@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Template: __TIME_SLICES__ is replaced by Enable.ps1 before applying.
+# Used when TimeSlices >= 2; for default (1), see time-slicing-config-default.yaml.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpu-node
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: time-slicing-config
+  namespace: gpu-node
+data:
+  config.yaml: |
+    version: v1
+    sharing:
+      timeSlicing:
+        resources:
+          - name: nvidia.com/gpu
+            replicas: __TIME_SLICES__

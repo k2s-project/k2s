@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText:  © 2024 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Build the contextfolder server container, after precompilation was done in Linux VM
+#
+# __BEGIN_BuildImage_Variables__
+# ImageName:      k2s.registry.local/weather
+# ExeName:        weather
+# __END_BuildImage_Variables__
+#
+
+FROM public.ecr.aws/docker/library/alpine:edge
+COPY weather /bin/weather
+ENTRYPOINT ["/bin/weather"]

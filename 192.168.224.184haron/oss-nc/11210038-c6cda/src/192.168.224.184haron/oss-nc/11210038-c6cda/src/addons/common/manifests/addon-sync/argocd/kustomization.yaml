@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ArgoCD overlay — deploys shared base (namespace, RBAC, ConfigMaps, Sync-Addons.ps1)
+# plus the addon-sync-poller CronJob that polls the OCI registry every 5 minutes.
+#
+# Design: a Windows HostProcess CronJob runs Sync-Addons.ps1 -CheckDigest true.
+#   It discovers addons/* repos via oras repo ls, selects the highest semver tag,
+#   and only pulls/installs addons whose digest changed since the last run.
+#   Works with any OCI Distribution Spec-compliant registry without configuration.
+#
+# Prerequisites:
+#   - rollout argocd addon enabled
+#   - Registry reachable from the Windows node
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - addon-sync-poller.yaml
+  # No additional RBAC — addon-sync-processor SA (base/rbac.yaml) is sufficient;
+  # the CronJob writes digest state to the host filesystem, no K8s API calls needed.
+

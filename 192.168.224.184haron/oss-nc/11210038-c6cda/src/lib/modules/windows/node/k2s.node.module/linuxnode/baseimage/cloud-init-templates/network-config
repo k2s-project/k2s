@@ -1,0 +1,11 @@
+version: 2
+ethernets:
+  __NETWORK_INTERFACE_NAME__:
+    dhcp4: false
+    addresses: [__IP_ADDRESS_VM__]
+    routes:
+        - to: default
+          via: __IP_ADDRESS_GATEWAY__
+    nameservers:
+      addresses: [__IP_ADDRESSES_DNS_SERVERS__]
+    mtu: 1500

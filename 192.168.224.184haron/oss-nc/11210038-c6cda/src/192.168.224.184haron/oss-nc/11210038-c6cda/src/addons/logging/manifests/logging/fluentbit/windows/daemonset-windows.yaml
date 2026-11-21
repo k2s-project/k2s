@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit-win
+  namespace: logging
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluent-bit-win
+      app.kubernetes.io/instance: fluent-bit-win
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluent-bit-win
+        app.kubernetes.io/instance: fluent-bit-win
+    spec:
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\system"
+      hostNetwork: true
+      serviceAccountName: fluent-bit
+      dnsPolicy: ClusterFirst
+      containers:
+      - name: fluent-bit-win
+        image: shsk2s.azurecr.io/fluent/fluent-bit:5.2.0-hp #windows_image
+        args: ["-c", "fluent-bit.conf"]
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 500Mi
+        volumeMounts:
+        - name:  fluent-bit-win-parsers
+          mountPath: /parsers.conf
+          subPath: parsers.conf
+        - name:  fluent-bit-win-config
+          mountPath: /fluent-bit.conf
+          subPath: fluent-bit.conf
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+      nodeSelector:
+        kubernetes.io/os: windows
+      volumes:
+      - name: fluent-bit-win-parsers
+        configMap:
+          name: fluent-bit-win-parsers
+      - name: fluent-bit-win-config
+        configMap:
+          name: fluent-bit-win-config
+
+# Dockerfile
+# ARG BASE="mcr.microsoft.com/oss/kubernetes/windows-host-process-containers-base-image:v1.0.0"
+# FROM $BASE
+
+# ENV PATH="C:\Windows\system32;C:\Windows;"
+# COPY fluent-bit/bin/fluent-bit.exe .
+# ENTRYPOINT ["fluent-bit.exe"]

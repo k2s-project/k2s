@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: © 2023 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: AddonManifest
+metadata:
+  name: viewer
+  description: Private clinical image viewer running in the Kubernetes cluster
+spec:
+  implementations:
+    - name: viewer
+      description: Private clinical image viewer running in the Kubernetes cluster
+      offline_usage:
+        linux:
+          repos: []
+          deb: []
+          curl: []
+          additionalImages: []
+        windows:
+          curl: []
+      commands:
+        enable:
+          cli:
+            flags:
+              - name: ingress
+                shorthand: i
+                default: nginx
+                description: Ingress controller to use for exposing viewer if not already enabled
+                constraints:
+                  kind: validation-set
+                  validationSet:
+                    - nginx
+                    - nginx-gw
+                    - traefik
+              - name: nodeport
+                shorthand: n
+                default: 0
+                description: Use nodeport for viewer access
+                constraints:
+                  kind: range
+                  range:
+                    min: 30000
+                    max: 32767
+            examples:
+              - cmd: k2s addons enable viewer
+                comment: Enable viewer in k2s
+              - cmd: k2s addons enable viewer --ingress traefik
+                comment: Enable addon viewer in k2s with traefik ingress controller
+          script:
+            subPath: Enable.ps1
+            parameterMappings:
+              - cliFlagName: ingress
+                scriptParameterName: Ingress
+              - cliFlagName: nodeport
+                scriptParameterName: Nodeport
+        disable:
+          cli:
+            examples:
+              - cmd: k2s addons disable viewer
+                comment: Disable addon viewer in k2s
+          script:
+            subPath: Disable.ps1

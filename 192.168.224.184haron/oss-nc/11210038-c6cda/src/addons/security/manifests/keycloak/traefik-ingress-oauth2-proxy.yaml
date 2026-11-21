@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oauth2-proxy
+  namespace: security
+  annotations:
+    traefik.ingress.kubernetes.io/router.tls: 'true'
+    # traefik.ingress.kubernetes.io/router.middlewares: "security-auth-headers@kubernetescrd"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: k2s.cluster.local
+      http:
+        paths:
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy
+                port:
+                  number: 4180
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth2-proxy-forwarder-signin
+  namespace: security
+spec:
+  errors:
+    status:
+      - '401' # Triggers on 401 Unauthorized errors
+    service:
+      name: oauth2-proxy # Service that will handle the error and initiate the redirect
+      namespace: security
+      port: 4180
+    query: '/oauth2/start?rd={url}' # The URL for the OAuth2 sign-in page with the redirect URL
+    statusRewrites:
+      '401': 302
+

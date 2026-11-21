@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dicom
+resources:
+  - dicom-namespace.yaml
+  - dicom-pv.yaml
+  - dicom-pvc.yaml
+  - postgres-deployment.yaml
+  - postgres-service.yaml
+  - dicom-deployment.yaml
+  - dicom-service.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: json-configmap
+    files:
+      - orthanc.json

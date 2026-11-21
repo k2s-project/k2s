@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2017 The Kubernetes Authors. https://github.com/kubernetes-csi/csi-driver-smb
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# v1.20.4
+---
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: smb.csi.k8s.io
+spec:
+  attachRequired: false
+  podInfoOnMount: true
+  volumeLifecycleModes:
+    - Persistent
+    - Ephemeral

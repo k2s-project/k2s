@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: windows-exporter
+  namespace: kube-system
+  labels:
+    app: windows-exporter
+spec:
+  selector:
+    matchLabels:
+      app: windows-exporter
+  template:
+    metadata:
+      labels:
+        app: windows-exporter
+    spec:
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+      - key: "OS"
+        operator: "Equal"
+        value: "Windows"
+        effect: "NoSchedule"
+      hostNetwork: true
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\SYSTEM"
+      hostPID: true
+      containers:
+      - name: windows-exporter
+        image: shsk2s.azurecr.io/prometheus-community/windows-exporter:0.32.1-hp #windows_image
+        args:
+        - --config.file=C:\\config\\windows_exporter.yaml
+        ports:
+        - containerPort: 9100
+          name: metrics
+          protocol: TCP
+        env:
+        - name: CONTAINER_SANDBOX_MOUNT_POINT
+          value: "C:\\"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+      volumes:
+      - name: config
+        configMap:
+          name: windows-exporter-config

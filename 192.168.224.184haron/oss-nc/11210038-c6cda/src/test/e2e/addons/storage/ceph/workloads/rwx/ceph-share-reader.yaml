@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ceph-share-reader
+  namespace: ceph-share-test
+  labels:
+    app: ceph-share-reader
+spec:
+  nodeSelector:
+    kubernetes.io/os: linux
+  containers:
+    - name: reader
+      image: docker.io/library/busybox:1.36
+      command:
+        - sh
+        - -c
+        - >-
+          set -eu;
+          while [ ! -f /mnt/data/hello.txt ]; do sleep 2; done;
+          while true; do sleep 30; done
+      volumeMounts:
+        - name: ceph-data
+          mountPath: /mnt/data
+  volumes:
+    - name: ceph-data
+      persistentVolumeClaim:
+        claimName: ceph-share-test-pvc

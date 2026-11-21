@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Source: nginx-gateway-fabric/templates/service.yaml
+# This is the control plane Service for internal communication with the data plane.
+# To get an NGINX LoadBalancer Service, create a Gateway resource once NGINX Gateway Fabric is installed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-gw-controller
+  namespace: nginx-gw
+  labels:
+    helm.sh/chart: nginx-gateway-fabric-2.9.0
+    app.kubernetes.io/name: nginx-gw
+    app.kubernetes.io/instance: nginx-gw
+    app.kubernetes.io/version: "2.9.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nginx-gw
+    app.kubernetes.io/instance: nginx-gw
+  ports:
+    - name: agent-grpc
+      port: 443
+      protocol: TCP
+      targetPort: 8443
+    - name: metrics
+      port: 9113
+      protocol: TCP
+      targetPort: 9113

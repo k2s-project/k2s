@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-json
+data:
+  config.json: |
+    {
+      "routerBasename": "/viewer/",
+      "extensions": [],
+      "modes": [],
+      "customizationService": {},
+      "showStudyList": true,
+      "maxNumberOfWebWorkers": 3,
+      "showWarningMessageForCrossOrigin": false,
+      "showCPUFallbackMessage": true,
+      "showLoadingIndicator": true,
+      "experimentalStudyBrowserSort": false,
+      "useSharedArrayBuffer": "FALSE",
+      "strictZSpacingForVolumeViewport": true,
+      "groupEnabledModesFirst": true,
+      "allowMultiSelectExport": false,
+      "showErrorDetails": "always",
+      "maxNumRequests": {
+      "interaction": 100,
+      "thumbnail": 75,
+      "prefetch": 25
+      },
+      "dataSources": [
+      {
+        "namespace": "@ohif/extension-default.dataSourcesModule.dicomweb",
+        "sourceName": "DataFromAWS",
+        "configuration": {
+        "friendlyName": "AWS S3 Static wado server",
+        "name": "aws",
+        "wadoUriRoot": "https://d14fa38qiwhyfd.cloudfront.net/dicomweb",
+        "qidoRoot": "https://d14fa38qiwhyfd.cloudfront.net/dicomweb",
+        "wadoRoot": "https://d14fa38qiwhyfd.cloudfront.net/dicomweb",
+        "qidoSupportsIncludeField": false,
+        "imageRendering": "wadors",
+        "thumbnailRendering": "wadors",
+        "enableStudyLazyLoad": true,
+        "supportsFuzzyMatching": false,
+        "supportsWildcard": true,
+        "staticWado": true,
+        "singlepart": "bulkdata,video",
+        "bulkDataURI": {
+          "enabled": true,
+          "relativeResolution": "studies"
+        },
+        "omitQuotationForMultipartRequest": true
+        }
+      },
+      {
+        "namespace": "@ohif/extension-default.dataSourcesModule.dicomweb",
+        "sourceName": "dataFromDicomAddon",
+        "configuration": {
+        "friendlyName": "Dicom addon static wado server",
+        "name": "Dicom addon",
+        "wadoUriRoot": "http://k2s.cluster.local/dicom/dicomweb",
+        "qidoRoot": "http://k2s.cluster.local/dicom/dicomweb",
+        "wadoRoot": "http://k2s.cluster.local/dicom/dicomweb",
+        "qidoSupportsIncludeField": false,
+        "imageRendering": "wadors",
+        "thumbnailRendering": "wadors",
+        "enableStudyLazyLoad": true,
+        "supportsFuzzyMatching": false,
+        "supportsWildcard": true,
+        "staticWado": true,
+        "singlepart": "bulkdata,video",
+        "bulkDataURI": {
+          "enabled": true,
+          "relativeResolution": "studies"
+        },
+        "omitQuotationForMultipartRequest": true
+        }
+      },
+      {
+        "namespace": "@ohif/extension-default.dataSourcesModule.dicomweb",
+        "sourceName": "dataFromDicomAddonTls",
+        "configuration": {
+        "friendlyName": "Dicom addon static wado server",
+        "name": "Dicom addon",
+        "wadoUriRoot": "https://k2s.cluster.local/dicom/dicomweb",
+        "qidoRoot": "https://k2s.cluster.local/dicom/dicomweb",
+        "wadoRoot": "https://k2s.cluster.local/dicom/dicomweb",
+        "qidoSupportsIncludeField": false,
+        "imageRendering": "wadors",
+        "thumbnailRendering": "wadors",
+        "enableStudyLazyLoad": true,
+        "supportsFuzzyMatching": false,
+        "supportsWildcard": true,
+        "staticWado": true,
+        "singlepart": "bulkdata,video",
+        "bulkDataURI": {
+          "enabled": true,
+          "relativeResolution": "studies"
+        },
+        "omitQuotationForMultipartRequest": true
+        }
+      }
+      ],
+      "defaultDataSourceName": "DataFromAWS"
+    }

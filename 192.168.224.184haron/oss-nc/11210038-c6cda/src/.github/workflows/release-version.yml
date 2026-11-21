@@ -1,0 +1,342 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release - Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to publish, for example v1.8.0
+        required: true
+        type: string
+      previous_tag:
+        description: Previous release tag for changelog generation, for example v1.7.1. Leave empty to auto-detect.
+        required: false
+        type: string
+#  push:
+#    tags:
+#      - 'v1.*'
+
+env:
+  GOVERSION: "1.27.4"
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+jobs:
+  build_release:
+    name: build_release
+    runs-on: windows-latest
+    steps:
+        # checkout the code
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout release tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseTag = '${{ inputs.release_tag }}'
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw 'A release_tag input is required.'
+          }
+
+          if ('${{ github.ref_type }}' -ne 'branch' -or '${{ github.ref_name }}' -notlike 'release-*') {
+            throw "Run this workflow from the matching release branch, for example 'release-1.8.x', not from '${{ github.ref_name }}'."
+          }
+
+          git fetch --tags --force
+          git rev-parse --verify "refs/tags/$releaseTag" | Out-Null
+
+          $workflowRefCommit = git rev-parse HEAD
+          $tagCommit = git rev-list -n 1 $releaseTag
+          Write-Host "Workflow ref commit: $workflowRefCommit"
+          Write-Host "Release tag commit: $tagCommit"
+
+          git checkout --detach $releaseTag
+
+          $checkedOutCommit = git rev-parse HEAD
+          if ($checkedOutCommit -ne $tagCommit) {
+            throw "Expected to check out tag '$releaseTag' at $tagCommit, but checked out $checkedOutCommit."
+          }
+
+          Write-Host "Checked out '$releaseTag' for release packaging."
+
+        # Go-built binaries are no longer committed to git - build them first
+      - name: Set up Golang
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{env.GOVERSION}}
+          cache-dependency-path: "**/*.sum"
+
+      - name: Build all k2s Windows executables
+        run: |
+          .\bin\bgow
+
+      - name: Validate built executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          .\k2s.exe version
+
+          $expectedFiles = @(
+            '.\k2s.exe',
+            '.\bin\cloudinitisobuilder.exe',
+            '.\bin\devgon.exe',
+            '.\bin\httpproxy.exe',
+            '.\bin\yaml2json.exe',
+            '.\bin\zap.exe',
+            '.\bin\cni\bridge.exe',
+            '.\bin\cni\l4proxy.exe',
+            '.\bin\cni\vfprules.exe',
+            '.\bin\cni\cplauncher.exe'
+          )
+
+          foreach ($expectedFile in $expectedFiles) {
+            if (-not (Test-Path -Path $expectedFile -PathType Leaf)) {
+              throw "Expected built executable not found: $expectedFile"
+            }
+          }
+
+        # get the version from the freshly-built k2s cli
+      - name: version
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $versionOutput = .\k2s.exe version
+          $versionParts = $versionOutput -split '\s+'
+          if ($versionParts.Count -lt 2) {
+            throw "Could not parse version from output: $versionOutput"
+          }
+
+          $version = $versionParts[1]
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+        # get previous tag
+      - name: Get previous tag
+        id: previousTag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseTag = '${{ inputs.release_tag }}'
+          $previousTag = '${{ inputs.previous_tag }}'
+
+          if ([string]::IsNullOrWhiteSpace($previousTag)) {
+            if ($releaseTag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+              throw "Could not auto-detect previous tag because release tag '$releaseTag' does not match vMAJOR.MINOR.PATCH. Provide previous_tag manually."
+            }
+
+            $releaseVersion = [version]$Matches.version
+            $previousTag = git --no-pager tag --list 'v[0-9]*' |
+              ForEach-Object {
+                if ($_ -match '^v(?<version>\d+\.\d+\.\d+)$') {
+                  [PSCustomObject]@{
+                    Tag = $_
+                    Version = [version]$Matches.version
+                  }
+                }
+              } |
+              Where-Object { $_.Version -lt $releaseVersion } |
+              Sort-Object -Property Version -Descending |
+              Select-Object -First 1 -ExpandProperty Tag
+          }
+
+          if ([string]::IsNullOrWhiteSpace($previousTag)) {
+            throw "Could not determine previous tag for '$releaseTag'."
+          }
+
+          git rev-parse --verify "refs/tags/$previousTag" | Out-Null
+
+          Write-Host "previousTag: $previousTag"
+          "previousTag=$previousTag" >> $env:GITHUB_ENV
+
+      - name: Generate release notes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $PSNativeCommandUseErrorActionPreference = $false
+          }
+
+          $releaseTag = '${{ inputs.release_tag }}'
+          $previousTag = '${{ env.previousTag }}'
+          $repo = $env:GITHUB_REPOSITORY
+          $assetName = "K2s-$releaseTag-windows.zip"
+          $releaseStart = [datetimeoffset](git log -1 --format=%cI $previousTag)
+          $releaseEnd = [datetimeoffset](git log -1 --format=%cI $releaseTag)
+
+          $searchStart = $releaseStart.UtcDateTime.ToString('yyyy-MM-dd')
+          $searchEnd = $releaseEnd.UtcDateTime.ToString('yyyy-MM-dd')
+          $query = "repo:$repo is:issue is:closed closed:$searchStart..$searchEnd"
+          $issuesQueryUrl = "https://github.com/$repo/issues?q=is%3Aissue%20is%3Aclosed%20closed%3A$searchStart..$searchEnd"
+          Write-Host "Searching release issues with query: $query"
+
+          $issueLines = New-Object System.Collections.Generic.List[string]
+          $closedIssues = New-Object System.Collections.Generic.List[object]
+          $page = 1
+          do {
+            $searchResponseJson = gh api --method GET search/issues -f q=$query -f per_page=100 -f page=$page
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to search issues closed between '$previousTag' and '$releaseTag'."
+            }
+
+            $searchResponse = $searchResponseJson | ConvertFrom-Json
+            foreach ($issue in $searchResponse.items) {
+              $closedAt = [datetimeoffset]$issue.closed_at
+
+              if ($closedAt -le $releaseStart -or $closedAt -gt $releaseEnd) {
+                continue
+              }
+
+              $closedIssues.Add([PSCustomObject]@{
+                Number = [int]$issue.number
+                Title = [string]$issue.title
+                ClosedAt = $closedAt
+              })
+            }
+
+            $page++
+          } while ($searchResponse.items.Count -eq 100)
+
+          foreach ($issue in ($closedIssues | Sort-Object -Property ClosedAt, Number)) {
+            $issueLines.Add("- [Issue #$($issue.Number)](https://github.com/$repo/issues/$($issue.Number)) $($issue.Title)")
+          }
+
+          if ($issueLines.Count -eq 0) {
+            throw "No GitHub issues were closed between '$previousTag' and '$releaseTag'."
+          }
+
+          $releaseNotes = New-Object System.Collections.Generic.List[string]
+          $releaseNotes.Add('K2s solution is a Kubernetes (K8s) distribution which packages different components into one small and easy to use solution.')
+          $releaseNotes.Add("It has its focus on running mixed Windows & Linux workloads in Kubernetes and it's available on Windows hosts.")
+          $releaseNotes.Add('')
+          $releaseNotes.Add('## What''s Changed')
+          $releaseNotes.Add('')
+          $releaseNotes.Add("In this new version $releaseTag we have solved the following issues:")
+          $releaseNotes.Add('')
+          foreach ($issueLine in $issueLines) {
+            $releaseNotes.Add($issueLine)
+          }
+          $releaseNotes.Add('')
+          $releaseNotes.Add("In addition to GitHub's source code artifacts, this release includes a Windows package with executables built with ``.\bin\bgow``: ``$assetName``.")
+          $releaseNotes.Add('')
+
+          git merge-base --is-ancestor $previousTag $releaseTag
+          if ($LASTEXITCODE -eq 0) {
+            $releaseNotes.Add("Full Changelog: [$previousTag...$releaseTag](https://github.com/$repo/compare/$previousTag...$releaseTag)")
+          }
+          else {
+            $releaseNotes.Add("Closed Issues: [$previousTag...$releaseTag]($issuesQueryUrl)")
+            Write-Host "Skipping full changelog compare link because '$previousTag' is not an ancestor of '$releaseTag'."
+          }
+
+          Set-Content -Path release-notes.md -Value $releaseNotes -Encoding UTF8
+
+        # create a release package with source code and the binaries built by bgow
+      - name: Create source and Windows binaries package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $baseDirectory = (Get-Location).Path
+          $assetName = "K2s-${{ inputs.release_tag }}-windows.zip"
+          $targetPath = Join-Path $baseDirectory $assetName
+
+          if (Test-Path -Path $targetPath) {
+            Remove-Item -Path $targetPath -Force
+          }
+
+          $excludedRootEntries = @(
+            '.git',
+            '.github',
+            '.vscode'
+          )
+
+          $excludedFiles = @(
+            '.gitignore',
+            $assetName
+          )
+
+          $zipFileStream = [System.IO.File]::Open($targetPath, [System.IO.FileMode]::CreateNew)
+          $zipArchive = [System.IO.Compression.ZipArchive]::new($zipFileStream, [System.IO.Compression.ZipArchiveMode]::Create)
+
+          try {
+            Get-ChildItem -Path $baseDirectory -Force -Recurse -File | ForEach-Object {
+              $relativePath = [System.IO.Path]::GetRelativePath($baseDirectory, $_.FullName)
+              $rootEntry = ($relativePath -split '[\\/]', 2)[0]
+
+              if ($excludedRootEntries -contains $rootEntry) {
+                return
+              }
+
+              if ($excludedFiles -contains $relativePath) {
+                return
+              }
+
+              $entryName = $relativePath.Replace('\\', '/')
+              [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zipArchive, $_.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+            }
+          }
+          finally {
+            $zipArchive.Dispose()
+            $zipFileStream.Dispose()
+          }
+
+          $createdArchive = Get-Item -Path $targetPath
+          Write-Host "Created $assetName ($($createdArchive.Length) bytes)"
+
+        # create the release if needed and upload the zip file
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $releaseTag = '${{ inputs.release_tag }}'
+          $assetPath = ".\K2s-$releaseTag-windows.zip"
+
+          if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+            $PSNativeCommandUseErrorActionPreference = $false
+          }
+
+          $releaseExists = $false
+          gh release view $releaseTag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $releaseExists = $true
+          }
+
+          if ($releaseExists) {
+            gh release edit $releaseTag --title $releaseTag --notes-file release-notes.md --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to update release notes for '$releaseTag'."
+            }
+
+            gh release upload $releaseTag $assetPath --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload release asset '$assetPath' to '$releaseTag'."
+            }
+          }
+          else {
+            gh release create $releaseTag $assetPath --title $releaseTag --notes-file release-notes.md --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create release '$releaseTag'."
+            }
+          }

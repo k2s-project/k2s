@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: hydra-config-map
+  namespace: security
+data:
+  hydra.yml: |
+    urls:
+      self:
+        issuer: http://172.19.1.1:4444
+        public: http://172.19.1.1:4444/
+        admin: http://172.19.1.1:4445/
+      consent: http://172.19.1.1:3000/consent
+      login: http://172.19.1.1:3000/login
+      logout: http://172.19.1.1:3000/logout
+
+    secrets:
+      system:
+        - iIdqsVUynn1SVR9MA7QjT9Yc4
+
+    oidc:
+      subject_identifiers:
+        supported_types:
+          - pairwise
+          - public
+        pairwise:
+          salt: iIdqsVUynn1SVR9MA7QjT9Yc4
+          
+    dsn: "sqlite://c:\\data\\db.sqlite?_fk=true&mode=rwc"
+
+    strategies:
+      access_token: jwt
+      
+    serve:
+      public:
+        port: 4444
+        host: 172.19.1.1
+      admin:
+        port: 4445
+        host: 172.19.1.1
+      cookies:
+        same_site_mode: Lax
+
+    webfinger:
+      oidc_discovery:
+        jwks_url: http://172.19.1.1:4444/.well-known/jwks.json
+        token_url: http://172.19.1.1:4444/oauth2/token
+        auth_url: http://172.19.1.1:4444/oauth2/auth
+        client_registration_url: http://172.19.1.1:4444/clients
+        supported_claims:
+          - email
+          - given_name
+          - family_name
+          - emailVerified
+        supported_scope:
+          - email
+          - openid
+          - offline
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hydra
+  namespace: security
+  labels:
+    app: hydra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hydra
+  template:
+    metadata:
+      labels:
+        app: hydra
+    spec:
+      initContainers:
+        - name: init-hydra-db
+          image: shsk2s.azurecr.io/login:v1.2.0 #windows_image
+          workingDir: '%CONTAINER_SANDBOX_MOUNT_POINT%'
+          command:
+            - "%CONTAINER_SANDBOX_MOUNT_POINT%\\hydra.exe migrate -c %CONTAINER_SANDBOX_MOUNT_POINT%\\config\\hydra.yml sql -e --yes"
+          volumeMounts:
+            - name: bindir
+              mountPath: 'C:\data'
+            - name: hydra-config-volume
+              mountPath: 'C:\config'
+      containers:
+        - name: hydra
+          image: shsk2s.azurecr.io/login:v1.2.0 #windows_image
+          workingDir: '%CONTAINER_SANDBOX_MOUNT_POINT%'
+          command:
+            - "%CONTAINER_SANDBOX_MOUNT_POINT%\\hydra.exe serve all -c %CONTAINER_SANDBOX_MOUNT_POINT%\\config\\hydra.yml --dev"
+          volumeMounts:
+            - name: bindir
+              mountPath: 'C:\data'
+            - name: hydra-config-volume
+              mountPath: 'C:\config'
+      volumes:
+        - name: bindir
+          hostPath:
+            path: <%K2S-SECURITY-DATA%>
+            type: Directory
+        - name: hydra-config-volume
+          configMap:
+            name: hydra-config-map
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\SYSTEM"
+      hostNetwork: true
+      tolerations:
+        - key: 'OS'
+          operator: 'Equal'
+          value: 'Windows'
+          effect: 'NoSchedule'
+      nodeSelector:
+        kubernetes.io/os: windows

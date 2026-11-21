@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: smb-share-test-windows2
+  namespace: smb-share-test
+  labels:
+    app: smb-share-test-windows2
+spec:
+  serviceName: smb-share-test-windows2
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: smb-share-test-windows2
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": windows
+      tolerations:
+        - key: "OS"
+          operator: "Equal"
+          value: "Windows"
+          effect: "NoSchedule"
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: smb-share-test-windows2
+          image: shsk2s.azurecr.io/diskwriter:v1.2.0
+          command:
+            - "diskwriter.exe"
+            - "-outfile"
+            - "C:\\mnt\\smb\\smb-share-test-windows.txt"
+            - "-interval"
+            - "1000"
+          volumeMounts:
+            - name: persistent-storage
+              mountPath: /mnt/smb
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: smb-share-test-windows2
+  volumeClaimTemplates:
+    - metadata:
+        name: persistent-storage
+      spec:
+        storageClassName: smb-retain
+        accessModes: ["ReadWriteMany"]
+        resources:
+          requests:
+            storage: 1Gi

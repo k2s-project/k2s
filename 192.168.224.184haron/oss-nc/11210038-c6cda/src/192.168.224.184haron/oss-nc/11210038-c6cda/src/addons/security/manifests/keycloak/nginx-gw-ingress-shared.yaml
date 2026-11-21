@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared nginx-gw infrastructure for the security namespace HTTPRoutes.
+# The ReferenceGrant authorizes any HTTPRoute in the 'security' namespace to
+# attach to the 'nginx-cluster-local' Gateway in the 'nginx-gw' namespace.
+# It is required by both the oauth2-proxy and keycloak HTTPRoutes, so it is
+# applied whenever at least one of those backends is present.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: security-to-nginx-gw
+  namespace: nginx-gw
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: security
+  to:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: nginx-cluster-local
+

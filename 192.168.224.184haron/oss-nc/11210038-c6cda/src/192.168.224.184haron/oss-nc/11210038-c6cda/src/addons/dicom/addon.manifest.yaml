@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: © 2023 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: AddonManifest
+metadata:
+  name: dicom
+  description: DICOM client/server for medical imaging data running in Kubernetes
+  annotations:
+    k2s.cluster.local/update-ingress-configuration: "true"
+spec:
+  implementations:
+    - name: dicom
+      description: DICOM client/server for medical imaging data running in Kubernetes
+      commands:
+        enable:
+          cli:
+            flags:
+              - name: ingress
+                default: none
+                description: Ingress controller to use for exposing dicom server user interface
+                constraints:
+                  kind: validation-set
+                  validationSet:
+                    - none
+                    - nginx
+                    - nginx-gw
+                    - traefik
+              - name: storage
+                default: none
+                description: Storage addons for storing DICOM data
+                constraints:
+                  kind: validation-set
+                  validationSet:
+                    - none
+                    - smb
+              - name: storagedir
+                default: none
+                description: Path to smb storage directory (e.g., /mnt/k8s-smb-share)
+            examples:
+              - cmd: k2s addons enable dicom
+                comment: Enable dicom in k2s
+              - cmd: k2s addons enable dicom --ingress nginx
+                comment: Enable dicom in k2s with nginx ingres
+              - cmd: k2s addons enable dicom --ingress nginx-gw
+                comment: Enable dicom in k2s with nginx-gw ingres
+              - cmd: k2s addons enable dicom --ingress traefik
+                comment: Enable dicom in k2s with traefik ingres
+              - cmd: k2s addons enable dicom --storage smb
+                comment: Enable dicom in k2s with storage addon smb
+              - cmd: k2s addons enable dicom --storage smb --storagedir /mnt/k8s-smb-share
+                comment: Enable dicom in k2s with storage addon smb at /mnt/k8s-smb-share
+          script:
+            subPath: Enable.ps1
+            parameterMappings:
+              - cliFlagName: ingress
+                scriptParameterName: Ingress
+              - cliFlagName: storage
+                scriptParameterName: Storage
+              - cliFlagName: storagedir
+                scriptParameterName: StorageDir
+        disable:
+          cli:
+            flags:
+              - name: force
+                shorthand: f
+                default: false
+                description: Disable the addon and DELETE ALL DATA without user confirmation
+            examples:
+              - cmd: k2s addons disable dicom
+                comment: Disable addon dicom in k2s
+              - cmd: k2s addons disable dicom -f
+                comment: Removes dicom addon without prompting for confirmation
+          script:
+            subPath: Disable.ps1
+            parameterMappings:
+              - cliFlagName: force
+                scriptParameterName: Force

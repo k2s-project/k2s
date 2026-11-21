@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ceph-share-win-pvc
+  namespace: ceph-share-test
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ceph-smb
+  resources:
+    requests:
+      storage: 1Gi

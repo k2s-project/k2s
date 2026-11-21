@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Source: kube-prometheus-stack/charts/grafana/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-prometheus-stack-grafana
+  namespace: monitoring
+  labels:
+    helm.sh/chart: grafana-6.57.4
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: kube-prometheus-stack
+    app.kubernetes.io/version: '13.3.1'
+    app.kubernetes.io/managed-by: Helm
+data:
+  grafana.ini: |
+    [analytics]
+    check_for_updates = true
+    [grafana_net]
+    url = https://grafana.net
+    [log]
+    mode = console
+    # [log.console]
+    # level=debug
+    [paths]
+    data = /var/lib/grafana
+    logs = /var/log/grafana
+    plugins = /var/lib/grafana/plugins
+    provisioning = /etc/grafana/provisioning
+    [server]
+    # these settings needed to make it work with Ingress
+    root_url = https://k2s.cluster.local/monitoring
+    serve_from_sub_path = true
+    domain = k2s.cluster.local
+    [auth]
+    oauth_auto_login = true
+    signout_redirect_url = "https://k2s.cluster.local/oauth2/sign_out"
+    [auth.proxy]
+    enabled: true
+    header_name = X-Email
+    header_property = email
+    auto_sign_up: true
+    [users]
+    allow_sign_up = false
+    auto_assign_org = true
+    auto_assign_org_role = Viewer
+    [auth.anonymous]
+    enabled = true
+    org_role = Viewer

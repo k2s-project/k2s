@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Test clients that call the albums-win functionality THROUGH the traefik ingress,
+# which routes to the albums-external Service and finally to the native albumswin.exe.
+# Both clients call the DNS name http://k2s.cluster.local/albums-win directly (it
+# resolves to the traefik ingress at 172.19.1.100 - in-cluster via CoreDNS for the
+# Linux pod, and via the host resolver for the Windows HostProcess client). Using the
+# URL (no -H Host header) also avoids cmd.exe quote-escaping on Windows.
+# The Windows client runs as a HostProcess container because normal (process-isolated)
+# Windows images must match the node OS build; HostProcess runs on any build using the
+# host's own curl.exe.
+# Apply order: 10-external-service.yaml, 30-gateway-api.yaml, then this file.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl-linux-ingress
+  namespace: hostprocess-examples
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl-linux-ingress
+  template:
+    metadata:
+      labels:
+        app: curl-linux-ingress
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: curl
+          image: docker.io/curlimages/curl:8.5.0
+          command: [sh]
+          args:
+            - -c
+            - >-
+              echo '+++ linux curl calling albums-win via traefik ingress +++';
+              while true; do
+                echo "--- GET /albums-win (through ingress) ---";
+                curl -s http://k2s.cluster.local/albums-win || echo 'curl failed';
+                echo;
+                sleep 15;
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curl-windows-ingress
+  namespace: hostprocess-examples
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: curl-windows-ingress
+  template:
+    metadata:
+      labels:
+        app: curl-windows-ingress
+    spec:
+      nodeSelector:
+        kubernetes.io/os: windows
+      tolerations:
+        - key: 'OS'
+          operator: 'Equal'
+          value: 'Windows'
+          effect: 'NoSchedule'
+      securityContext:
+        windowsOptions:
+          hostProcess: true
+          runAsUserName: "NT AUTHORITY\\SYSTEM"
+      hostNetwork: true
+      terminationGracePeriodSeconds: 5
+      containers:
+        # pause-win is already used by this cluster, so it is guaranteed to pull.
+        - name: curl
+          image: shsk2s.azurecr.io/pause-win:v1.8.0
+          imagePullPolicy: IfNotPresent
+          # for /l with step 0 loops forever; use `ping` as the delay (timeout needs a
+          # console input handle, which HostProcess containers lack).
+          command: ['cmd.exe', '/c']
+          args:
+            - >-
+              echo +++ windows curl calling albums-win via traefik ingress +++ &
+              for /l %i in (1,0,2) do (
+              curl.exe -s http://k2s.cluster.local/albums-win &
+              echo. &
+              ping -n 16 127.0.0.1 > NUL )

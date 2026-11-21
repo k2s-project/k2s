@@ -1,0 +1,385 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://github.com/k2s-project/k2s/addon.manifest.schema.json",
+    "title": "Addon Manifest",
+    "description": "Addon manifest containing all metadata and available commands",
+    "type": "object",
+    "properties": {
+        "apiVersion": {
+            "type": "string"
+        },
+        "kind": {
+            "const": "AddonManifest"
+        },
+        "metadata": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "description": "The unique name of an addon",
+                    "type": "string"
+                },
+                "description": {
+                    "description": "The description of an addon for user display",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "name",
+                "description"
+            ]
+        },
+        "spec": {
+            "type": "object",
+            "properties": {
+                "implementations": {
+                    "description": "Implementations of the addon",
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string"
+                            },
+                            "description": {
+                                "type": "string"
+                            },
+                            "offline_usage": {
+                                "$ref": "/schemas/offline_usage"
+                            },
+                            "commands": {
+                                "description": "Metadata for mandatory commands the addon has to support/provide",
+                                "type": "object",
+                                "properties": {
+                                    "enable": {
+                                        "description": "Command to enable the addon",
+                                        "$ref": "/schemas/command"
+                                    },
+                                    "disable": {
+                                        "description": "Command to enable the addon",
+                                        "$ref": "/schemas/command"
+                                    }
+                                },
+                                "required": [
+                                    "enable",
+                                    "disable"
+                                ]
+                            }
+                        },
+                        "required": [
+                            "name",
+                            "commands"
+                        ]
+                    }
+                }
+            },
+            "required": [
+                "implementations"
+            ]
+        }
+    },
+    "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+    ],
+    "$defs": {
+        "offline_usage": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "/schemas/offline_usage",
+            "description": "Offline usage metadata for package/container image import/export",
+            "type": "object",
+            "properties": {
+                "linux": {
+                    "type": "object",
+                    "properties": {
+                        "repos": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "uniqueItems": true
+                        },
+                        "deb": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "uniqueItems": true
+                        },
+                        "additionalImages": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "uniqueItems": true
+                        },
+                        "additionalImagesFiles": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "uniqueItems": true
+                        },
+                        "curl": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "/schemas/curl"
+                            }
+                        }
+                    },
+                    "required": [
+                        "repos",
+                        "deb",
+                        "additionalImages",
+                        "curl"
+                    ]
+                },
+                "windows": {
+                    "type": "object",
+                    "properties": {
+                        "curl": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "/schemas/curl"
+                            }
+                        }
+                    },
+                    "required": [
+                        "curl"
+                    ]
+                }
+            },
+            "required": [
+                "linux",
+                "windows"
+            ]
+        },
+        "curl": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "/schemas/curl",
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string"
+                },
+                "destination": {
+                    "type": "string"
+                }
+            },
+            "required": [
+                "url",
+                "destination"
+            ]
+        },
+        "command": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "/schemas/command",
+            "description": "Command manifest containing all metadata for defining addon CLI commands for k2s executable",
+            "type": "object",
+            "properties": {
+                "cli": {
+                    "description": "The CLI config",
+                    "type": "object",
+                    "properties": {
+                        "flags": {
+                            "description": "The available CLI flags",
+                            "type": "array",
+                            "items": {
+                                "description": "CLI flag config",
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "description": "flag name as it is used via CLI, e.g. 'proxy' for usage '--proxy'",
+                                        "type": "string"
+                                    },
+                                    "shorthand": {
+                                        "description": "flag shorthand as it is used via CLI, e.g. 'p' for usage '-p'",
+                                        "type": "string"
+                                    },
+                                    "default": {
+                                        "description": "flag default value",
+                                        "type": [
+                                            "number",
+                                            "string",
+                                            "boolean"
+                                        ]
+                                    },
+                                    "description": {
+                                        "description": "flag description for CLI help generation",
+                                        "type": "string"
+                                    },
+                                    "constraints": {
+                                        "description": "flag value constraints",
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {
+                                                "default": "validation-set",
+                                                "enum": [
+                                                    "validation-set",
+                                                    "range"
+                                                ]
+                                            }
+                                        },
+                                        "required": [
+                                            "kind"
+                                        ],
+                                        "if": {
+                                            "properties": {
+                                                "kind": {
+                                                    "const": "validation-set"
+                                                }
+                                            }
+                                        },
+                                        "then": {
+                                            "properties": {
+                                                "validationSet": {
+                                                    "description": "set of valid values",
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "string"
+                                                    },
+                                                    "minItems": 1,
+                                                    "uniqueItems": true
+                                                }
+                                            },
+                                            "required": [
+                                                "validationSet"
+                                            ]
+                                        },
+                                        "else": {
+                                            "properties": {
+                                                "range": {
+                                                    "description": "range of valid values",
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "min": {
+                                                            "type": "number"
+                                                        },
+                                                        "max": {
+                                                            "type": "number"
+                                                        }
+                                                    },
+                                                    "required": [
+                                                        "min",
+                                                        "max"
+                                                    ]
+                                                }
+                                            },
+                                            "required": [
+                                                "range"
+                                            ]
+                                        }
+                                    },
+                                    "exclusionGroup": {
+                                        "description": "flag group for mutually exclusive flags",
+                                        "type": "string"
+                                    },
+                                    "omittedImages": {
+                                        "description": "Container images that are no longer needed when this flag selects the omitting value. Consumed by 'k2s addons import --omit' to skip images. Prefer 'fromFiles' so image tags stay declared in exactly one place.",
+                                        "type": "object",
+                                        "properties": {
+                                            "fromFiles": {
+                                                "description": "Kubernetes manifest files whose images belong to the omitted functionality. Paths are relative to the addon implementation directory.",
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                },
+                                                "uniqueItems": true
+                                            },
+                                            "explicit": {
+                                                "description": "Explicit image references. Escape hatch for images that cannot be discovered statically, e.g. images embedded in a Helm chart archive.",
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                },
+                                                "uniqueItems": true
+                                            }
+                                        },
+                                        "anyOf": [
+                                            {
+                                                "required": [
+                                                    "fromFiles"
+                                                ]
+                                            },
+                                            {
+                                                "required": [
+                                                    "explicit"
+                                                ]
+                                            }
+                                        ],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "required": [
+                                    "name",
+                                    "default"
+                                ]
+                            }
+                        },
+                        "examples": {
+                            "description": "Command usage examples for CLI help generation",
+                            "type": "array",
+                            "items": {
+                                "description": "CLI usage example",
+                                "type": "object",
+                                "properties": {
+                                    "cmd": {
+                                        "description": "The actual CLI example, e.g. 'k2s addons enable <addon-name>'",
+                                        "type": "string"
+                                    },
+                                    "comment": {
+                                        "description": "Comment to be displayed above the command example, e.g. 'this enables the addon <addon-name>'",
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "cmd"
+                                ]
+                            }
+                        }
+                    }
+                },
+                "script": {
+                    "description": "The PowerShell script config",
+                    "type": "object",
+                    "properties": {
+                        "subPath": {
+                            "description": "The path (relative to the addon's directory) of the PowerShell script to be invoked when executing this command",
+                            "type": "string"
+                        },
+                        "parameterMappings": {
+                            "description": "The mapping between CLI flags and PowerShell script parameters",
+                            "type": "array",
+                            "items": {
+                                "description": "CLI flag <-> PS parameter mapping",
+                                "type": "object",
+                                "properties": {
+                                    "cliFlagName": {
+                                        "description": "name of the CLI flag",
+                                        "type": "string"
+                                    },
+                                    "scriptParameterName": {
+                                        "description": "name of the PS script Parameter",
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "cliFlagName",
+                                    "scriptParameterName"
+                                ]
+                            }
+                        }
+                    },
+                    "required": [
+                        "subPath"
+                    ]
+                }
+            },
+            "required": [
+                "script"
+            ]
+        }
+    }
+}

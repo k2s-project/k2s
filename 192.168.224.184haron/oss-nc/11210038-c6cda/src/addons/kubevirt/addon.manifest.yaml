@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: © 2024 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v1
+kind: AddonManifest
+metadata:
+  name: kubevirt
+  description: Manage VM workloads with k2s
+spec:
+  implementations:
+    - name: kubevirt
+      description: Manage VM workloads with k2s
+      offline_usage:
+        linux:
+          repos: []
+          deb:
+            - fuse3
+            - qemu-system
+            - libvirt-clients
+            - libvirt-daemon-system
+          curl:
+            - url: https://github.com/kubevirt/kubevirt/releases/download/v1.10.0/virtctl-v1.10.0-linux-amd64
+              destination: /usr/local/bin/virtctl
+          additionalImages:
+            - quay.io/kubevirt/virt-api:v1.10.0
+            - quay.io/kubevirt/virt-controller:v1.10.0
+            - quay.io/kubevirt/virt-launcher:v1.10.0
+            - quay.io/kubevirt/virt-handler:v1.10.0
+        windows:
+          curl:
+            - url: https://gitlab.com/virt-viewer/virt-viewer/-/releases/v11.0/downloads/virt-viewer-x64-11.0-1.0.msi
+              destination: bin\virt-viewer-x64-11.0-1.0.msi
+            - url: https://github.com/kubevirt/kubevirt/releases/download/v1.10.0/virtctl-v1.10.0-windows-amd64.exe
+              destination: bin\virtctl.exe
+      commands:
+        enable:
+          cli:
+            examples:
+              - cmd: k2s addons enable kubevirt
+                comment: Enable kubevirt in k2s
+          script:
+            subPath: Enable.ps1
+        disable:
+          cli:
+            examples:
+              - cmd: k2s addons disable kubevirt
+                comment: Disable addon kubevirt in K2s
+          script:
+            subPath: Disable.ps1

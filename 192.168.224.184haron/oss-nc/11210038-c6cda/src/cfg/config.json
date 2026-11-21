@@ -1,0 +1,110 @@
+{
+    "smallsetup": {
+        "masterIP": "172.19.1.100",
+        "kubeSwitch": "172.19.1.1",
+        "masterNetworkCIDR": "172.19.1.0/24",
+        "podNetworkCIDR": "172.20.0.0/16",
+        "podNetworkMasterCIDR": "172.20.0.0/24",
+        "podNetworkWorkerCIDR": "172.20.1.0/24",
+        "podNetworkWorkerCIDR_2": "172.20.X.0/24",
+        "servicesCIDR": "172.21.0.0/16",
+        "servicesCIDRLinux": "172.21.0.0/24",
+        "servicesCIDRWindows": "172.21.1.0/24",
+        "cbr0Gateway": "172.20.1.1",
+        "cbr0": "172.20.1.2",
+        "loopbackAdapterCIDR": "172.22.1.0/24",
+        "loopbackGateway": "172.22.1.1",
+        "loopback": "172.22.1.2",
+        "kubeDnsServiceIP": "172.21.0.10",
+        "masterNetworkInterfaceCni0IP": "172.20.0.1",
+        "clusterCIDRNatExceptions": [
+            "172.19.1.0/24",
+            "172.20.0.0/16",
+            "172.21.0.0/16"
+        ],
+        "storageLocalDriveLetter": "",
+        "storageLocalDriveFolder": "",
+        "defaultRegistry": "shsk2s.azurecr.io",
+        "mirrorRegistries": [
+            {
+                "registry": "docker.io",
+                "server": "registry-1.docker.io",
+                "mirror": "shsk2s.azurecr.io"
+            }
+        ],
+        "vfprules-k2s": {
+            "routes": [
+                {
+                    "name": "PA_ROUTE_k2s_1",
+                    "subnet": "172.19.1.0/24",
+                    "gateway": "172.20.1.2",
+                    "priority": "200"
+                },
+                {
+                    "name": "PA_ROUTE_k2s_2",
+                    "subnet": "172.20.0.0/24",
+                    "gateway": "172.20.1.2",
+                    "priority": "201"
+                },
+                {
+                    "name": "PA_ROUTE_k2s_3",
+                    "subnet": "172.21.0.0/24",
+                    "gateway": "172.20.1.2",
+                    "priority": "202"
+                },
+                {
+                    "name": "PA_ROUTE_k2s_4",
+                    "subnet": "172.21.1.0/24",
+                    "gateway": "172.22.1.2",
+                    "priority": "203"
+                }
+            ],
+            "vfpapi": [],
+            "hnsproxyconfig": {
+                "inboundproxyport": "4143",
+                "outboundproxyport": "4140",
+                "inboundportexceptions": "4190,4191,4567,4568",
+                "inboundaddressexceptions": "",
+                "outboundportexceptions": "4567,4568",
+                "outboundaddressexceptions": ""
+            }
+        },
+        "backup": {
+            "excludednamespaces": "kube-flannel,kube-node-lease,kube-public,kube-system,k2s-webhook,kubernetes-dashboard,nginx-gw,gpu-node,ingress-nginx,kubevirt,monitoring,registry,dicom,ingress-traefik,logging,security,viewer,storage-smb,linkerd,cert-manager,dashboard,autoscaling,metrics,rollout",
+            "excludednamespacedresources": "endpoints,endpointslices",
+            "excludedclusterresources": "componentstatuses,nodes,csinodes,ipaddresses,certificatesigningrequests,storageclasses,servicecidrs,apiservices,flowschemas,prioritylevelconfigurations,ingressclasses,runtimeclasses,storageclasses,mutatingwebhookconfigurations",
+            "excludedaddonpersistentvolumes": "postgresql-pv-volume,dicom-pv-volume,orthanc-pv,registry-pv,smb-static-pv,opensearch-cluster-master-pv"
+        }
+    },
+    "configDir": {
+        "ssh": "~/.ssh",
+        "kube": "~/.kube",
+        "docker": "~/.docker",
+        "k2s": "C:\\ProgramData\\K2s",
+        "logs": "C:\\var\\log"
+    },
+    "sshKey": {
+        "subDir": "k2s",
+        "fileName": {
+            "windows": "id_rsa",
+            "linux": "id_ed25519"
+        }
+    },
+    "clusterName": "k2s-cluster",
+    "supportedWorkerOS": [
+        {
+            "os": "debian12",
+            "cloudImage": {
+                "urlRoot": "https://cloud.debian.org/images/cloud/bookworm/latest",
+                "urlFile": "debian-12-genericcloud-amd64.qcow2"
+            }
+        },
+        {
+            "os": "debian13",
+            "cloudImage": {
+                "urlRoot": "https://cloud.debian.org/images/cloud/trixie/latest",
+                "urlFile": "debian-13-genericcloud-amd64.qcow2"
+            }
+        }
+    ]
+}

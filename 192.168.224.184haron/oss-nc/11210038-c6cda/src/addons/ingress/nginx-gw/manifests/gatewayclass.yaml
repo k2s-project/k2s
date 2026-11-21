@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+# Source: nginx-gateway-fabric/templates/gatewayclass.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: nginx-gw
+  labels:
+    helm.sh/chart: nginx-gateway-fabric-2.9.0
+    app.kubernetes.io/name: nginx-gw
+    app.kubernetes.io/instance: nginx-gw
+    app.kubernetes.io/version: "2.9.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  controllerName: gateway.nginx.org/nginx-gw-controller
+  parametersRef:
+    group: gateway.nginx.org
+    kind: NginxProxy
+    name: nginx-gw-proxy-config
+    namespace: nginx-gw

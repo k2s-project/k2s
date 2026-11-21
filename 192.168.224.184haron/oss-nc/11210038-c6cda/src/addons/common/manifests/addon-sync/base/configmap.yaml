@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Runtime configuration for addon-sync. Edit REGISTRY_URL to match your OCI registry.
+# rollout Enable.ps1 patches K2S_INSTALL_DIR at deploy time via Get-KubePath.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: addon-sync-config
+  namespace: k2s-addon-sync
+  labels:
+    app.kubernetes.io/name: addon-sync
+    app.kubernetes.io/part-of: k2s
+data:
+  # Registry host only (no path/tag) — Sync-Addons.ps1 appends /addons/<name> via oras repo ls.
+  # Examples: oci://k2s.registry.local:30500  |  oci://myregistry.example.com
+  REGISTRY_URL: "oci://k2s.registry.local:30500"
+
+  # K2s root on the Windows host (k2s.exe, addons/, bin/, lib/ live here).
+  # Patched to the actual install path by rollout Enable.ps1; default C:\k covers manual apply.
+  K2S_INSTALL_DIR: "C:\\k"
+
+  # Allow HTTP connections to the local K2s registry (NodePort, no TLS).
+  INSECURE: "true"

@@ -1,0 +1,167 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+site_name: K2s - Kubernetes distribution for Windows & Linux workloads
+site_url: https://k2s-project.github.io/k2s
+copyright: >-
+  <strong>Copyright K2s Series of LF Projects, LLC<br><br>
+  For website terms of use, trademark policy and other project policies please see
+  <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
+repo_url: https://github.com/k2s-project/k2s/
+edit_uri: edit/main/docs/
+strict: true
+theme:
+  language: en
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  font:
+    text: Roboto
+    code: Roboto Mono
+  palette:
+    - scheme: default
+      media: "(prefers-color-scheme: light)"
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+      primary: custom
+      accent: custom
+
+    - scheme: slate
+      media: "(prefers-color-scheme: dark)"
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+      primary: custom
+      accent: custom
+  features:
+    - navigation.top
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.footer
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - announce.dismiss
+    - content.action.edit
+    - content.code.copy
+    - content.code.annotate
+  custom_dir: docs/overrides
+  icon:
+    repo: fontawesome/brands/github
+extra_css:
+  - stylesheets/extra.css
+plugins:
+  - privacy # downloads and bundles all assets (i.e. external scripts, images, fonts, etc.)
+  - search
+markdown_extensions:
+  - admonition
+  - footnotes
+  - pymdownx.highlight:
+      anchor_linenums: true
+      auto_title: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - abbr
+  - pymdownx.snippets:
+      auto_append:
+        - docs/includes/glossary.md
+  - pymdownx.details
+validation:
+  omitted_files: info
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quick Start: quickstart/index.md
+      - Quick Start (Linux Host): quickstart/linux-host.md
+  - User Guide:
+      - Hosting Variants: user-guide/hosting-variants.md
+      - k2s CLI: user-guide/k2s-cli.md
+      - CLI Shortcuts: user-guide/cli-shortcuts.md
+      - Addons: user-guide/addons.md
+      - GPU Node: user-guide/gpu-node.md
+      - Assignment of Cluster IP Addresses for Services: user-guide/cluster-ip-addresses.md
+      - Certificate Management: user-guide/certificate-management.md
+      - Proxy Configuration: user-guide/proxy-configuration.md
+      - Adding a Container Registry: user-guide/adding-container-registry.md
+      - Building a Container Image: user-guide/building-container-image.md
+  - Operator Manual:
+      - Supported OS Versions: op-manual/os-support.md
+      - Getting K2s: op-manual/getting-k2s.md
+      - Creating Offline Package: op-manual/creating-offline-package.md
+      - Delta Packages: op-manual/delta-packages.md
+      - Installing K2s: op-manual/installing-k2s.md
+      - Configuration Reference: op-manual/configuration-reference.md
+      - Customizing Kubelet Configuration: op-manual/customizing-kubelet.md
+      - Starting K2s: op-manual/starting-k2s.md
+      - Checking K2s Status: op-manual/checking-k2s-status.md
+      - Adding K2s Users: op-manual/adding-k2s-users.md
+      - Stopping K2s: op-manual/stopping-k2s.md
+      - Upgrading K2s: op-manual/upgrading-k2s.md
+      - Compacting VHDX Storage: op-manual/compacting-vhdx-storage.md
+      - Hook System: op-manual/hook-system.md
+      - Backing Up and Restoring the System: op-manual/backing-up-restoring-system.md
+      - Backing Up and Restoring Addons: op-manual/backing-up-restoring-addons.md
+      - Ceph Storage:
+          - Overview: op-manual/ceph-storage.md
+          - Linux Workloads: op-manual/ceph-storage-linux.md
+          - Cross-OS Shared Workloads: op-manual/ceph-storage-cross-os.md
+      - GitOps Addon Delivery: op-manual/gitops-addon-delivery.md
+      - External DNS: op-manual/external-dns.md
+      - Native Linux Host DNS: op-manual/native-linux-host-dns.md
+      - Extending K2s cluster: op-manual/extending-k2s-cluster.md
+      - Secure Host Access: op-manual/secure-host-access.md
+      - Networking Architecture: op-manual/networking-architecture.md
+      - Running Native Windows Apps (HostProcess & Compartments): op-manual/running-apps-as-hostprocess.md
+      - Integrating Native Host Processes: op-manual/integrating-native-processes.md
+      - Uninstalling K2s: op-manual/uninstalling-k2s.md
+      - Configuring the Log Folder: op-manual/log-folder.md
+      - Sign K2s package: op-manual/signcatalog-k2s.md
+      - Code Signing: op-manual/code-signing.md
+  - Developer Guide:
+      - Contributing:
+          - dev-guide/contributing/index.md
+          - Licensing: dev-guide/contributing/licensing.md
+          - PowerShell Development: dev-guide/contributing/powershell-dev.md
+          - Building Locally: dev-guide/contributing/building-locally.md
+          - Automated Testing: dev-guide/contributing/automated-testing.md
+          - Tags/Labels: dev-guide/contributing/tags-labels.md
+          - Updating Documentation: dev-guide/contributing/updating-documentation.md
+          - Submitting Changes: dev-guide/contributing/submitting-changes.md
+      - Hosting Variants Features Matrix: dev-guide/hosting-variants-features-matrix.md
+      - DNS Host Topologies: dev-guide/dns-host-topologies.md
+      - Architecture & Tools: dev-guide/architecture.md
+      - Linux Development: dev-guide/contributing/linux-development/linux-development.md
+      - Training: dev-guide/training.md
+  - Security:
+      - Security Features: security/security-features.md
+      - Policy Enforcement: security/policy-enforcement.md
+  - Troubleshooting:
+      - Diagnostics: troubleshooting/diagnostics.md
+      - Known Issues: troubleshooting/known-issues.md
+      - HSTS & Certificate Issues: troubleshooting/hsts-certificate-issues.md
+not_in_nav: |
+  /includes/**/*.*
+extra:
+  generator: false
+  version:
+    provider: mike
+    default: latest
+    alias: true

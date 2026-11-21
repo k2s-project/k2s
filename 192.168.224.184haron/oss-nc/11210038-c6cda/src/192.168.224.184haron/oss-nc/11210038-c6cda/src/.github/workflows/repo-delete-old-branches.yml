@@ -1,0 +1,156 @@
+# SPDX-FileCopyrightText: © 2025 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Repo - Delete old branches (6 months)
+
+# This workflow is scheduled to run every Sunday at midnight.
+# You can customize the cron schedule to your needs.
+# For more information on cron syntax, see https://crontab.guru/
+on:
+  schedule:
+    - cron: '0 0 * * 0'
+  # You can also run this workflow manually from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Dry run mode (true = no actual deletion, false = delete branches)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  delete_old_branches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to delete branches
+      pull-requests: read # Required to check for open PRs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all branches
+          
+      - name: Delete stale branches
+        run: |
+          # Dry run mode: default to true for scheduled runs, use input for manual runs
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DRY_RUN="${{ inputs.dry-run }}"
+          else
+            DRY_RUN="true"  # Always dry-run for scheduled runs
+          fi
+          
+          echo "========================================="
+          echo "Branch Cleanup Configuration"
+          echo "========================================="
+          echo "Dry Run Mode: $DRY_RUN"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "========================================="
+          echo ""
+          
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "🔍 DRY RUN MODE: No branches will be deleted"
+            echo ""
+          else
+            echo "⚠️  DELETION MODE: Stale branches will be deleted"
+            echo ""
+          fi
+          
+          echo "Starting cleanup of branches older than 180 days..."
+          
+          # Set the stale threshold (180 days ago)
+          STALE_DATE=$(date -d "180 days ago" +%s)
+          CURRENT_DATE=$(date +%s)
+          
+          # Protected branches regex
+          PROTECTED_REGEX="^(main|master|release-.*|gh-pages)$"
+          
+          # Get all remote branches
+          git fetch --all --prune
+          
+          BRANCHES_CHECKED=0
+          BRANCHES_DELETED=0
+          BRANCHES_PROTECTED=0
+          BRANCHES_WITH_PRS=0
+          BRANCHES_TOO_RECENT=0
+          
+          echo ""
+          echo "Protected branches pattern: $PROTECTED_REGEX"
+          echo "Stale threshold: $(date -d @$STALE_DATE)"
+          echo ""
+          
+          # Loop through all remote branches
+          for branch in $(git branch -r | grep -v HEAD | sed 's|origin/||'); do
+            BRANCHES_CHECKED=$((BRANCHES_CHECKED + 1))
+            
+            # Skip protected branches
+            if [[ $branch =~ $PROTECTED_REGEX ]]; then
+              echo "✅ Protected branch: $branch"
+              BRANCHES_PROTECTED=$((BRANCHES_PROTECTED + 1))
+              continue
+            fi
+            
+            # Get last commit date for the branch
+            LAST_COMMIT_DATE=$(git log -1 --format=%ct "origin/$branch" 2>/dev/null || echo "0")
+            
+            if [ "$LAST_COMMIT_DATE" = "0" ]; then
+              echo "⚠️  Could not determine last commit date for: $branch"
+              continue
+            fi
+            
+            # Calculate days since last update
+            DAYS_OLD=$(( ($CURRENT_DATE - $LAST_COMMIT_DATE) / 86400 ))
+            
+            if [ "$LAST_COMMIT_DATE" -lt "$STALE_DATE" ]; then
+              echo "🔍 Branch $branch is stale ($DAYS_OLD days old, last updated: $(date -d @$LAST_COMMIT_DATE '+%Y-%m-%d'))"
+              
+              # Check if branch has open PRs
+              PR_COUNT=$(gh pr list --head "$branch" --state open --json number --jq length 2>/dev/null || echo "0")
+              
+              if [ "$PR_COUNT" = "0" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "   🔍 [DRY RUN] Would delete stale branch: $branch"
+                  BRANCHES_DELETED=$((BRANCHES_DELETED + 1))
+                else
+                  echo "   ❌ Deleting stale branch: $branch"
+                  if git push origin --delete "$branch" 2>/dev/null; then
+                    BRANCHES_DELETED=$((BRANCHES_DELETED + 1))
+                    echo "   ✅ Successfully deleted: $branch"
+                  else
+                    echo "   ⚠️  Failed to delete: $branch"
+                  fi
+                fi
+              else
+                echo "   ⏸️  Branch has $PR_COUNT open PR(s), skipping deletion"
+                BRANCHES_WITH_PRS=$((BRANCHES_WITH_PRS + 1))
+              fi
+            else
+              BRANCHES_TOO_RECENT=$((BRANCHES_TOO_RECENT + 1))
+            fi
+          done
+          
+          echo ""
+          echo "========================================="
+          echo "Cleanup Summary:"
+          echo "========================================="
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Mode: DRY RUN (no branches deleted)"
+          else
+            echo "Mode: DELETION"
+          fi
+          echo "Total branches checked: $BRANCHES_CHECKED"
+          echo "Protected branches: $BRANCHES_PROTECTED"
+          echo "Branches with open PRs: $BRANCHES_WITH_PRS"
+          echo "Branches too recent: $BRANCHES_TOO_RECENT"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Branches that would be deleted: $BRANCHES_DELETED"
+          else
+            echo "Branches deleted: $BRANCHES_DELETED"
+          fi
+          echo "========================================="
+        env:
+          GH_TOKEN: ${{ secrets.DELETE_BRANCHES_TOKEN }}

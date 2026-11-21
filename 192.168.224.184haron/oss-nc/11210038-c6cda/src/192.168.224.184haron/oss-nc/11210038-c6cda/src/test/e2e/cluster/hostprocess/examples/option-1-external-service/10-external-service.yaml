@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Option 1: expose a native host process (albumswin.exe) as a cluster Service.
+# The process runs OUTSIDE Kubernetes and listens on the KubeSwitch IP 172.19.1.1.
+# A selectorless Service + EndpointSlice gives it a stable ClusterIP / DNS name that is
+# reachable from both Linux and Windows pods.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hostprocess-examples
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: albums-external
+  namespace: hostprocess-examples
+  labels:
+    app: albums-external
+spec:
+  # No selector: endpoints are maintained manually below.
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80 # Service port used by consumers
+      targetPort: 8080 # Port the native process listens on
+      protocol: TCP
+---
+# Manually managed EndpointSlice (v1 Endpoints is deprecated in K8s 1.33+).
+# The kubernetes.io/service-name label associates this slice with the Service above,
+# and the port name ('http') must match the Service port name.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: albums-external-1
+  namespace: hostprocess-examples
+  labels:
+    kubernetes.io/service-name: albums-external
+addressType: IPv4
+endpoints:
+  - addresses:
+      - 172.19.1.1 # KubeSwitch IP on the Windows host (reachable from all pods)
+    conditions:
+      ready: true
+ports:
+  - name: http
+    port: 8080
+    protocol: TCP

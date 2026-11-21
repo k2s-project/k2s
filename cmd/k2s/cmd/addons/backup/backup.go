@@ -27,7 +27,7 @@ import (
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/definitions"
 	k2sos "github.com/k2s-project/k2s/internal/os"
-	"github.com/k2s-project/k2s/internal/providers/powershell"
+	"github.com/k2s-project/k2s/internal/provider"
 	"github.com/spf13/cobra"
 )
 
@@ -102,10 +102,16 @@ func runBackup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := executeBackupScript(psScriptPath, stagingDir, outputFlag); err != nil {
+	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
+	if err := context.Providers().Addon.Backup(provider.AddonBackupConfig{
+		AddonName:      addon.Metadata.Name,
+		Implementation: impl.Name,
+		AddonDirectory: impl.Directory,
+		BackupDir:      stagingDir,
+		ShowOutput:     outputFlag,
+	}); err != nil {
 		return err
 	}
-	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
 	configPath := filepath.Join(context.Config().Host().K2sSetupConfigDir(), definitions.K2sRuntimeConfigFileName)
 	if err := addPlacementMetadata(filepath.Join(stagingDir, "backup.json"), configPath, addon.Metadata.Name, impl.Name); err != nil {
 		return err
@@ -283,23 +289,6 @@ func parseOutputFlag(cmd *cobra.Command) (bool, error) {
 	return strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
 }
 
-func executeBackupScript(scriptPath, stagingDir string, outputFlag bool) error {
-	psCmd := utils.FormatScriptFilePath(scriptPath)
-	params := []string{fmt.Sprintf(" -BackupDir %s", utils.EscapeWithSingleQuotes(stagingDir))}
-	if outputFlag {
-		params = append(params, " -ShowLogs")
-	}
-
-	cmdResult, err := powershell.ExecutePsWithStructuredResult[*common.CmdResult](psCmd, "CmdResult", common.NewPtermWriter(), params...)
-	if err != nil {
-		return err
-	}
-	if cmdResult.Failure != nil {
-		return cmdResult.Failure
-	}
-	return nil
-}
-
 func readAndValidateManifest(manifestPath string) (backupManifest, error) {
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -367,9 +356,19 @@ func createZipFile(zipPath string) (zipFile *os.File, zipWriter *zip.Writer, cle
 		return nil, nil, nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	zipFile, err = os.Create(zipPath)
+	// The archive can contain private data (e.g. registry images), so keep it owner-only,
+	// also when overwriting an existing file, and only truncate once that is ensured.
+	zipFile, err = os.OpenFile(zipPath, os.O_WRONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create zip file: %w", err)
+	}
+	if err := zipFile.Chmod(0o600); err != nil {
+		_ = zipFile.Close()
+		return nil, nil, nil, fmt.Errorf("failed to restrict permissions of zip file: %w", err)
+	}
+	if err := zipFile.Truncate(0); err != nil {
+		_ = zipFile.Close()
+		return nil, nil, nil, fmt.Errorf("failed to truncate zip file: %w", err)
 	}
 
 	zipWriter = zip.NewWriter(zipFile)

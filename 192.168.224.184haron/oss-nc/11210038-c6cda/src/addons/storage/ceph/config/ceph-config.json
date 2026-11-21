@@ -1,0 +1,38 @@
+{
+  "comment": "Ceph CSI storage config. 'clusterHost.node' bootstraps only the Ceph cluster control plane and MUST be a Debian 13 K2s node listed in cluster.json (or the control plane node). OSD provisioning is driven exclusively by 'osdHosts' and supports only Hyper-V worker nodes (cluster.json NodeType 'VM-EXISTING'). Each entry in 'osdHosts' is prepared as a Ceph OSD host (via prepare-ceph-osd-host.sh) and contributes OSDs. Use 'osdSizesInGb' to set per-OSD sizes (one value per OSD) or 'osdSizeInGb' for one common size. The 'smb' block configures Ceph native SMB access for Windows pods (mgr/smb module) when the addon is enabled with -w.",
+  "cephfsFilesystem": " ",
+  "cephfsPool": "cephfs.cephfs.data",
+  "storageClassName": "ceph-cephfs",
+  "storageClassReclaimPolicy": "Delete",
+  "smb": {
+    "comment": "Ceph native SMB (mgr/smb module, https://docs.ceph.com/en/latest/mgr/smb/). Activated by the -w / setupWindowsNode flag on enable. cephadm deploys managed Samba containers on the Ceph cluster host that export a dedicated CephFS subvolume as an SMB share; the SMB CSI driver then provisions PVCs from it so Windows pods can consume CephFS. Linux pods keep using the native cephfs.csi.ceph.com StorageClass. 'namespace' defines where the reused SMB CSI manifests are deployed for Ceph (default 'storage-smb-ceph', isolated from the standalone SMB addon). 'clusterId'/'shareId' identify the mgr/smb cluster and share; 'shareName' is the SMB share name exposed to clients; 'placementLabel' is the cephadm host label used to place the Samba daemons. 'subvolume' is the shared CephFS subvolume created and exported (sized via 'subvolumeSizeInGb'); the SMB StorageClass places each PVC in an isolated '${pvc.metadata.namespace}/${pvc.metadata.name}' sub-directory so Windows and Linux resolve the same path. 'winMountPath' optionally creates a host-local symbolic link to the Ceph SMB share for easier browsing from Windows Explorer.",
+    "clusterId": "k2ssmb",
+    "shareId": "cephfs",
+    "shareName": "cephfs",
+    "namespace": "storage-smb-ceph",
+    "placementLabel": "smb",
+    "subvolume": "cross-os",
+    "subvolumeSizeInGb": 6,
+    "winMountPath": "C:\\k8s-ceph-share",
+    "storageClassName": "ceph-smb",
+    "storageClassReclaimPolicy": "Delete"
+  },
+  "clusterHost": {
+    "node": "kubemaster",
+    "os": "linux",
+    "osdCrushChooseleafType": 0,
+    "monCount": 1,
+    "mgrCount": 1,
+    "mdsCount": 1
+  },
+  "osdHosts": [
+    {
+      "node": "kubemaster",
+      "os": "linux",
+      "osdCount": 1,
+      "osdSizesInGb": [
+        6
+      ]
+    }
+  ]
+}

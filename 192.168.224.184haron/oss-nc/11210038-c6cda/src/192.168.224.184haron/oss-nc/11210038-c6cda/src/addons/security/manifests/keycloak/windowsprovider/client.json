@@ -1,0 +1,16 @@
+{
+  "client_id": "k2s-winuser-support-client-id",
+  "client_name": "winuser",
+  "client_secret": "b7BeasywdjztKeTCytdtNAiPk",
+  "client_secret_expires_at": 0,
+  "grant_types": ["authorization_code", "refresh_token"],
+  "redirect_uris": [
+    "https://k2s.cluster.local/keycloak/realms/demo-app/broker/oidc/endpoint",
+    "http://k2s.cluster.local/oauth2/callback"
+  ],
+  "response_types": ["code", "id_token"],
+  "scope": "openid offline",
+  "skip_consent": true,
+  "skip_logout_consent": true,
+  "token_endpoint_auth_method": "client_secret_post"
+}

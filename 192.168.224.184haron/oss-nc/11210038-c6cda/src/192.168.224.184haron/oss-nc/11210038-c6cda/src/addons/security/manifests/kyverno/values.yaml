@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kyverno values for K2s: single replicas, conservative resources.
+admissionController:
+  replicas: 1
+  podAnnotations:
+    config.linkerd.io/skip-inbound-ports: "9443"
+  container:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+
+backgroundController:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+
+cleanupController:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+reportsController:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+
+# Prevent webhook from blocking scheduling if Kyverno is not yet ready.
+features:
+  forceFailurePolicyIgnore:
+    enabled: true
+
+# Cleanup is handled by the security addon Uninstall-Kyverno flow, which uses helm uninstall kyverno --no-hooks.
+webhooksCleanup:
+  enabled: false

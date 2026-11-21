@@ -1,0 +1,40 @@
+#cloud-config
+hostname: __LOCAL-HOSTNAME_VALUE__
+fqdn: __LOCAL-HOSTNAME_VALUE__
+ssh_pwauth: true
+
+ssh:
+  allow_users: true
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-password-auth.conf
+    content: |
+      PasswordAuthentication yes
+    permissions: '0644'
+
+groups:
+  - docker
+
+users:
+  - default
+  - name: __VM_USER__
+    gecos: Remote user
+    shell: /bin/bash
+    no_user_group: true
+    primary_group: users
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin, docker, sudo, adm, netdev    
+    lock_passwd: false 
+    plain_text_passwd: __VM_USER_PWD__
+    ssh_authorized_keys:
+      - Intentionally not set in the provisioning stage. It will be set during installation on the target system to guarantee that a different key is used on each installed VM.
+
+apt:
+    preserve_sources_list: true
+    package_update: false
+
+runcmd:
+- rm /etc/resolv.conf && echo "nameserver __IP_ADDRESSES_DNS_SERVERS__" > /etc/resolv.conf && chattr +i /etc/resolv.conf
+- netplan apply
+- systemctl restart ssh
+

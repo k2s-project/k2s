@@ -9,10 +9,22 @@ set -euo pipefail
 
 K8S_DEB_PACKAGES_PATH="${1:?Argument missing: K8sDebPackagesPath}"
 PROXY="${2:-}"
-REGISTRY_TOKEN="${3:?Argument missing: RegistryToken}"
+REGISTRY_TOKEN_FILE="${3:?Argument missing: RegistryTokenFile}"
 IS_WSL="${4:-false}"
 NO_PROXY="${5:-localhost,127.0.0.1,::1,172.20.0.0/16,172.21.0.0/16,.cluster.local,.svc}"
 CONFIGURE_CONTAINER_TOOLING_PROXY="${6:-false}"
+
+# The registry token is read from a file so that it never appears on a command line, where it would be
+# visible in the process list and in the callers' logs.
+if [ ! -r "$REGISTRY_TOKEN_FILE" ]; then
+    echo "[InstallK8s] ERROR: The registry token file '$REGISTRY_TOKEN_FILE' does not exist or is not readable." >&2
+    exit 1
+fi
+REGISTRY_TOKEN="$(sed '1s/^\xEF\xBB\xBF//' "$REGISTRY_TOKEN_FILE" | tr -d '[:space:]')"
+if [ -z "$REGISTRY_TOKEN" ]; then
+    echo "[InstallK8s] ERROR: The registry token file '$REGISTRY_TOKEN_FILE' is empty." >&2
+    exit 1
+fi
 
 echo "[InstallK8s] Starting Kubernetes artifacts installation"
 echo "[InstallK8s] Packages path: $K8S_DEB_PACKAGES_PATH"

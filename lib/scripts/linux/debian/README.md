@@ -15,7 +15,12 @@ package provisioning. The Debian package assets remain under
 `cfg/nodeextension/debian13/` because they are also consumed by Windows-host
 Linux worker provisioning.
 
-`worker/` is intentionally reserved for later native Linux worker automation.
+`worker/bare-metal/Add.sh` joins a Debian 13 (amd64 or arm64) worker node to the
+cluster from an offline node package. It is invoked by `k2s node add` and uses
+`lib/modules/linux/node/worker-node.module.sh`.
+
+`host/image/` and `host/addon/` contain the native counterparts of the Windows image and addon
+scripts; the `k2s` CLI calls them for `k2s image ...` and `k2s addons export|import` on a Linux host.
 
 For direct operational invocation, use the Linux-only entry points, for example:
 

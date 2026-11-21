@@ -615,6 +615,11 @@ foreach ($addon in $addonsToImport) {
                 Expand-TarGzArchive -ArchivePath $blobPath -DestinationPath $chartsDestDir
                 break
             }
+            '*shared-scripts*' {
+                Write-Log "[Import] Extracting shared scripts layer to addon root"
+                Expand-TarGzArchive -ArchivePath $blobPath -DestinationPath $destinationPath
+                break
+            }
             '*scripts*' {
                 # Layer 3: Scripts - extract to implementation path for multi-impl addons
                 Write-Log "Extracting scripts layer from blob"

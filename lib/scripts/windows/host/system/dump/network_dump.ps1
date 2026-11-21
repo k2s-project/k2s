@@ -49,6 +49,9 @@ route print | Out-String | Write-OutputIntoDumpFile -DumpFilePath $networkOutfil
 
 Get-NetConnectionProfile | Out-String | Write-OutputIntoDumpFile -DumpFilePath $networkOutfile -Description "Get-NetConnectionProfile" -Separator $lineBreak
 
+Get-NetAdapter -IncludeHidden | Where-Object { $_.Name -like 'vEthernet (*' } | Format-List Name, InterfaceDescription, ifIndex, Status, HiddenInterface | Out-String `
+| Write-OutputIntoDumpFile -DumpFilePath $networkOutfile -Description "Get-NetAdapter -IncludeHidden (vEthernet)" -Separator $lineBreak
+
 Get-NetRoute -IncludeAllCompartments | Sort-Object RouteMetric | Out-String `
 | Write-OutputIntoDumpFile -DumpFilePath $networkOutfile -Description "Get-NetRoute" -Separator $lineBreak
 

@@ -93,7 +93,7 @@ For details, see [Debian 13 Node Hardening](../security/security-features.md#deb
 ### Network requirements
 
 - **Bare-metal target**: the target IP must be in a physical network subnet (LAN/Wi-Fi/Ethernet) reachable by the Windows host. It must not be an address from the K2s internal KubeSwitch network.
-- **Existing Hyper-V VM**: attach the VM to KubeSwitch, keep it running, and assign it an IP in the KubeSwitch CIDR, for example `172.19.1.x`. The Windows host's KubeSwitch network profile must be `Private`.
+- **Existing Hyper-V VM**: attach the VM to KubeSwitch, keep it running, and assign it an IP in the KubeSwitch CIDR, for example `172.19.1.x`. The Windows host's KubeSwitch must be hidden (default) or have the network profile `Private`.
 - Verify reachability from the K2s host before continuing:
 
 ```powershell

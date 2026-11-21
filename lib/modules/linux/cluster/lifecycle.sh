@@ -20,7 +20,7 @@ k2s_load_operation() {
     printf 'Lifecycle operation file must have permissions 0600: %s\n' "$2" >&2
     return 1
   fi
-  jq -e '(.installDir | type == "string" and length > 0) and (.configDir | type == "string" and length > 0) and ((.noProxy // []) | type == "array") and ((.skipStart // false) | type == "boolean") and ((.skipPurge // false) | type == "boolean")' "$2" >/dev/null || {
+  jq -e '(.installDir | type == "string" and length > 0) and (.configDir | type == "string" and length > 0) and ((.noProxy // []) | type == "array") and ((.skipStart // false) | type == "boolean") and ((.skipPurge // false) | type == "boolean") and ((.noRestart // false) | type == "boolean")' "$2" >/dev/null || {
     printf 'Invalid lifecycle operation configuration: %s\n' "$2" >&2
     return 2
   }
@@ -34,6 +34,7 @@ k2s_load_operation() {
   K2S_NO_PROXY=$(jq -r '.noProxy // [] | join(",")' "$2") || return 2
   K2S_SKIP_START=$(jq -r '.skipStart // false' "$2") || return 2
   K2S_SKIP_PURGE=$(jq -r '.skipPurge // false' "$2") || return 2
+  K2S_NO_RESTART=$(jq -r '.noRestart // false' "$2") || return 2
   K2S_LINUX_ONLY=$(jq -r '.linuxOnly // false' "$2") || return 2
   K2S_WORKER_CPU_COUNT=$(jq -r '.workerCPUCount // empty' "$2") || return 2
   K2S_WORKER_MEMORY=$(jq -r '.workerMemory // empty' "$2") || return 2
@@ -42,7 +43,7 @@ k2s_load_operation() {
   K2S_WORKER_MEMORY=${K2S_WORKER_MEMORY:-8GB}
   K2S_WORKER_DISK_SIZE=${K2S_WORKER_DISK_SIZE:-64GB}
   K2S_WINDOWS_QCOW2_PATH=$(jq -r '.windowsQCOW2Path // empty' "$2") || return 2
-  export K2S_INSTALL_DIR K2S_CONFIG_DIR K2S_VERSION K2S_CLUSTER_NAME K2S_CONTROL_PLANE_HOSTNAME K2S_PROXY K2S_NO_PROXY K2S_SKIP_START K2S_SKIP_PURGE K2S_LINUX_ONLY K2S_WORKER_CPU_COUNT K2S_WORKER_MEMORY K2S_WORKER_DISK_SIZE K2S_WINDOWS_QCOW2_PATH
+  export K2S_INSTALL_DIR K2S_CONFIG_DIR K2S_VERSION K2S_CLUSTER_NAME K2S_CONTROL_PLANE_HOSTNAME K2S_PROXY K2S_NO_PROXY K2S_SKIP_START K2S_SKIP_PURGE K2S_NO_RESTART K2S_LINUX_ONLY K2S_WORKER_CPU_COUNT K2S_WORKER_MEMORY K2S_WORKER_DISK_SIZE K2S_WINDOWS_QCOW2_PATH
 }
 
 k2s_lock_and_run() {
@@ -218,6 +219,54 @@ k2s_start_cluster() {
   [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_start
 }
 k2s_stop_cluster() { [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_stop || true; k2s_dns_stop; systemctl stop kubelet 2>/dev/null || true; systemctl stop crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true; }
+
+# The managed Windows worker is the only VM on a Linux host, so its QCOW2 overlay
+# is the disk to compact. Like the Windows-host VHDX compaction, the whole
+# cluster is stopped while the disk is rewritten and restarted afterwards.
+k2s_compact_cluster() {
+  if [[ "$K2S_LINUX_ONLY" == true ]]; then
+    k2s_log ERROR 'Linux-only setups have no VM disk to compact; the control plane runs natively on the host.'
+    return 2
+  fi
+  local disk state was_running=false result=0
+  disk=$(k2s_windows_worker_disk) || return $?
+  k2s_log INFO "Windows worker disk: $disk"
+  k2s_windows_worker_compact_preflight "$disk" || return $?
+  state=$(k2s_windows_worker_domain_state)
+  case "$state" in
+    running)
+      was_running=true
+      k2s_log INFO 'Trimming free space inside the Windows worker.'
+      k2s_windows_worker_trim || k2s_log WARN 'Trimming free space inside the Windows worker failed; continuing with the compaction.'
+      k2s_log INFO 'Stopping the cluster for the compaction.'
+      k2s_stop_cluster
+      state=$(k2s_windows_worker_domain_state)
+      if [[ "$state" != 'shut off' ]]; then
+        k2s_log ERROR "The Windows worker is in state '${state:-unknown}' after stopping the cluster; cannot compact its disk."
+        result=1
+      fi
+      ;;
+    'shut off')
+      k2s_log INFO 'The Windows worker is not running; skipping the trim and the cluster stop.'
+      ;;
+    *)
+      k2s_log ERROR "The Windows worker is in state '${state:-unknown}'. Compaction requires it to be running or shut off."
+      return 1
+      ;;
+  esac
+  if (( result == 0 )); then
+    k2s_windows_worker_compact_disk "$disk" || result=$?
+  fi
+  if [[ "$was_running" == true ]]; then
+    if [[ "$K2S_NO_RESTART" == true ]]; then
+      k2s_log INFO 'Cluster not restarted (--no-restart specified). To restart: k2s start'
+    else
+      k2s_log INFO 'Restarting the cluster.'
+      k2s_start_cluster || { k2s_log ERROR 'Restarting the cluster failed. Start it manually with: k2s start'; return 1; }
+    fi
+  fi
+  return "$result"
+}
 
 k2s_wait_for_api_port_release() {
   local deadline=$((SECONDS + 60))

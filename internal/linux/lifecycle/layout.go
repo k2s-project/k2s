@@ -18,6 +18,7 @@ const (
 )
 
 var validOperations = map[string]struct{}{
+	"Compact":   {},
 	"Install":   {},
 	"Start":     {},
 	"Stop":      {},

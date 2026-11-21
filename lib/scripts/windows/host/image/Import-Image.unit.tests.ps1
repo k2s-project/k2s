@@ -120,6 +120,41 @@ BeforeAll {
     }
 }
 
+Describe 'Default image nodes' -Tag 'unit', 'ci', 'image' {
+    It 'queries the control-plane and the local Windows host of a setup with a Windows node' -TestCases @(
+        @{ LinuxOnly = $false }
+        @{ LinuxOnly = $null }
+    ) {
+        param($LinuxOnly)
+        InModuleScope $moduleName -Parameters @{ LinuxOnly = $LinuxOnly } {
+            param($LinuxOnly)
+            Mock Write-Log {}
+            Mock Get-SetupConfigFilePath { 'setup.json' }
+            Mock Get-ConfigValue { 'kubemaster' } -ParameterFilter { $Key -eq 'ControlPlaneNodeHostname' }
+            Mock Get-ConfigValue { $LinuxOnly } -ParameterFilter { $Key -eq 'LinuxOnly' }
+
+            $nodes = @(Get-DefaultNodeInfoList)
+
+            @($nodes | ForEach-Object { $_.Kind }) | Should -Be @('ControlPlane', 'LocalWindows')
+        }
+    }
+
+    It 'queries only the control-plane of a Linux-only setup, whose Windows host runs no container runtime' {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Get-SetupConfigFilePath { 'setup.json' }
+            Mock Get-ConfigValue { 'kubemaster' } -ParameterFilter { $Key -eq 'ControlPlaneNodeHostname' }
+            Mock Get-ConfigValue { $true } -ParameterFilter { $Key -eq 'LinuxOnly' }
+
+            $nodes = @(Get-DefaultNodeInfoList)
+
+            $nodes.Count | Should -Be 1
+            $nodes[0].Kind | Should -Be 'ControlPlane'
+            $nodes[0].Name | Should -Be 'kubemaster'
+        }
+    }
+}
+
 Describe 'Image import helpers' -Tag 'unit', 'ci', 'image' {
     It 'returns preflight failures instead of exiting when return-status mode is requested' {
         InModuleScope $moduleName {

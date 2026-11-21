@@ -178,6 +178,8 @@ Both flags can be combined to export only configuration, manifests, and scripts:
 k2s addons export registry -d <export-output-directory> --omit-images --omit-packages
 ```
 
+On a Linux host *(experimental)*, the export skips Windows container images and Windows packages, and package downloads run on the host itself (see [addons export](../user-guide/k2s-cli.md#addons-export)).
+
 ### Addons Import
 To inspect all import options, run:
 ```console

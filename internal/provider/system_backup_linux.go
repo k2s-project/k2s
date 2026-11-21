@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/k2s-project/k2s/internal/version"
@@ -225,23 +226,15 @@ func loadBackupConfig(installDir string) *backupConfig {
 	cfg := &backupConfig{
 		ExcludedNamespaces: []string{
 			"kube-flannel", "kube-node-lease", "kube-public", "kube-system",
-			"k2s-webhook", "kubernetes-dashboard", "nginx-gw", "gpu-node",
-			"ingress-nginx", "kubevirt", "monitoring", "registry", "dicom",
-			"ingress-traefik", "logging", "security", "viewer", "storage-smb",
-			"linkerd", "cert-manager", "dashboard", "autoscaling", "metrics", "rollout",
 		},
 		ExcludedNamespacedResources: []string{
 			"endpoints", "endpointslices", "events",
 		},
 		ExcludedClusterResources: []string{
 			"componentstatuses", "nodes", "csinodes", "ipaddresses",
-			"certificatesigningrequests", "storageclasses", "servicecidrs",
+			"certificatesigningrequests", "servicecidrs",
 			"apiservices", "flowschemas", "prioritylevelconfigurations",
 			"ingressclasses", "runtimeclasses", "mutatingwebhookconfigurations",
-		},
-		ExcludedAddonPersistentVolumes: []string{
-			"postgresql-pv-volume", "dicom-pv-volume", "orthanc-pv",
-			"registry-pv", "smb-static-pv", "opensearch-cluster-master-pv",
 		},
 		ClusterName: "k2s-cluster",
 	}
@@ -427,6 +420,10 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 
 	cleanResourceMap(data)
 
+	if items, ok := data["items"].([]any); ok && len(items) == 0 {
+		return nil, false, nil
+	}
+
 	yamlBytes, err := yaml.Marshal(data)
 	if err != nil {
 		return nil, false, err
@@ -436,15 +433,41 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 
 func cleanResourceMap(data map[string]any) {
 	if items, ok := data["items"].([]any); ok {
+		kept := make([]any, 0, len(items))
+		resourceKind := strings.TrimSuffix(fmt.Sprint(data["kind"]), "List")
 		for _, item := range items {
 			if itemMap, ok := item.(map[string]any); ok {
+				if (resourceKind == "Pod" || resourceKind == "ReplicaSet") && isControllerOwned(itemMap) {
+					continue
+				}
 				cleanSingleResource(itemMap)
 			}
+			kept = append(kept, item)
 		}
+		data["items"] = kept
 	} else {
 		cleanSingleResource(data)
 	}
 	cleanMetadata(data)
+}
+
+func isControllerOwned(m map[string]any) bool {
+	meta, ok := m["metadata"].(map[string]any)
+	if !ok {
+		return false
+	}
+	owners, ok := meta["ownerReferences"].([]any)
+	if !ok {
+		return false
+	}
+	for _, owner := range owners {
+		if ownerMap, ok := owner.(map[string]any); ok {
+			if controller, ok := ownerMap["controller"].(bool); ok && controller {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cleanSingleResource(m map[string]any) {
@@ -522,6 +545,10 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 		}
 
 		targetTarGz := filepath.Join(pvDir, pvName+"-backup.tar.gz")
+		volumeKind := "directory"
+		if !stat.IsDir() {
+			volumeKind = "file"
+		}
 		if stat.IsDir() {
 			if err := tarGzDirectory(volumePath, targetTarGz); err != nil {
 				_ = os.Remove(targetTarGz)
@@ -551,12 +578,21 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 			"pvName":         pvName,
 			"volumeType":     volumeType,
 			"volumePath":     volumePath,
+			"volumeKind":     volumeKind,
 			"capacity":       pv.Spec.Capacity.Storage,
 			"createdAt":      time.Now().UTC().Format(time.RFC3339),
 			"backupFile":     pvName + "-backup.tar.gz",
 			"claimNamespace": claimNs,
 			"claimName":      claimName,
 			"reclaimPolicy":  pv.Spec.PersistentVolumeReclaimPolicy,
+		}
+		if stat.IsDir() {
+			metadata["volumeRootMetadata"] = true
+			metadata["volumeRootMode"] = unixFileMode(stat.Mode())
+			if st, ok := stat.Sys().(*syscall.Stat_t); ok {
+				metadata["volumeRootUID"] = st.Uid
+				metadata["volumeRootGID"] = st.Gid
+			}
 		}
 
 		metaJSON, _ := json.MarshalIndent(metadata, "", "  ")
@@ -598,15 +634,14 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 		if err != nil {
 			return err
 		}
-		if relPath == "." {
-			return nil
-		}
-
 		header, err := tar.FileInfoHeader(info, info.Name())
 		if err != nil {
 			return err
 		}
 		header.Name = filepath.ToSlash(relPath)
+		if relPath == "." {
+			header.Name = "."
+		}
 
 		if info.IsDir() {
 			header.Name += "/"
@@ -617,6 +652,9 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 			linkTarget, err := os.Readlink(path)
 			if err != nil {
 				return err
+			}
+			if strings.Contains(linkTarget, "\\") || !filepath.IsLocal(linkTarget) {
+				return fmt.Errorf("PV symlink '%s' has a target that cannot be restored safely", relPath)
 			}
 			header.Linkname = linkTarget
 			return tw.WriteHeader(header)
@@ -656,6 +694,20 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 	success = true
 
 	return nil
+}
+
+func unixFileMode(mode os.FileMode) uint32 {
+	raw := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		raw |= 04000
+	}
+	if mode&os.ModeSetgid != 0 {
+		raw |= 02000
+	}
+	if mode&os.ModeSticky != 0 {
+		raw |= 01000
+	}
+	return raw
 }
 
 func tarGzSingleFile(srcFile, destTarGz string) error {

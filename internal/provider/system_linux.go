@@ -135,9 +135,12 @@ func (p *linuxSystemProvider) Backup(cfg SystemBackupConfig) error {
 	return runLinuxSystemBackup(p.installDir, cfg)
 }
 
-func (p *linuxSystemProvider) Restore(_ SystemRestoreConfig) error {
-	return NotSupportedError("system restore",
-		"cluster restore on Linux hosts is not yet implemented")
+func (p *linuxSystemProvider) Restore(cfg SystemRestoreConfig) error {
+	return runLinuxSystemRestoreWithProviderConfig(p.installDir, ProviderConfig{
+		InstallDir: p.installDir,
+		ConfigDir:  p.configDir,
+		StdWriter:  p.stdWriter,
+	}, cfg)
 }
 
 func (p *linuxSystemProvider) CertificateRenew(_ SystemCertRenewConfig) error {

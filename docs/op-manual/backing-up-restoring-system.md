@@ -13,11 +13,11 @@ This guide explains how to back up and restore your entire K2s cluster state, in
 K2s provides comprehensive backup and restore functionality for your cluster across supported platforms:
 
 - **`k2s system backup`**: Creates a complete backup of cluster resources, persistent volumes, and container images (supported on both Windows and Linux hosts)
-- **`k2s system restore`**: Restores cluster state from a backup archive
+- **`k2s system restore`**: Restores cluster state from a backup archive (supported on both Windows and Linux hosts)
 - **Integration with Upgrade**: The `k2s system upgrade` command automatically creates a backup before upgrading
 
 !!! tip "Dual-Platform Support"
-    `k2s system backup` runs natively on both **Windows** (using PowerShell automation) and **Linux** hosts (using Go native orchestration and CLI tools).
+    Both `k2s system backup` and `k2s system restore` run natively on **Windows** (using PowerShell automation) and **Linux** hosts (using Go native orchestration and CLI tools).
 
 ## Configuration Settings
 
@@ -353,6 +353,12 @@ k2s system restore [options]
 
 ```console
 k2s system restore -f c:\backups\k2s-backup.zip
+```
+
+On Linux hosts:
+
+```console
+k2s system restore -f /tmp/backups/k2s-backup.zip
 ```
 
 #### Strict Restore (Fail on Any Error)

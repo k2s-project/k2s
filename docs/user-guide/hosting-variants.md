@@ -17,7 +17,7 @@ In this variant, the focus is on setting up an environment solely for building a
 ## Linux Host
 
 !!! warning "Experimental"
-    Linux host support is experimental. Some features (offline packaging, system restore) are not yet available. The interface may change without notice.
+    Linux host support is experimental. Both `system backup` and `system restore` are supported, while some features (offline packaging, system upgrade) are not yet available. The interface may change without notice.
 
 In this variant the *Linux* machine **is** the host. The *Kubernetes* control plane runs natively on the host (no VM), and an optional *Windows* VM is provisioned via *libvirt/KVM* with OVMF UEFI firmware to provide a mixed-OS worker node.
 

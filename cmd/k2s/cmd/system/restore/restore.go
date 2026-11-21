@@ -4,19 +4,16 @@
 package restore
 
 import (
-	"strconv"
-
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	"github.com/k2s-project/k2s/internal/provider"
 )
 
 const (
-	restoreFileFlag      = "file"
-	errorOnFailureFlag   = "error-on-failure"
+	restoreFileFlag    = "file"
+	errorOnFailureFlag = "error-on-failure"
 )
 
 var SystemRestoreCmd = &cobra.Command{
@@ -27,66 +24,44 @@ var SystemRestoreCmd = &cobra.Command{
 
 func init() {
 	SystemRestoreCmd.Flags().SortFlags = false
-	SystemRestoreCmd.Flags().StringP(restoreFileFlag, "f", "", "Backup file to restore from (zip)",)
+	SystemRestoreCmd.Flags().StringP(restoreFileFlag, "f", "", "Backup file to restore from (zip)")
 	_ = SystemRestoreCmd.MarkFlagRequired(restoreFileFlag)
-	SystemRestoreCmd.Flags().BoolP(errorOnFailureFlag, "e", false, "Fail if errors occur while restoring resources",)
-	SystemRestoreCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage,)
+	SystemRestoreCmd.Flags().BoolP(errorOnFailureFlag, "e", false, "Fail if errors occur while restoring resources")
+	SystemRestoreCmd.Flags().String(common.AdditionalHooksDirFlagName, "", common.AdditionalHooksDirFlagUsage)
 }
 
-func runSystemRestore(cmd *cobra.Command, args []string) error {
+func runSystemRestore(cmd *cobra.Command, args []string) (err error) {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
+	defer func() { cmdSession.Finish(err != nil) }()
+
 	pterm.Println("📦 Restoring K2s system backup ...")
 
-	out, _ := strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
+	out, err := cmd.Flags().GetBool(common.OutputFlagName)
+	if err != nil {
+		return err
+	}
 
-	backupFile := cmd.Flags().Lookup(restoreFileFlag).Value.String()
+	backupFile, err := cmd.Flags().GetString(restoreFileFlag)
+	if err != nil {
+		return err
+	}
 
-	errorOnFailure, _ := strconv.ParseBool(cmd.Flags().Lookup(errorOnFailureFlag).Value.String())
+	errorOnFailure, err := cmd.Flags().GetBool(errorOnFailureFlag)
+	if err != nil {
+		return err
+	}
 
-	additionalHooksDir := cmd.Flags().Lookup(common.AdditionalHooksDirFlagName).Value.String()
+	additionalHooksDir, err := cmd.Flags().GetString(common.AdditionalHooksDirFlagName)
+	if err != nil {
+		return err
+	}
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
 
-	if err := context.Providers().System.Restore(provider.SystemRestoreConfig{
+	return context.Providers().System.Restore(provider.SystemRestoreConfig{
 		BackupFile:         backupFile,
 		AdditionalHooksDir: additionalHooksDir,
 		ErrorOnFailure:     errorOnFailure,
 		ShowOutput:         out,
-	}); err != nil {
-		return err
-	}
-
-	cmdSession.Finish()
-	return nil
-}
-
-func createSystemRestorePsCommand(cmd *cobra.Command) string {
-	psCmd := utils.FormatScriptFilePath(
-		utils.InstallDir() +
-			"\\lib\\scripts\\windows\\host\\system\\restore\\Start-SystemRestore.ps1",
-	)
-
-	out, _ := strconv.ParseBool(
-		cmd.Flags().Lookup(common.OutputFlagName).Value.String(),
-	)
-	if out {
-		psCmd += " -ShowLogs"
-	}
-
-	backupFile := cmd.Flags().Lookup(restoreFileFlag).Value.String()
-	psCmd += " -BackupFile " + utils.EscapeWithSingleQuotes(backupFile)
-
-	errorOnFailure, _ := strconv.ParseBool(
-		cmd.Flags().Lookup(errorOnFailureFlag).Value.String(),
-	)
-	if errorOnFailure {
-		psCmd += " -ErrorOnFailure"
-	}
-
-	additionalHooksDir := cmd.Flags().Lookup(common.AdditionalHooksDirFlagName).Value.String()
-	if additionalHooksDir != "" {
-		psCmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(additionalHooksDir)
-	}
-
-	return psCmd
+	})
 }

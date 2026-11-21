@@ -309,9 +309,7 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 		if p.isLinuxOnly() {
 			return fmt.Errorf("importing Windows container images is not supported on Linux hosts (Windows container images can only be used on Windows worker nodes)")
 		}
-		// Import on Windows VM via SSH
-		_, err := sshCmd(fmt.Sprintf(`ctr -n k8s.io images import "%s"`, path))
-		return err
+		return p.importWindowsImage(path)
 	}
 
 	script := p.scriptPath("Import-Image.sh")
@@ -335,6 +333,45 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func (p *linuxImageProvider) importWindowsImage(path string) error {
+	temp, err := os.CreateTemp("", "k2s-image-import-*.tar")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary Windows image path: %w", err)
+	}
+	remotePath := "C:/Windows/Temp/" + filepath.Base(temp.Name())
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := os.Remove(temp.Name()); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = sshCmd(fmt.Sprintf(`Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue`, remotePath))
+	}()
+
+	target := fmt.Sprintf("%s@%s:%s", sshUser, winVMIP, remotePath)
+	scp := exec.Command("scp", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", path, target)
+	if out, err := scp.CombinedOutput(); err != nil {
+		if p.stdWriter != nil {
+			p.stdWriter.WriteStdErr(string(out))
+		}
+		return fmt.Errorf("failed to transfer Windows image archive to worker: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	out, err := sshCmd(fmt.Sprintf(`ctr -n k8s.io images import "%s"`, remotePath))
+	if p.stdWriter != nil && out != "" {
+		p.stdWriter.WriteStdOut(out)
+	}
+	if err != nil {
+		if p.stdWriter != nil {
+			p.stdWriter.WriteStdErr(err.Error())
+		}
+		return fmt.Errorf("failed to import Windows image archive on worker: %w", err)
 	}
 	return nil
 }

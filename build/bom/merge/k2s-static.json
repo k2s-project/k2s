@@ -327,9 +327,9 @@
       "type": "application"
     },
     {
-      "group": "https://github.com/flannel-io/flannel/releases/download/v0.28.10/flanneld.exe",
+      "group": "https://github.com/flannel-io/flannel/releases/download/v0.28.11/flanneld.exe",
       "name": "flanneld",
-      "version": "v0.28.10",
+      "version": "v0.28.11",
       "description": "",
       "scope": "required",
       "licenses": [
@@ -346,7 +346,7 @@
           "value": "k2s:core:pkg:executables"
         }
       ],
-      "purl": "pkg:github/flannel-io/flannel@v0.28.10",
+      "purl": "pkg:github/flannel-io/flannel@v0.28.11",
       "type": "application"
     },
     {

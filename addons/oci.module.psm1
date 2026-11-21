@@ -18,6 +18,7 @@ Media Types:
 - application/vnd.k2s.addon.manifests.v1.tar+gzip - Kubernetes manifests
 - application/vnd.cncf.helm.chart.content.v1.tar+gzip - Helm charts
 - application/vnd.k2s.addon.scripts.v1.tar+gzip - Enable/Disable scripts
+- application/vnd.k2s.addon.shared-scripts.v1.tar+gzip - Shared scripts at the addon root
 - application/vnd.oci.image.layer.v1.tar       - Linux container images
 - application/vnd.k2s.addon.images-windows.v1.tar - Windows container images
 - application/vnd.k2s.addon.packages.v1.tar+gzip - Offline packages
@@ -34,6 +35,7 @@ $script:MediaTypes = @{
     Manifests   = 'application/vnd.k2s.addon.manifests.v1.tar+gzip'
     Charts      = 'application/vnd.cncf.helm.chart.content.v1.tar+gzip'
     Scripts     = 'application/vnd.k2s.addon.scripts.v1.tar+gzip'
+    SharedScripts = 'application/vnd.k2s.addon.shared-scripts.v1.tar+gzip'
     ImagesLinux = 'application/vnd.oci.image.layer.v1.tar'
     ImagesWindows = 'application/vnd.k2s.addon.images-windows.v1.tar'
     Packages    = 'application/vnd.k2s.addon.packages.v1.tar+gzip'

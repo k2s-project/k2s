@@ -1,0 +1,321 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Output (stdout and stderr, as in run.log on the node) of clusterip-webhook-auth.sh in scenarios of
+# test/clusterip-webhook-auth.sh, which fails when the output of the script differs from this file. Each section starts
+# with "=== <scenario> exit=<exit status>". The test root is replaced by /etc/kubernetes and the random parts of temporary
+# names by X; lines starting with "injected" stand for the error output of a failing tool (sync, chown, openssl).
+# Regenerate with: K2S_WA_WRITE_FIXTURES=1 bash test/clusterip-webhook-auth.sh
+=== ensure-apiserver/configured exit=0
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+[ClusterIPWebhookAuth] updated '/etc/kubernetes/manifests/kube-apiserver.yaml'; waiting for kube-apiserver to restart with the admission configuration
+[ClusterIPWebhookAuth] kube-apiserver is ready with the admission configuration
+K2S-WEBHOOK-AUTH-OK:ensure-apiserver
+=== ensure-apiserver/already-configured exit=0
+[ClusterIPWebhookAuth] reusing client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] reusing kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] kube-apiserver manifest already contains the admission configuration
+[ClusterIPWebhookAuth] kube-apiserver is ready with the admission configuration
+K2S-WEBHOOK-AUTH-OK:ensure-apiserver
+=== ensure-apiserver/configured-not-ready exit=1
+[ClusterIPWebhookAuth] reusing client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] reusing kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] kube-apiserver manifest already contains the admission configuration
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] ERROR: kube-apiserver is not ready with the admission configuration; the manifest was not changed (backup of the manifest before this script last changed it: '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml')
+=== ensure-apiserver/custom exit=3
+[ClusterIPWebhookAuth] reusing client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] reusing kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] ERROR: kube-apiserver already uses another --admission-control-config-file; add a MutatingAdmissionWebhook plugin with kubeConfigFile '/etc/kubernetes/k2s-webhook-auth/kubeconfig' to it manually. Nothing was changed.
+=== ensure-apiserver/not-ready-before-change exit=1
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: noflag
+[ClusterIPWebhookAuth] ERROR: kube-apiserver is not ready; its manifest was not changed
+=== ensure-apiserver/credentials-not-flushed exit=1
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+injected sync failure
+[ClusterIPWebhookAuth] ERROR: cannot flush the credentials to disk; the kube-apiserver manifest was not changed
+=== ensure-apiserver/backup-failed exit=1
+[ClusterIPWebhookAuth] reusing client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] reusing kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+injected sync failure
+[ClusterIPWebhookAuth] ERROR: cannot back up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+=== ensure-apiserver/replace-failed exit=1
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+injected chown failure
+[ClusterIPWebhookAuth] ERROR: cannot replace '/etc/kubernetes/manifests/kube-apiserver.yaml'
+=== ensure-apiserver/configured-with-warning exit=0
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+injected sync failure
+[ClusterIPWebhookAuth] WARNING: cannot flush '/etc/kubernetes/manifests' to disk
+[ClusterIPWebhookAuth] updated '/etc/kubernetes/manifests/kube-apiserver.yaml'; waiting for kube-apiserver to restart with the admission configuration
+[ClusterIPWebhookAuth] kube-apiserver is ready with the admission configuration
+K2S-WEBHOOK-AUTH-OK:ensure-apiserver
+=== ensure-apiserver/rolled-back exit=5
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+[ClusterIPWebhookAuth] updated '/etc/kubernetes/manifests/kube-apiserver.yaml'; waiting for kube-apiserver to restart with the admission configuration
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] ERROR: kube-apiserver did not become ready with the admission configuration; restoring the previous manifest
+[ClusterIPWebhookAuth] ERROR: previous kube-apiserver manifest restored; kube-apiserver recovered
+=== ensure-apiserver/recovery-unconfirmed exit=6
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+[ClusterIPWebhookAuth] updated '/etc/kubernetes/manifests/kube-apiserver.yaml'; waiting for kube-apiserver to restart with the admission configuration
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] ERROR: kube-apiserver did not become ready with the admission configuration; restoring the previous manifest
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (noflag); running: none
+[ClusterIPWebhookAuth] ERROR: previous kube-apiserver manifest restored, but kube-apiserver did not recover
+=== ensure-apiserver/restore-failed exit=6
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/manifests/kube-apiserver.yaml' to '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'
+[ClusterIPWebhookAuth] updated '/etc/kubernetes/manifests/kube-apiserver.yaml'; waiting for kube-apiserver to restart with the admission configuration
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] waiting for kube-apiserver (flag); running: none
+[ClusterIPWebhookAuth] ERROR: kube-apiserver did not become ready with the admission configuration; restoring the previous manifest
+[ClusterIPWebhookAuth] ERROR: cannot restore '/etc/kubernetes/manifests/kube-apiserver.yaml' from '/etc/kubernetes/k2s-webhook-auth-backup/kube-apiserver.yaml'; restore it manually
+=== ensure-apiserver/locked exit=1
+[ClusterIPWebhookAuth] ERROR: another clusterip-webhook-auth.sh run holds the lock
+=== provision exit=0
+[ClusterIPWebhookAuth] created client CA '/etc/kubernetes/k2s-webhook-auth-ca'
+[ClusterIPWebhookAuth] issuing kube-apiserver client certificate: client certificate or key is missing
+[ClusterIPWebhookAuth] issued kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/kubeconfig'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-webhook-auth/admission-config.yaml'
+[ClusterIPWebhookAuth] wrote '/etc/kubernetes/k2s-kubeadm-patches/kube-apiserver+json.json'
+[ClusterIPWebhookAuth] credentials ready in '/etc/kubernetes/k2s-webhook-auth'
+K2S-WEBHOOK-AUTH-OK:provision
+=== publish exit=0
+[ClusterIPWebhookAuth] published the client CA certificate to ConfigMap k2s-webhook/clusterip-webhook-client-ca
+K2S-WEBHOOK-AUTH-OK:publish
+=== verify/ok exit=0
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+K2S-WEBHOOK-AUTH-VERIFY:ok
+K2S-WEBHOOK-AUTH-OK:verify
+=== verify/failed exit=1
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] ERROR: verification failed (unauthenticated-accepted): 172.21.0.12:443 answered a client without certificate (http:404)
+K2S-WEBHOOK-AUTH-VERIFY:unauthenticated-accepted
+=== renew/verified exit=0
+[ClusterIPWebhookAuth] client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt' is valid for more than 30 days; not renewed (--force renews it anyway); verifying webhook authentication
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+K2S-WEBHOOK-AUTH-OK:renew
+=== renew/verify-failed exit=1
+[ClusterIPWebhookAuth] client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt' is valid for more than 30 days; not renewed (--force renews it anyway); verifying webhook authentication
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (admission-fail-open): the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log
+[ClusterIPWebhookAuth] ERROR: webhook authentication does not work with the current client certificate (admission-fail-open); it is valid, so it was not renewed
+=== renew/forced exit=0
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/k2s-webhook-auth/client.crt' to '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] webhook authentication works with the renewed client certificate
+K2S-WEBHOOK-AUTH-OK:renew
+=== renew/renewed exit=0
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] WARNING: client certificate expires within 30 days; run renew
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/k2s-webhook-auth/client.crt' to '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] webhook authentication works with the renewed client certificate
+K2S-WEBHOOK-AUTH-OK:renew
+=== renew/renewed-without-backup exit=0
+[ClusterIPWebhookAuth] renewing without a certificate to restore: client certificate or key is missing
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] webhook authentication works with the renewed client certificate
+K2S-WEBHOOK-AUTH-OK:renew
+=== renew/unverified-without-backup exit=1
+[ClusterIPWebhookAuth] renewing without a certificate to restore: client certificate or key is missing
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (admission-fail-open): the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log
+[ClusterIPWebhookAuth] ERROR: webhook authentication does not work with the renewed client certificate (admission-fail-open) and there is no previous certificate to restore; kube-apiserver was not restarted. Check kube-apiserver and the webhook, then run verify
+=== renew/current-certificate-not-working exit=1
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (webhook-unavailable: 172.21.0.12:443: no TLS connection (unreachable)); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (webhook-unavailable: 172.21.0.12:443: no TLS connection (unreachable)); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (webhook-unavailable): 172.21.0.12:443: no TLS connection (unreachable)
+[ClusterIPWebhookAuth] ERROR: webhook authentication does not work with the current client certificate (webhook-unavailable); not renewing it
+=== renew/signing-failed exit=1
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/k2s-webhook-auth/client.crt' to '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'
+[ClusterIPWebhookAuth] ERROR: cannot renew the kube-apiserver client certificate: client certificate signing failed: injected failure; '/etc/kubernetes/k2s-webhook-auth/client.crt' was not changed
+=== renew/rolled-back exit=5
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/k2s-webhook-auth/client.crt' to '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (client-cert-rejected: 172.21.0.12:443 refused the client certificate (alert:48, unknown CA: run publish, then restart the webhook)); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (client-cert-rejected: 172.21.0.12:443 refused the client certificate (alert:48, unknown CA: run publish, then restart the webhook)); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (client-cert-rejected): 172.21.0.12:443 refused the client certificate (alert:48, unknown CA: run publish, then restart the webhook)
+[ClusterIPWebhookAuth] ERROR: webhook authentication does not work with the renewed client certificate (client-cert-rejected); restoring the previous certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] ERROR: previous client certificate restored; webhook authentication works with it
+=== renew/restore-unverified exit=6
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/k2s-webhook-auth/client.crt' to '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (admission-fail-open): the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log
+[ClusterIPWebhookAuth] ERROR: webhook authentication does not work with the renewed client certificate (admission-fail-open); restoring the previous certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (admission-fail-open): the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log
+[ClusterIPWebhookAuth] ERROR: previous client certificate restored, but webhook authentication could not be verified (admission-fail-open)
+=== renew/restore-failed exit=6
+[ClusterIPWebhookAuth] verifying webhook authentication with the current client certificate
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io assigned 172.21.0.50 to the dry-run Service (calls 1, failed 0, failed open 0, rejected 0, reset 0)
+[ClusterIPWebhookAuth] verified: the webhook refuses clients without certificate and accepts the client certificate, and kube-apiserver calls it successfully
+[ClusterIPWebhookAuth] backed up '/etc/kubernetes/k2s-webhook-auth/client.crt' to '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'
+[ClusterIPWebhookAuth] renewed kube-apiserver client certificate '/etc/kubernetes/k2s-webhook-auth/client.crt'
+[ClusterIPWebhookAuth] webhook clusterip.k2s.io has failurePolicy Ignore: kube-apiserver admits a Service without it if the call fails; the admission metrics detect this
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] not verified yet (admission-fail-open: the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log); retrying in 5s
+[ClusterIPWebhookAuth] ERROR: verification failed (admission-fail-open): the call of webhook clusterip.k2s.io failed and kube-apiserver admitted the dry-run Service without it (clusterIP '172.21.0.0', calls 1, failed 1, failed open 1, rejected 0, reset 0); see the kube-apiserver log
+[ClusterIPWebhookAuth] ERROR: webhook authentication does not work with the renewed client certificate (admission-fail-open); restoring the previous certificate
+injected cp failure
+[ClusterIPWebhookAuth] ERROR: cannot restore '/etc/kubernetes/k2s-webhook-auth/client.crt' from '/etc/kubernetes/k2s-webhook-auth-backup/client.crt'; restore it manually
+=== renew/custom exit=3
+[ClusterIPWebhookAuth] ERROR: kube-apiserver uses another --admission-control-config-file; renew supports only the configuration of ensure-apiserver. Nothing was changed.
+=== renew/locked exit=1
+[ClusterIPWebhookAuth] ERROR: another clusterip-webhook-auth.sh run holds the lock

@@ -101,15 +101,28 @@ k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnect
 
 See [Extending K2s cluster](extending-k2s-cluster.md) for the complete node onboarding workflow.
 
+### Node Package on a Linux Host
+
+On a Linux host *(experimental)*, `k2s system package --node-package` builds the package natively with the host's own `apt`, so the package matches the build host:
+
+- Run the command with `sudo`.
+- `--os` must match the host's Debian release (for example `debian13` on a Debian 13 host) and `--arch` the host's architecture. There is no cross-build.
+- The host needs `skopeo`, `dpkg-deb` and `apt-get`. `skopeo` is not installed by *K2s*; install it with `sudo apt-get install skopeo`. The command checks these tools before it downloads anything.
+- The host needs network access to the Debian and Kubernetes package repositories and to the container registries.
+
+```console
+sudo k2s system package --node-package --os debian13 --target-dir /tmp/out --name debian13-node.zip
+```
+
 ### arm64 Node Package
 
-To build an arm64 node package, run `k2s system package --node-package --arch arm64` **directly on a Linux arm64 host** with `sudo` — not on the Windows K2s host that builds the amd64 packages above. There is no Hyper-V VM or cross-build path for arm64; the build host's own `apt` is used to download packages for its own architecture:
+To build an arm64 node package, run `k2s system package --node-package --arch arm64` **directly on a Linux arm64 host** with `sudo` (see [Node Package on a Linux Host](#node-package-on-a-linux-host)) — not on the Windows K2s host that builds the amd64 packages above:
 
 ```console
 sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 ```
 
-Only Debian 13 arm64 is tested/validated today; `--os debian12 --arch arm64` runs the same code path but is untested. The package has the same layout as the amd64 package: `packages/` with the `.deb` files and `images/` with the Kubernetes, flannel and (with `--include-gpu`) NVIDIA container images as OCI archives. The images are copied from the registries with `skopeo`, so the build host needs `skopeo` installed (`apt-get install skopeo`) and network access to the registries.
+Only Debian 13 arm64 is tested/validated today; `--os debian12 --arch arm64` runs the same code path but is untested. The package has the same layout as the amd64 package: `packages/` with the `.deb` files and `images/` with the Kubernetes, flannel and (with `--include-gpu`) NVIDIA container images as OCI archives.
 
 ### GPU-Enabled Node Package
 

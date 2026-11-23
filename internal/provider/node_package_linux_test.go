@@ -8,6 +8,7 @@ package provider
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -118,6 +119,25 @@ func TestValidateBuildHostOS(t *testing.T) {
 				t.Fatalf("validateBuildHostOS() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRequireNodePackageToolsNamesMissingPackages(t *testing.T) {
+	missing := map[string]bool{"skopeo": true, "dpkg-deb": true}
+	lookPath := func(command string) (string, error) {
+		if missing[command] {
+			return "", exec.ErrNotFound
+		}
+		return "/usr/bin/" + command, nil
+	}
+
+	err := requireNodePackageTools(lookPath)
+
+	if err == nil || !strings.Contains(err.Error(), "dpkg-deb, skopeo") || !strings.Contains(err.Error(), "sudo apt-get install dpkg skopeo") {
+		t.Fatalf("got %v, want the missing commands and the sudo apt-get install hint", err)
+	}
+	if err := requireNodePackageTools(func(command string) (string, error) { return "/usr/bin/" + command, nil }); err != nil {
+		t.Fatalf("all tools present: got %v", err)
 	}
 }
 

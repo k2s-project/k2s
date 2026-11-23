@@ -231,14 +231,13 @@ k2s system package --node-package --os debian13 --target-dir "C:\out" --name "de
 
 ### arm64 node packages
 
-An arm64 node package must be built **on a Linux arm64 host** with `sudo`/root privileges — not on the Windows K2s host, and not cross-compiled. There is no Hyper-V VM involved; the build host's own `apt` is used directly:
+An arm64 node package must be built **on a Linux arm64 host** with `sudo`/root privileges — not on the Windows K2s host, and not cross-compiled. There is no Hyper-V VM involved; the build host's own `apt` is used directly, and the host needs `skopeo` (see [Node Package on a Linux Host](creating-offline-package.md#node-package-on-a-linux-host)):
 
 ```console
 sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
 ```
 
-!!! note
-    Unlike the amd64 package built on Windows, the arm64 package built this way does **not** pre-stage container images as offline OCI archives — only the `.deb` packages are bundled offline. `k2s node add` with this package still needs network access to pull Kubernetes/flannel/GPU container images at join time. This is a known, deliberate gap for the initial arm64 support, not an oversight.
+The package contains the `.deb` packages and the Kubernetes, flannel and (with `--include-gpu`) NVIDIA container images as OCI archives, like the amd64 package.
 
 ### GPU Support for Offline Nodes
 

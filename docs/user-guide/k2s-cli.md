@@ -609,7 +609,7 @@ Example for node package with GPU support:
 k2s system package --node-package --os debian13 --include-gpu --target-dir "C:\out" --name "debian13-gpu.zip"
 ```
 
-Example for an arm64 node package, run on a Linux arm64 host:
+Example for an arm64 node package, run on a Linux arm64 host (prerequisites: [Node Package on a Linux Host](../op-manual/creating-offline-package.md#node-package-on-a-linux-host)):
 
 ```console
 sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip

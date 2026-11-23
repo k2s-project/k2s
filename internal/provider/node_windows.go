@@ -100,3 +100,53 @@ func (p *windowsNodeProvider) Remove(cfg NodeRemoveConfig) error {
 
 	return powershell.ExecutePs(psCmd+params, p.stdWriter)
 }
+
+func (p *windowsNodeProvider) Start(cfg NodeStartConfig) error {
+	return powershell.ExecutePs(buildNodeStartScript(p.installDir, cfg), p.stdWriter)
+}
+
+func (p *windowsNodeProvider) Stop(cfg NodeStopConfig) error {
+	return powershell.ExecutePs(buildNodeStopScript(p.installDir, cfg), p.stdWriter)
+}
+
+func buildNodeStartScript(installDir string, cfg NodeStartConfig) string {
+	cmd := utils.FormatScriptFilePath(filepath.Join(installDir, "lib", "scripts", "windows", cfg.Role, cfg.OS, "bare-metal", "Start.ps1"))
+
+	if cfg.ShowOutput {
+		cmd += " -ShowLogs"
+	}
+	if cfg.AdditionalHooksDir != "" {
+		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
+	}
+	if cfg.IpAddress != "" {
+		cmd += " -IpAddress " + cfg.IpAddress
+	}
+	if cfg.NodeName != "" {
+		cmd += " -NodeName " + cfg.NodeName
+	}
+	if cfg.SingleNode {
+		cmd += " -SingleNode"
+	}
+	return cmd
+}
+
+func buildNodeStopScript(installDir string, cfg NodeStopConfig) string {
+	cmd := utils.FormatScriptFilePath(filepath.Join(installDir, "lib", "scripts", "windows", cfg.Role, cfg.OS, "bare-metal", "Stop.ps1"))
+
+	if cfg.ShowOutput {
+		cmd += " -ShowLogs"
+	}
+	if cfg.AdditionalHooksDir != "" {
+		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
+	}
+	if cfg.NodeName != "" {
+		cmd += " -NodeName " + cfg.NodeName
+	}
+	if cfg.SingleNode {
+		cmd += " -SingleNode"
+	}
+	if cfg.WaitForNotReady {
+		cmd += " -WaitForNotReady"
+	}
+	return cmd
+}

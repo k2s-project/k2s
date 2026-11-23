@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -28,7 +27,6 @@ import (
 	cc "github.com/k2s-project/k2s/internal/core/clusterconfig"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/provider"
-	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
 
 var StartK8sCmd = &cobra.Command{
@@ -209,10 +207,7 @@ func startNodeByName(context *common.CmdContext, flags *pflag.FlagSet, nodeName 
 		return fmt.Errorf("node %q not found in additional node configuration", nodeName)
 	}
 
-	startNodeCmd := buildNodeStartCmd(flags, node, true)
-	slog.Debug("PS command created", "command", startNodeCmd)
-
-	return powershell.ExecutePs(startNodeCmd, common.NewPtermWriter())
+	return context.Providers().Node.Start(nodeStartConfig(flags, node, true))
 }
 
 func findNodeByName(nodes []cc.Node, nodeName string) (cc.Node, bool) {
@@ -236,11 +231,7 @@ func startAdditionalNodes(context *common.CmdContext, flags *pflag.FlagSet, conf
 	}
 
 	for _, node := range clusterConfig.Nodes {
-		startNodeCmd := buildNodeStartCmd(flags, node, false)
-
-		slog.Debug("PS command created", "command", startNodeCmd)
-
-		err = powershell.ExecutePs(startNodeCmd, common.NewPtermWriter())
+		err = context.Providers().Node.Start(nodeStartConfig(flags, node, false))
 		if err != nil {
 			slog.Warn("Failure during start of node", "node", node.Name, "err", err)
 		}
@@ -283,37 +274,18 @@ func HandleIgnoreIfRunning(ccmd *cobra.Command, clusterIsRunning func() (bool, e
 	return false, nil
 }
 
-func buildNodeStartCmd(flags *pflag.FlagSet, nodeConfig cc.Node, singleNode bool) string {
+func nodeStartConfig(flags *pflag.FlagSet, node cc.Node, singleNode bool) provider.NodeStartConfig {
 	outputFlag, _ := strconv.ParseBool(flags.Lookup(common.OutputFlagName).Value.String())
 
-	additionalHooksDir := flags.Lookup(common.AdditionalHooksDirFlagName).Value.String()
-
-	roleType := string(nodeConfig.Role)
-	OsType := string(nodeConfig.OS)
-
-	cmd := utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", roleType, OsType, "bare-metal", "Start.ps1"))
-
-	if outputFlag {
-		cmd += " -ShowLogs"
+	return provider.NodeStartConfig{
+		NodeName:           node.Name,
+		IpAddress:          node.IpAddress,
+		Role:               string(node.Role),
+		OS:                 string(node.OS),
+		AdditionalHooksDir: flags.Lookup(common.AdditionalHooksDirFlagName).Value.String(),
+		SingleNode:         singleNode,
+		ShowOutput:         outputFlag,
 	}
-
-	if additionalHooksDir != "" {
-		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(additionalHooksDir)
-	}
-
-	if nodeConfig.IpAddress != "" {
-		cmd += " -IpAddress " + nodeConfig.IpAddress
-	}
-
-	if nodeConfig.Name != "" {
-		cmd += " -NodeName " + nodeConfig.Name
-	}
-
-	if singleNode {
-		cmd += " -SingleNode"
-	}
-
-	return cmd
 }
 
 func createTimezoneConfigHandle(config *contracts.KubeConfig) (tz.ConfigWorkspaceHandle, error) {

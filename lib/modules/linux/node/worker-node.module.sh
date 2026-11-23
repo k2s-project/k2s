@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Adds a Debian 13 worker node to a K2s cluster that runs on this Linux host. Used by
-# lib/scripts/linux/debian/worker/bare-metal/Add.sh. The steps follow the Windows path in
-# lib/modules/windows/node/k2s.node.module/linuxnode/setup/worker-node.module.psm1:
-#   prerequisites -> copy the node package -> install packages -> import images -> kubeadm join -> Ready
+# lib/scripts/linux/debian/worker/bare-metal/Add.sh; follows Add-LinuxWorkerNode in
+# lib/modules/windows/node/k2s.node.module/linuxnode/setup/worker-node.module.psm1.
 #
 # The worker is reached with the K2s SSH key pair (see infra/ssh.sh); its public key must already be
 # authorized for the worker user. Host keys are trusted on first use and then pinned in known_hosts.
@@ -18,8 +17,10 @@ readonly K2S_WORKER_NODE_MODULE_LOADED=1
 readonly K2S_NODE_REMOTE_DIR='/tmp/k2s-node'
 readonly K2S_NODE_KUBECONFIG='/etc/kubernetes/admin.conf'
 readonly K2S_NODE_CRI_SOCKET='unix:///run/crio/crio.sock'
-# Must match nodeScriptExitNotSupported in internal/provider/node_linux.go.
+# Must match the nodeScriptExit* constants in internal/provider/node_linux.go.
 readonly K2S_NODE_EXIT_NOT_SUPPORTED=3
+readonly K2S_NODE_EXIT_ALREADY_EXISTS=4
+readonly K2S_NODE_EXIT_NOT_FOUND=5
 
 # Set by k2s_node_configure before any remote call.
 K2S_NODE_USER=''
@@ -106,6 +107,90 @@ k2s_node_check_package_architecture() {
   fi
 }
 
+k2s_node_check_not_in_cluster() {
+  local node_name="$1" cluster_config="$2" nodes
+  nodes=$(KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl get nodes -o jsonpath='{.items[*].metadata.name}') \
+    || { k2s_log ERROR 'Could not list the cluster nodes.'; return 1; }
+  if [[ " $nodes " == *" $node_name "* ]]; then
+    k2s_log ERROR "Node $node_name is already part of the cluster."
+    return "$K2S_NODE_EXIT_ALREADY_EXISTS"
+  fi
+  if [[ -f $cluster_config ]] && jq -e --arg name "$node_name" '.nodes // [] | any(.Name == $name)' "$cluster_config" >/dev/null; then
+    k2s_log ERROR "Node $node_name is already configured in $cluster_config. Run 'k2s node remove --name $node_name' first."
+    return "$K2S_NODE_EXIT_ALREADY_EXISTS"
+  fi
+}
+
+# Same entry as Add-NodeConfig on a Windows host (schema: internal/core/clusterconfig).
+k2s_node_config_add() {
+  local cluster_config="$1" node_name="$2" temp_file
+  temp_file=$(mktemp "$cluster_config.XXXXXX") || return 1
+  if ! { if [[ -f $cluster_config ]]; then cat "$cluster_config"; else printf '{}'; fi; } \
+    | jq --arg name "$node_name" --arg ip "$K2S_NODE_IP" --arg user "$K2S_NODE_USER" \
+      '.nodes = ((.nodes // []) + [{Name: $name, IpAddress: $ip, Username: $user, NodeType: "HOST", Role: "worker", OS: "linux", Proxy: "", PodCIDR: ""}])' \
+      > "$temp_file"; then
+    rm -f "$temp_file"
+    k2s_log ERROR "Could not add node $node_name to $cluster_config."
+    return 1
+  fi
+  chmod 644 "$temp_file" && mv "$temp_file" "$cluster_config" || { rm -f "$temp_file"; return 1; }
+  k2s_log INFO "Node $node_name added to $cluster_config."
+}
+
+# Prints "<ip> <user>" of the node's entry; nothing if there is none.
+k2s_node_config_get() {
+  local cluster_config="$1" node_name="$2"
+  [[ -f $cluster_config ]] || return 0
+  jq -r --arg name "$node_name" \
+    '[(.nodes // [])[] | select((.Name // "" | ascii_downcase) == $name)] | last // empty | "\(.IpAddress // "") \(.Username // "")"' \
+    "$cluster_config" || { k2s_log ERROR "Could not read $cluster_config."; return 1; }
+}
+
+k2s_node_config_remove() {
+  local cluster_config="$1" node_name="$2" temp_file
+  temp_file=$(mktemp "$cluster_config.XXXXXX") || return 1
+  if ! jq --arg name "$node_name" '.nodes = [(.nodes // [])[] | select((.Name // "" | ascii_downcase) != $name)]' \
+    "$cluster_config" > "$temp_file"; then
+    rm -f "$temp_file"
+    k2s_log ERROR "Could not remove node $node_name from $cluster_config."
+    return 1
+  fi
+  chmod 644 "$temp_file" && mv "$temp_file" "$cluster_config" || { rm -f "$temp_file"; return 1; }
+  k2s_log INFO "Node $node_name removed from $cluster_config."
+}
+
+# Configures the remote calls for the node's entry; fails with K2S_NODE_EXIT_NOT_FOUND if there is none.
+k2s_node_configure_from_config() {
+  local cluster_config="$1" node_name="$2" entry ip user key
+  entry=$(k2s_node_config_get "$cluster_config" "$node_name") || return 1
+  read -r ip user <<< "$entry"
+  if [[ -z ${ip:-} || -z ${user:-} ]]; then
+    k2s_log ERROR "Node $node_name was not added with 'k2s node add': it has no entry with IP address and user in $cluster_config."
+    return "$K2S_NODE_EXIT_NOT_FOUND"
+  fi
+  k2s_ssh_require_key || return 1
+  key=$(k2s_ssh_private_key) || return 1
+  k2s_node_configure "$user" "$ip" "$key"
+}
+
+k2s_node_flannel_backend() {
+  KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl -n kube-flannel get configmap kube-flannel-cfg -o jsonpath='{.data.net-conf\.json}' \
+    | jq -er '.Backend.Type' || { k2s_log ERROR 'Could not read the Flannel backend from kube-flannel-cfg.'; return 1; }
+}
+
+# Prints this host's address in the node's subnet.
+k2s_node_host_ip() {
+  local route host_ip
+  route=$(ip -4 route get "$K2S_NODE_IP") || { k2s_log ERROR "No route from this host to $K2S_NODE_IP."; return 1; }
+  if [[ $route == *" via "* ]]; then
+    k2s_log ERROR "Node $K2S_NODE_IP is not in a subnet directly connected to this host. Flannel host-gw requires host and node in the same layer-2 network."
+    return 1
+  fi
+  host_ip=$(awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }' <<< "$route")
+  [[ -n $host_ip ]] || { k2s_log ERROR "Could not determine this host's address towards $K2S_NODE_IP."; return 1; }
+  printf '%s\n' "$host_ip"
+}
+
 # Copies the packages, the images, and the node-extension scripts to the worker staging directory.
 # Directories are streamed through tar, which keeps permissions and avoids one scp per file.
 k2s_node_copy_artifacts() {
@@ -136,6 +221,52 @@ k2s_node_import_images() {
   done < <(k2s_node_ssh "ls $K2S_NODE_REMOTE_DIR/images/*.tar")
   [[ $count -gt 0 ]] || { k2s_log ERROR "No image archives were found in the node package."; return 1; }
   k2s_log INFO "Imported $count images on $K2S_NODE_IP."
+}
+
+k2s_node_harden() {
+  local stage="$1"
+  k2s_log INFO "Running the Debian 13 node hardening ($stage) on $K2S_NODE_IP."
+  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/harden-node.sh $stage" 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Node hardening ($stage) failed on $K2S_NODE_IP."; return 1; }
+}
+
+# Same drop-ins as Add-LinuxWorkerNodeRegistryMirrors on a Windows host.
+k2s_node_configure_registry_mirrors() {
+  local mirrors registry mirror
+  mirrors=$(jq -r '.smallsetup.mirrorRegistries // [] | .[] | "\(.registry) \(.mirror)"' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
+  [[ -n $mirrors ]] || return 0
+  k2s_log INFO "Configuring CRI-O registry mirrors on $K2S_NODE_IP."
+  k2s_node_ssh 'sudo mkdir -p /etc/containers/registries.conf.d' || return 1
+  while read -r registry mirror; do
+    printf '[[registry]]\nlocation="%s"\ninsecure=true\n\n[[registry.mirror]]\nlocation="%s"\ninsecure=true\n' "$registry" "$mirror" \
+      | k2s_node_ssh "sudo tee $(printf %q "/etc/containers/registries.conf.d/${registry//:/}.conf") >/dev/null" || return 1
+  done <<< "$mirrors"
+  k2s_node_ssh 'sudo systemctl restart crio' || { k2s_log ERROR "Could not restart CRI-O on $K2S_NODE_IP."; return 1; }
+}
+
+# Same k2s-routes.service as Add-PersistentLinuxWorkerNodeRoutes on a Windows host.
+k2s_node_add_routes() {
+  local host_ip="$1" switch_cidr pod_cidr
+  switch_cidr=$(jq -er '.smallsetup.masterNetworkCIDR' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
+  pod_cidr=$(jq -er '.smallsetup.podNetworkCIDR' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
+  k2s_log INFO "Routing $switch_cidr and $pod_cidr on $K2S_NODE_IP via $host_ip."
+  k2s_node_ssh 'sudo tee /etc/systemd/system/k2s-routes.service >/dev/null' <<EOF || return 1
+[Unit]
+Description=K2s Kubernetes Routes
+After=network-online.target systemd-networkd.service
+Wants=network-online.target
+PartOf=systemd-networkd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do ping -c 1 -W 2 $host_ip >/dev/null 2>&1 && break; sleep 2; done; ip route replace $switch_cidr via $host_ip; ip route replace $pod_cidr via $host_ip'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  k2s_node_ssh 'sudo systemctl daemon-reload && sudo systemctl enable k2s-routes.service && sudo systemctl restart k2s-routes.service' \
+    || { k2s_log ERROR "Could not enable k2s-routes.service on $K2S_NODE_IP."; return 1; }
 }
 
 # Joins the worker with a fresh token from the control plane. The control plane is this host.
@@ -172,24 +303,52 @@ EOF
   k2s_log INFO "Joining $K2S_NODE_IP to the cluster."
   # The kubelet drop-in directory must exist before the join (the Windows path creates it the same way).
   # The config file is created by root: a file made by the SSH user in /tmp cannot be written by sudo tee.
-  k2s_node_ssh "sudo mkdir -p /etc/kubernetes/kubelet.conf.d && config=\$(sudo mktemp) && sudo tee \"\$config\" >/dev/null && sudo kubeadm join --config=\"\$config\"; result=\$?; sudo rm -f \"\$config\"; exit \"\$result\"" <<< "$join_config" \
+  k2s_node_ssh "sudo mkdir -p /etc/kubernetes/kubelet.conf.d && config=\$(sudo mktemp) && sudo tee \"\$config\" >/dev/null && sudo kubeadm join --config=\"\$config\"; result=\$?; sudo rm -f \"\$config\"; exit \"\$result\"" <<< "$join_config" 2>&1 | k2s_log_output \
     || { k2s_log ERROR "kubeadm join failed on $K2S_NODE_IP."; return 1; }
 }
 
-# Waits until the node reports Ready. The node name is the hostname the kubelet registered with.
+# Waits until the node's Ready condition is the wanted status (True or not True); polls every interval seconds.
 k2s_node_wait_ready() {
-  local node_name="$1" attempt ready
-  for attempt in $(seq 1 60); do
+  local node_name="$1" want="${2:-True}" timeout="${3:-900}" interval="${4:-15}" waited=0 ready label=Ready
+  [[ $want == True ]] || label=NotReady
+  while (( waited < timeout )); do
     ready=$(KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl get node "$node_name" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-    if [[ $ready == True ]]; then
-      k2s_log INFO "Node $node_name is Ready."
+    if [[ $want == True && $ready == True ]] || [[ $want != True && -n $ready && $ready != True ]]; then
+      k2s_log INFO "Node $node_name is $label."
       return 0
     fi
-    sleep 15
+    sleep "$interval"
+    waited=$((waited + interval))
   done
-  k2s_log ERROR "Node $node_name did not become Ready within 15 minutes."
+  k2s_log ERROR "Node $node_name did not become $label within $timeout seconds."
   return 1
+}
+
+k2s_node_wait_reachable() {
+  local attempt
+  for attempt in $(seq 1 12); do
+    k2s_node_ssh true 2>/dev/null && return 0
+    if [[ $attempt == 1 ]]; then
+      k2s_log INFO "Waiting for the SSH connection to $K2S_NODE_IP."
+    fi
+    sleep 5
+  done
+  k2s_log ERROR "Cannot connect to $K2S_NODE_USER@$K2S_NODE_IP over SSH."
+  return 1
+}
+
+# Like Start-LinuxWorkerNodeServices on a Windows host; the routes service exists on host-gw clusters only.
+k2s_node_start_services() {
+  k2s_log INFO "Starting CRI-O and kubelet on $K2S_NODE_IP."
+  k2s_node_ssh 'if systemctl cat k2s-routes.service >/dev/null 2>&1; then sudo systemctl restart k2s-routes.service; fi && sudo systemctl start crio kubelet' 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Could not start CRI-O and kubelet on $K2S_NODE_IP."; return 1; }
+}
+
+k2s_node_stop_services() {
+  k2s_log INFO "Stopping kubelet and CRI-O on $K2S_NODE_IP."
+  k2s_node_ssh 'sudo systemctl stop kubelet && sudo systemctl stop crio' 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Could not stop kubelet and CRI-O on $K2S_NODE_IP."; return 1; }
 }
 
 k2s_node_remove_staging() {
@@ -198,4 +357,62 @@ k2s_node_remove_staging() {
 
 k2s_node_hostname() {
   k2s_node_ssh 'hostname' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
+}
+
+k2s_node_collect_diagnostics() {
+  local node_name="$1"
+  k2s_log INFO "Collecting diagnostics of $node_name ($K2S_NODE_IP) into $K2S_LOG_FILE."
+  k2s_node_ssh 'sudo journalctl -u kubelet -u crio --no-pager -n 200' 2>&1 | k2s_log_output || true
+  KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl describe node "$node_name" 2>&1 | k2s_log_output || true
+}
+
+k2s_node_remove_from_cluster() {
+  local node_name="$1"
+  if ! KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl get node "$node_name" >/dev/null 2>&1; then
+    k2s_log INFO "Node $node_name is not part of the cluster."
+    return 0
+  fi
+  k2s_log INFO "Draining node $node_name."
+  KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl drain "$node_name" --ignore-daemonsets --delete-emptydir-data --force --grace-period=0 --timeout=60s 2>&1 | k2s_log_output \
+    || k2s_log WARN "Draining node $node_name did not complete; deleting it anyway."
+  KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl delete node "$node_name" --ignore-not-found 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Could not delete node $node_name from the cluster."; return 1; }
+}
+
+# Best effort, like Remove-LinuxNode and Remove-KubernetesArtifacts on a Windows host.
+k2s_node_reset() {
+  local switch_cidr pod_cidr
+  switch_cidr=$(jq -er '.smallsetup.masterNetworkCIDR' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
+  pod_cidr=$(jq -er '.smallsetup.podNetworkCIDR' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
+  k2s_log INFO "Removing Kubernetes from $K2S_NODE_IP."
+  k2s_node_ssh "sudo bash -s -- $(printf '%q %q' "$switch_cidr" "$pod_cidr")" <<'SCRIPT' 2>&1 | k2s_log_output
+switch_cidr=$1
+pod_cidr=$2
+systemctl disable --now k2s-routes.service
+rm -f /etc/systemd/system/k2s-routes.service
+kubeadm reset --force
+systemctl disable --now kubelet crio
+for cidr in "$switch_cidr" "$pod_cidr"; do
+  ip -4 route show root "$cidr" | grep -v 'proto kernel' | while read -r route; do ip route delete $route; done
+done
+ip link delete cni0
+ip link delete flannel.1
+for package in kubeadm kubectl kubelet cri-tools cri-o buildah; do
+  DEBIAN_FRONTEND=noninteractive dpkg -P "$package"
+done
+for file in /etc/containers/registries.conf.d/*.conf; do
+  grep -q '^[[:space:]]*\[\[registry\.mirror\]\]' "$file" 2>/dev/null && rm -f "$file"
+done
+rm -rf /etc/kubernetes /etc/cni /etc/crio /var/lib/crio/* /etc/crictl.yaml /etc/systemd/system/crio.service.d \
+  /root/.config/containers /etc/containers/registries.conf /etc/containers/containers.conf.d/20-k2s-proxy.conf \
+  /etc/sysctl.d/k8s.conf /etc/modules-load.d/k8s.conf /etc/cron.d/sharedmount /usr/local/sbin/k2s-crio-precheck \
+  /etc/apt/apt.conf.d/90k2s-install-proxy /etc/apt/apt.conf.d/95k2s-proxy /tmp/k2s-node
+sysctl --system >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y
+systemctl daemon-reload
+SCRIPT
+}
+
+k2s_node_forget_host() {
+  ssh-keygen -R "$K2S_NODE_IP" -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1 || true
 }

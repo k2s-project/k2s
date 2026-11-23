@@ -17,7 +17,7 @@ Command handlers in `cmd/k2s/cmd/` call provider interfaces exclusively, elimina
 |-----------|---------|----------------|
 | `ClusterProvider` | Install, Uninstall, Start, Stop, Status | Cluster lifecycle management |
 | `ImageProvider` | List, Pull, Remove, Build, Import, Export, Tag, Push, Clean, Repair, RegistryAdd, RegistryRemove | Container image and registry operations |
-| `NodeProvider` | Add, Remove, Rename | Worker node management |
+| `NodeProvider` | Add, Remove, Rename, Start, Stop | Worker node management |
 | `SystemProvider` | Dump, Upgrade, Package, Reset, ResetNetwork, Compact, Backup, Restore, CertificateRenew, CertificateAutoRotation, Check | System-level operations and read-only health checks |
 | `AddonProvider` | Enable, Disable, List, Status, Export, Import, RunCommand | Addon lifecycle |
 
@@ -40,7 +40,7 @@ provider/
 ├── image_linux.go          # Linux: Bash image scripts + crictl/nerdctl/ctr/buildah
 ├── kubectl_linux.go        # Linux: kubectl helpers
 ├── node_windows.go         # Windows: delegates to PowerShell scripts
-├── node_linux.go           # Linux: node add via Bash (worker/bare-metal/Add.sh), remove via kubectl
+├── node_linux.go           # Linux: node add/remove/start/stop via Bash (worker/bare-metal/*.sh)
 ├── node_package_*linux.go  # Linux: node package creation (incl. images)
 ├── system_windows.go       # Windows: delegates to PowerShell scripts
 ├── system_linux.go         # Linux: reset via Bash lifecycle; dump, certificates in Go

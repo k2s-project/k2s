@@ -18,6 +18,8 @@ readonly K2S_WORKER_NODE_MODULE_LOADED=1
 readonly K2S_NODE_REMOTE_DIR='/tmp/k2s-node'
 readonly K2S_NODE_KUBECONFIG='/etc/kubernetes/admin.conf'
 readonly K2S_NODE_CRI_SOCKET='unix:///run/crio/crio.sock'
+# Must match nodeScriptExitNotSupported in internal/provider/node_linux.go.
+readonly K2S_NODE_EXIT_NOT_SUPPORTED=3
 
 # Set by k2s_node_configure before any remote call.
 K2S_NODE_USER=''
@@ -76,13 +78,13 @@ k2s_node_check_prerequisites() {
   os_version=$(k2s_node_ssh '. /etc/os-release && printf %s "$VERSION_ID"') || return 1
   if [[ $os_id != debian || $os_version != 13* ]]; then
     k2s_log ERROR "The node runs $os_id $os_version. Worker nodes must run Debian 13."
-    return 1
+    return "$K2S_NODE_EXIT_NOT_SUPPORTED"
   fi
 
   arch=$(k2s_node_ssh 'dpkg --print-architecture') || return 1
   case "$arch" in
     amd64|arm64) ;;
-    *) k2s_log ERROR "Unsupported worker architecture '$arch' (supported: amd64, arm64)."; return 1 ;;
+    *) k2s_log ERROR "Unsupported worker architecture '$arch' (supported: amd64, arm64)."; return "$K2S_NODE_EXIT_NOT_SUPPORTED" ;;
   esac
 
   swap_lines=$(k2s_node_ssh 'wc -l < /proc/swaps') || return 1

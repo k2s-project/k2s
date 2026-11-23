@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
@@ -57,8 +58,14 @@ func newWindowsNodeProvider(cfg ProviderConfig) *windowsNodeProvider {
 }
 
 func (p *windowsNodeProvider) Add(cfg NodeAddConfig) error {
+	isLocalVM, err := config.DetectLocalVM(cfg.IpAddress, p.installDir)
+	if err != nil {
+		return fmt.Errorf("failed to determine node type: %w", err)
+	}
+
 	scriptDir := "bare-metal"
-	if cfg.IsLocalVM {
+	if isLocalVM {
+		p.stdWriter.WriteStdOut("🖥️  Detected local Hyper-V VM on KubeSwitch network — using local-VM provisioning path")
 		scriptDir = filepath.Join("hyper-v-vm", "existing-vm")
 	}
 	psCmd := utils.FormatScriptFilePath(filepath.Join(p.installDir, "lib", "scripts", "windows", "worker", "linux", scriptDir, "Add.ps1"))

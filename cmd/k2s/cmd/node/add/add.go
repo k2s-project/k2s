@@ -129,15 +129,6 @@ func addNode(cCmd *cobra.Command, args []string) error {
 		return fmt.Errorf("flag --%s is required", MachineUsername)
 	}
 
-	isLocalVM, err := config.DetectLocalVM(machineIpAddress, cmdContext.Config().Host().K2sInstallDir())
-	if err != nil {
-		return fmt.Errorf("failed to determine node type: %w", err)
-	}
-
-	if isLocalVM {
-		pterm.Printfln("🖥️  Detected local Hyper-V VM on KubeSwitch network — using local-VM provisioning path")
-	}
-
 	pterm.Printfln("🤖 Adding node to K2s cluster")
 
 	if err := cmdContext.Providers().Node.Add(provider.NodeAddConfig{
@@ -145,7 +136,6 @@ func addNode(cCmd *cobra.Command, args []string) error {
 		UserName:        machineUserName,
 		NodePackagePath: nodePackagePath,
 		ShowOutput:      outputFlag,
-		IsLocalVM:       isLocalVM,
 	}); err != nil {
 		return err
 	}

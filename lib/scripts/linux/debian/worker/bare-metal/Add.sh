@@ -57,7 +57,7 @@ k2s_ssh_require_key || exit 1
 k2s_node_configure "$user_name" "$ip_address" "$(k2s_ssh_private_key)"
 k2s_node_trust_host
 
-unzip -q "$node_package" -d "$work_dir/package"
+unzip -q "$node_package" -d "$work_dir/package" || { k2s_log ERROR "Could not extract the node package: $node_package"; exit 1; }
 package_dir="$work_dir/package"
 [[ -d $package_dir/packages/debian13 && -d $package_dir/images ]] \
   || { k2s_log ERROR 'The node package has no packages/debian13 or images folder.'; exit 1; }

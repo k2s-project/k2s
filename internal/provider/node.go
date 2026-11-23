@@ -13,7 +13,7 @@ import (
 
 // NodeProvider abstracts node management operations.
 // On Windows: delegates to PowerShell scripts.
-// On Linux: uses SSH + kubeadm join natively.
+// On Linux: delegates add to Bash scripts.
 type NodeProvider interface {
 	// Add adds a worker node to the cluster.
 	Add(config NodeAddConfig) error
@@ -32,7 +32,6 @@ type NodeAddConfig struct {
 	Role            string
 	NodePackagePath string
 	ShowOutput      bool
-	IsLocalVM       bool
 }
 
 // NodeRemoveConfig holds parameters for removing a node.

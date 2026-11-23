@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
@@ -27,7 +26,7 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = Describe("importcmd pkg", func() {
-	Describe("buildPsCmd", func() {
+	Describe("buildImportConfig", func() {
 		var cmd *cobra.Command
 
 		BeforeEach(func() {
@@ -35,126 +34,129 @@ var _ = Describe("importcmd pkg", func() {
 			cmd.Flags().BoolP(common.OutputFlagName, common.OutputFlagShorthand, false, common.OutputFlagUsage)
 		})
 
-		expectedScript := func() string {
-			return utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "addons", "Import.ps1"))
-		}
-
 		expectedArtifact := func() string {
 			abs, err := filepath.Abs("myAddons.tar")
 			Expect(err).ToNot(HaveOccurred())
-			return " -ArtifactFile " + utils.EscapeWithSingleQuotes(abs)
+			return abs
 		}
 
 		When("no file flag is provided", func() {
 			It("returns an error", func() {
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).To(MatchError("no path to OCI artifact provided"))
-				Expect(psCmd).To(BeEmpty())
-				Expect(params).To(BeNil())
+				Expect(config).To(BeZero())
 			})
 		})
 
 		When("file flag is provided without node flag", func() {
-			It("builds params without -Nodes (default behavior preserved)", func() {
+			It("builds a config without nodes, names and output (default behavior preserved)", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(expectedArtifact()))
+				Expect(config.ArtifactFile).To(Equal(expectedArtifact()))
+				Expect(config.Names).To(BeEmpty())
+				Expect(config.Nodes).To(BeEmpty())
+				Expect(config.ShowOutput).To(BeFalse())
+			})
+		})
+
+		When("output flag is set", func() {
+			It("requests output", func() {
+				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
+				Expect(cmd.Flags().Set(common.OutputFlagName, "true")).To(Succeed())
+
+				config, err := buildImportConfig(cmd)
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(config.ShowOutput).To(BeTrue())
 			})
 		})
 
 		When("node flag is provided", func() {
-			It("forwards -Nodes with the node name", func() {
+			It("forwards the node name", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodeFlagName, "worker-1")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(expectedArtifact(), " -Nodes 'worker-1'"))
+				Expect(config.ArtifactFile).To(Equal(expectedArtifact()))
+				Expect(config.Nodes).To(Equal("worker-1"))
 			})
 		})
 
 		When("node flag is provided with surrounding whitespace", func() {
-			It("trims the whitespace before forwarding -Nodes", func() {
+			It("trims the whitespace before forwarding the node name", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodeFlagName, "  worker-1  ")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(expectedArtifact(), " -Nodes 'worker-1'"))
+				Expect(config.Nodes).To(Equal("worker-1"))
 			})
 		})
 
 		When("node flag is provided but blank or whitespace-only", func() {
-			It("trims to empty and does not append -Nodes (blank is rejected earlier in runImport)", func() {
+			It("trims to empty and does not forward nodes (blank is rejected earlier in runImport)", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodeFlagName, "   ")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).ToNot(ContainElement(ContainSubstring("-Nodes")))
+				Expect(config.Nodes).To(BeEmpty())
 			})
 		})
 
 		When("nodes flag is provided", func() {
-			It("forwards -Nodes with multiple comma-separated nodes", func() {
+			It("forwards multiple comma-separated nodes", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodesFlagName, "worker-1,worker-2")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(expectedArtifact(), " -Nodes 'worker-1,worker-2'"))
+				Expect(config.Nodes).To(Equal("worker-1,worker-2"))
 			})
 		})
 
 		When("nodes flag is provided with surrounding whitespace", func() {
-			It("trims the whitespace before forwarding -Nodes", func() {
+			It("trims the whitespace before forwarding the nodes", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodesFlagName, "  worker-1,worker-2  ")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(expectedArtifact(), " -Nodes 'worker-1,worker-2'"))
+				Expect(config.Nodes).To(Equal("worker-1,worker-2"))
 			})
 		})
 
 		When("nodes flag is provided but blank or whitespace-only", func() {
-			It("trims to empty and does not append -Nodes (blank is rejected earlier in runImport)", func() {
+			It("trims to empty and does not forward nodes (blank is rejected earlier in runImport)", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodesFlagName, "   ")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).ToNot(ContainElement(ContainSubstring("-Nodes")))
+				Expect(config.Nodes).To(BeEmpty())
 			})
 		})
 
 		When("nodes flag is provided but comma-only", func() {
-			It("trims to empty and does not append -Nodes (blank is rejected earlier in runImport)", func() {
+			It("does not forward nodes (blank is rejected earlier in runImport)", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodesFlagName, ",,")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).ToNot(ContainElement(ContainSubstring("-Nodes")))
+				Expect(config.Nodes).To(BeEmpty())
 			})
 		})
 
@@ -164,81 +166,74 @@ var _ = Describe("importcmd pkg", func() {
 				Expect(cmd.Flags().Set(nodeFlagName, "worker-1")).To(Succeed())
 				Expect(cmd.Flags().Set(nodesFlagName, "worker-2,worker-3")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(expectedArtifact(), " -Nodes 'worker-2,worker-3'"))
+				Expect(config.Nodes).To(Equal("worker-2,worker-3"))
 			})
 		})
 
 		When("addon names and nodes flag are provided", func() {
-			It("builds -Names, -ArtifactFile and -Nodes", func() {
+			It("forwards names, artifact and nodes", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodesFlagName, "worker-1,worker-2")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd, "registry", "ingress")
+				config, err := buildImportConfig(cmd, "registry", "ingress")
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(
-					" -Names 'registry','ingress'",
-					expectedArtifact(),
-					" -Nodes 'worker-1,worker-2'",
-				))
+				Expect(config.Names).To(Equal([]string{"registry", "ingress"}))
+				Expect(config.ArtifactFile).To(Equal(expectedArtifact()))
+				Expect(config.Nodes).To(Equal("worker-1,worker-2"))
 			})
 		})
 
 		When("addon names and node flag are provided", func() {
-			It("builds -Names, -ArtifactFile and -Nodes", func() {
+			It("forwards names, artifact and node", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(nodeFlagName, "worker-1")).To(Succeed())
 
-				psCmd, params, err := buildPsCmd(cmd, "registry", "ingress")
+				config, err := buildImportConfig(cmd, "registry", "ingress")
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(psCmd).To(Equal(expectedScript()))
-				Expect(params).To(ConsistOf(
-					" -Names 'registry','ingress'",
-					expectedArtifact(),
-					" -Nodes 'worker-1'",
-				))
+				Expect(config.Names).To(Equal([]string{"registry", "ingress"}))
+				Expect(config.ArtifactFile).To(Equal(expectedArtifact()))
+				Expect(config.Nodes).To(Equal("worker-1"))
 			})
 		})
 
 		When("no omit flag is provided", func() {
-			It("does not append -Omit (default behavior preserved)", func() {
+			It("does not forward omit options (default behavior preserved)", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 
-				_, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(params).ToNot(ContainElement(ContainSubstring("-Omit")))
+				Expect(config.Omit).To(BeEmpty())
 			})
 		})
 
 		When("a single omit flag is provided", func() {
-			It("forwards -Omit with the quoted option", func() {
+			It("forwards the option", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(omitFlagName, "omitKeycloak")).To(Succeed())
 
-				_, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(params).To(ContainElement(" -Omit 'omitKeycloak'"))
+				Expect(config.Omit).To(Equal([]string{"omitKeycloak"}))
 			})
 		})
 
 		When("multiple omit flags are provided", func() {
-			It("forwards them as a comma-separated list", func() {
+			It("forwards them in order", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(omitFlagName, "omitKeycloak")).To(Succeed())
 				Expect(cmd.Flags().Set(omitFlagName, "ingress/nginx:omitCertMgr")).To(Succeed())
 
-				_, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(params).To(ContainElement(" -Omit 'omitKeycloak','ingress/nginx:omitCertMgr'"))
+				Expect(config.Omit).To(Equal([]string{"omitKeycloak", "ingress/nginx:omitCertMgr"}))
 			})
 		})
 
@@ -248,22 +243,22 @@ var _ = Describe("importcmd pkg", func() {
 				Expect(cmd.Flags().Set(omitFlagName, "  omitGrafana  ")).To(Succeed())
 				Expect(cmd.Flags().Set(omitFlagName, "   ")).To(Succeed())
 
-				_, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(params).To(ContainElement(" -Omit 'omitGrafana'"))
+				Expect(config.Omit).To(Equal([]string{"omitGrafana"}))
 			})
 		})
 
 		When("only blank omit flags are provided", func() {
-			It("does not append -Omit", func() {
+			It("does not forward omit options", func() {
 				Expect(cmd.Flags().Set(fileLabel, "myAddons.tar")).To(Succeed())
 				Expect(cmd.Flags().Set(omitFlagName, "   ")).To(Succeed())
 
-				_, params, err := buildPsCmd(cmd)
+				config, err := buildImportConfig(cmd)
 
 				Expect(err).ToNot(HaveOccurred())
-				Expect(params).ToNot(ContainElement(ContainSubstring("-Omit")))
+				Expect(config.Omit).To(BeEmpty())
 			})
 		})
 	})

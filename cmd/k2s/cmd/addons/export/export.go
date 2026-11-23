@@ -10,14 +10,13 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/k2s-project/k2s/internal/providers/powershell"
-
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 
 	ac "github.com/k2s-project/k2s/cmd/k2s/cmd/addons/common"
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/internal/core/config"
+	"github.com/k2s-project/k2s/internal/provider"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 
@@ -47,7 +46,6 @@ var exportCommandExample = `
 const (
 	directoryLabel    = "directory"
 	defaultDirectory  = ""
-	errLinuxOnlyMsg   = "linux-only"
 	omitImagesLabel   = "omit-images"
 	omitPackagesLabel = "omit-packages"
 )
@@ -64,7 +62,11 @@ producing a lighter artifact with only config, manifests, scripts, and packages 
 
 Use --omit-packages to skip downloading and packaging debian, linux, and windows packages.
 
-Both flags can be combined to export only configuration, manifests, and scripts.`,
+Both flags can be combined to export only configuration, manifests, and scripts.
+
+On a Linux host, Windows container images and Windows packages are skipped, and packages
+are downloaded on the host itself. A Linux-only installation on a Windows host skips the
+Windows container images and Windows packages as well.`,
 		Example: exportCommandExample,
 		RunE:    runExport,
 	}
@@ -87,16 +89,15 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	ac.LogAddons(allAddons)
 
-	psCmd, params, err := buildPsCmd(cmd, args...)
+	exportConfig, err := buildExportConfig(cmd, args...)
 	if err != nil {
 		return err
 	}
 
-	slog.Debug("PS command created", "command", psCmd, "params", params)
+	slog.Debug("Export config created", "config", exportConfig)
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
-	runtimeConfig, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir())
-	if err != nil {
+	if _, err := config.ReadRuntimeConfig(context.Config().Host().K2sSetupConfigDir()); err != nil {
 		if errors.Is(err, cconfig.ErrSystemInCorruptedState) {
 			return common.CreateSystemInCorruptedStateCmdFailure()
 		}
@@ -106,17 +107,8 @@ func runExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if runtimeConfig.InstallConfig().LinuxOnly() {
-		return common.CreateFuncUnavailableForLinuxOnlyCmdFailure()
-	}
-
-	cmdResult, err := powershell.ExecutePsWithStructuredResult[*common.CmdResult](psCmd, "CmdResult", common.NewPtermWriter(), params...)
-	if err != nil {
+	if err := context.Providers().Addon.Export(exportConfig); err != nil {
 		return err
-	}
-
-	if cmdResult.Failure != nil {
-		return cmdResult.Failure
 	}
 
 	cmdSession.Finish()
@@ -124,59 +116,40 @@ func runExport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildPsCmd(cmd *cobra.Command, addonsToExport ...string) (psCmd string, params []string, err error) {
+func buildExportConfig(cmd *cobra.Command, addonsToExport ...string) (provider.AddonExportConfig, error) {
 	exportPath, err := cmd.Flags().GetString(directoryLabel)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag: %s", directoryLabel)
+		return provider.AddonExportConfig{}, fmt.Errorf("unable to parse flag: %s", directoryLabel)
 	}
 	if exportPath == "" {
-		return "", nil, errors.New("no export path provided")
+		return provider.AddonExportConfig{}, errors.New("no export path provided")
 	}
 
 	exportPath, err = filepath.Abs(exportPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to resolve absolute path for export directory: %w", err)
-	}
-
-	psCmd = utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "addons", "Export.ps1"))
-	params = append(params, " -ExportDir "+utils.EscapeWithSingleQuotes(exportPath))
-
-	if len(addonsToExport) > 0 {
-		names := ""
-		for _, addon := range addonsToExport {
-			names += utils.EscapeWithSingleQuotes(addon) + ","
-		}
-		names = names[:len(names)-1]
-
-		params = append(params, " -Names "+names)
-	} else {
-		params = append(params, " -All")
+		return provider.AddonExportConfig{}, fmt.Errorf("unable to resolve absolute path for export directory: %w", err)
 	}
 
 	outputFlag, err := strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
 	if err != nil {
-		return "", nil, err
-	}
-
-	if outputFlag {
-		params = append(params, " -ShowLogs")
+		return provider.AddonExportConfig{}, err
 	}
 
 	omitImages, err := cmd.Flags().GetBool(omitImagesLabel)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag: %s", omitImagesLabel)
-	}
-	if omitImages {
-		params = append(params, " -OmitImages")
+		return provider.AddonExportConfig{}, fmt.Errorf("unable to parse flag: %s", omitImagesLabel)
 	}
 
 	omitPackages, err := cmd.Flags().GetBool(omitPackagesLabel)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag: %s", omitPackagesLabel)
-	}
-	if omitPackages {
-		params = append(params, " -OmitPackages")
+		return provider.AddonExportConfig{}, fmt.Errorf("unable to parse flag: %s", omitPackagesLabel)
 	}
 
-	return
+	return provider.AddonExportConfig{
+		OutputDir:    exportPath,
+		Names:        addonsToExport,
+		OmitImages:   omitImages,
+		OmitPackages: omitPackages,
+		ShowOutput:   outputFlag,
+	}, nil
 }

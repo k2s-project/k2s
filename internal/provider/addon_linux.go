@@ -20,7 +20,8 @@ import (
 
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/host"
-	"github.com/k2s-project/k2s/internal/json"
+	kjson "github.com/k2s-project/k2s/internal/json"
+	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/bash"
 	"gopkg.in/yaml.v3"
 )
@@ -28,12 +29,14 @@ import (
 type linuxAddonProvider struct {
 	installDir string
 	configDir  string
+	stdWriter  output.StreamWriter
 }
 
 func newLinuxAddonProvider(cfg ProviderConfig) *linuxAddonProvider {
 	return &linuxAddonProvider{
 		installDir: cfg.InstallDir,
 		configDir:  cfg.ConfigDir,
+		stdWriter:  cfg.StdWriter,
 	}
 }
 
@@ -988,14 +991,108 @@ func (p *linuxAddonProvider) Status(cfg AddonStatusConfig) (*AddonStatusResult, 
 	return result, nil
 }
 
-func (p *linuxAddonProvider) Export(_ AddonExportConfig) error {
-	return NotSupportedError("addons export",
-		"addon export on Linux hosts is not yet implemented")
+// Export runs Export-Addon.sh, the native Linux counterpart of addons/Export.ps1: it writes the addons
+// as an OCI artifact K2s-<version>-addons-<names>.oci.tar into the output directory. Windows images
+// cannot be pulled on a Linux host and are skipped.
+func (p *linuxAddonProvider) Export(cfg AddonExportConfig) error {
+	args := []string{"--output-dir", cfg.OutputDir}
+	for _, name := range cfg.Names {
+		args = append(args, "--addon", name)
+	}
+	if cfg.OmitImages {
+		args = append(args, "--omit-images")
+	}
+	if cfg.OmitPackages {
+		args = append(args, "--omit-packages")
+	}
+
+	slog.Info("[Addon] Exporting addons", "directory", cfg.OutputDir, "names", cfg.Names, "omitImages", cfg.OmitImages, "omitPackages", cfg.OmitPackages)
+
+	return p.runAddonScript("Export-Addon.sh", "addons export", args, cfg.ShowOutput)
 }
 
-func (p *linuxAddonProvider) Import(_ AddonImportConfig) error {
-	return NotSupportedError("addons import",
-		"addon import on Linux hosts is not yet implemented")
+// Import runs Import-Addon.sh, the native Linux counterpart of addons/Import.ps1: it stages the addons
+// of an exported OCI artifact into the addons directory and loads their Linux images into the container
+// runtime of this host, or over SSH into the nodes selected with --node/--nodes. Addons are not
+// enabled; that is 'k2s addons enable'.
+func (p *linuxAddonProvider) Import(cfg AddonImportConfig) error {
+	args := []string{"--file", cfg.ArtifactFile, "--config-dir", p.setupConfigDir()}
+	for _, name := range cfg.Names {
+		args = append(args, "--addon", name)
+	}
+	for _, omit := range cfg.Omit {
+		args = append(args, "--omit", omit)
+	}
+	if cfg.Nodes != "" {
+		args = append(args, "--nodes", cfg.Nodes)
+	}
+	if cfg.SshPrivateKeyPath != "" {
+		args = append(args, "--ssh-key", cfg.SshPrivateKeyPath)
+	}
+
+	slog.Info("[Addon] Importing addons", "artifact", cfg.ArtifactFile, "names", cfg.Names, "omit", cfg.Omit, "nodes", cfg.Nodes)
+
+	return p.runAddonScript("Import-Addon.sh", "addons import --node/--nodes", args, cfg.ShowOutput)
+}
+
+// addonScriptExitNotSupported is the exit code with which an addon script rejects a request that the
+// Linux host cannot serve, e.g. importing images onto a Windows node.
+const addonScriptExitNotSupported = 3
+
+// runAddonScript runs an addon script of lib/scripts/linux/debian/host/addon. Its last error line is
+// the reason of a failure; the not-supported exit code becomes a NotSupportedError for the operation.
+func (p *linuxAddonProvider) runAddonScript(name, operation string, args []string, showOutput bool) error {
+	scriptOut := &scriptOutput{next: p.stdWriter}
+	script := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "host", "addon", name)
+	err := bash.NewScript(script).WithArgs(args...).WithShowLogs(showOutput).WithStdWriter(scriptOut).Exec()
+	if err == nil {
+		return nil
+	}
+
+	reason := scriptOut.lastError
+	if reason == "" {
+		reason = err.Error()
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == addonScriptExitNotSupported {
+		return NotSupportedError(operation, reason)
+	}
+	return errors.New(reason)
+}
+
+// scriptOutput passes the output of a script on and keeps its last error line, which is the reason a
+// failing script reports.
+type scriptOutput struct {
+	next      output.StreamWriter
+	lastError string
+}
+
+func (o *scriptOutput) WriteStdOut(message string) {
+	if o.next != nil {
+		o.next.WriteStdOut(message)
+	}
+}
+
+func (o *scriptOutput) WriteStdErr(message string) {
+	if line := strings.TrimSpace(message); line != "" {
+		o.lastError = line
+	}
+	if o.next != nil {
+		o.next.WriteStdErr(message)
+	}
+}
+
+func (o *scriptOutput) Flush() {
+	if o.next != nil {
+		o.next.Flush()
+	}
+}
+
+func (p *linuxAddonProvider) setupConfigDir() string {
+	if p.configDir != "" {
+		return p.configDir
+	}
+	return host.K2sConfigDir()
 }
 
 func (p *linuxAddonProvider) RunCommand(cfg AddonRunCommandConfig) error {
@@ -1077,7 +1174,7 @@ func (p *linuxAddonProvider) addAddonToConfig(addonName string, impl ...string) 
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1120,7 +1217,7 @@ func (p *linuxAddonProvider) addAddonToConfig(addonName string, impl ...string) 
 	}
 
 	(*cfgMap)["EnabledAddons"] = addons
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...string) error {
@@ -1129,7 +1226,7 @@ func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...str
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1163,7 +1260,7 @@ func (p *linuxAddonProvider) removeAddonFromConfig(addonName string, impl ...str
 	}
 
 	(*cfgMap)["EnabledAddons"] = addons
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
@@ -1172,7 +1269,7 @@ func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1199,7 +1296,7 @@ func (p *linuxAddonProvider) addRegistryToConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
@@ -1208,7 +1305,7 @@ func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1229,7 +1326,7 @@ func (p *linuxAddonProvider) removeRegistryFromConfig(registry string) error {
 	}
 
 	(*cfgMap)["Registries"] = registries
-	return json.ToFile(configPath, cfgMap)
+	return kjson.ToFile(configPath, cfgMap)
 }
 
 func updateHostsContent(content, hostname, ip string) string {
@@ -1343,7 +1440,7 @@ func (p *linuxAddonProvider) isAddonEnabledInConfig(addonName string, impl ...st
 		configDir = host.K2sConfigDir()
 	}
 	configPath := filepath.Join(configDir, definitions.K2sRuntimeConfigFileName)
-	cfgMap, err := json.FromFile[map[string]any](configPath)
+	cfgMap, err := kjson.FromFile[map[string]any](configPath)
 	if err != nil {
 		return false
 	}

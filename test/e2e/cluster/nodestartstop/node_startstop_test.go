@@ -292,7 +292,7 @@ var _ = Describe("Node Start/Stop", Ordered, func() {
 
 		Context("when deploying workload across nodes", Ordered, func() {
 			It("creates a deployment with replicas spread across nodes", func(ctx context.Context) {
-				// Create a deployment that will schedule pods on both control-plane and worker node
+				// Spread across the selected pair; honor NoSchedule taints so replicas can fail over.
 				// Using shsk2s.azurecr.io image which is pre-pulled and doesn't require internet
 				// tolerationSeconds=30 ensures pods are evicted quickly when node becomes NotReady
 				deploymentYaml := fmt.Sprintf(`
@@ -312,14 +312,25 @@ spec:
         app: %s
     spec:
       affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  app: %s
-              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchFields:
+              - key: metadata.name
+                operator: In
+                values: ["%s"]
+            - matchFields:
+              - key: metadata.name
+                operator: In
+                values: ["%s"]
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        nodeTaintsPolicy: Honor
+        labelSelector:
+          matchLabels:
+            app: %s
       containers:
       - name: albums-app
         image: shsk2s.azurecr.io/example.albums-golang-linux:v1.0.0
@@ -342,7 +353,7 @@ spec:
         operator: "Exists"
         effect: "NoExecute"
         tolerationSeconds: 30
-`, deploymentName, testNamespace, replicas, deploymentName, deploymentName, deploymentName, deploymentName)
+`, deploymentName, testNamespace, replicas, deploymentName, deploymentName, controlPlaneNode, workerName, deploymentName, deploymentName)
 
 				// Apply the deployment using a temp file
 				tempFile := fmt.Sprintf("%s\\deployment.yaml", suite.SetupInfo().Config.Host().K2sSetupConfigDir())
@@ -362,10 +373,27 @@ spec:
 			})
 
 			It("verifies pods are scheduled on the worker node", func(ctx context.Context) {
+				Eventually(func(g Gomega) {
+					pods, err := getPodsOnNode(ctx, workerName, testNamespace)
+					g.Expect(err).NotTo(HaveOccurred())
+					readyCount := 0
+					for _, pod := range pods {
+						if pod.DeletionTimestamp != nil {
+							continue
+						}
+						for _, condition := range pod.Status.Conditions {
+							if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+								readyCount++
+								break
+							}
+						}
+					}
+					g.Expect(readyCount).To(BeNumerically(">", 0),
+						"Expected a Ready pod on worker node %s before stopping it", workerName)
+				}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
 				pods, err := getPodsOnNode(ctx, workerName, testNamespace)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(len(pods)).To(BeNumerically(">", 0),
-					"Expected at least one pod to be scheduled on worker node %s", workerName)
 
 				for _, pod := range pods {
 					GinkgoWriter.Printf("Pod %s is running on node %s\n", pod.Name, pod.Spec.NodeName)
@@ -436,17 +464,23 @@ spec:
 						return 0
 					}
 
-					runningCount := 0
+					readyCount := 0
 					for _, pod := range pods {
-						if pod.Status.Phase == corev1.PodRunning {
-							runningCount++
-							GinkgoWriter.Printf("Running pod %s on control-plane node %s\n",
-								pod.Name, controlPlaneNode)
+						if pod.DeletionTimestamp != nil {
+							continue
+						}
+						for _, condition := range pod.Status.Conditions {
+							if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+								readyCount++
+								GinkgoWriter.Printf("Ready pod %s on control-plane node %s\n",
+									pod.Name, controlPlaneNode)
+								break
+							}
 						}
 					}
-					return runningCount
-				}, 5*time.Minute, 5*time.Second).Should(BeNumerically(">=", 1),
-					"At least one pod should be running on control-plane node after worker node stops")
+					return readyCount
+				}, 5*time.Minute, 5*time.Second).Should(BeNumerically(">=", replicas),
+					"All replicas should be Ready on control-plane node after worker node stops")
 			})
 
 			It("starts the worker node using k2s start --node", func(ctx context.Context) {

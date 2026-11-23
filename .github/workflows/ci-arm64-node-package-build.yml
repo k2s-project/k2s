@@ -23,13 +23,18 @@ on:
         description: "Include NVIDIA Container Toolkit packages"
         type: boolean
         default: true
-  # Called by ci-linux-cluster-node-arm64.yml, which consumes the package artifact of the same run.
+  # Allows other workflows to reuse this build and its repetition-specific artifact.
   workflow_call:
     inputs:
       include_gpu:
         description: "Include NVIDIA Container Toolkit packages"
         type: boolean
         default: true
+      run:
+        description: "Nightly repetition number used to distinguish artifacts."
+        type: number
+        required: false
+        default: 1
 
 env:
   GOVERSION: "1.27.4"
@@ -131,6 +136,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: debian13-arm64-node-package
+          name: debian13-arm64-node-package-${{ inputs.run || 1 }}
           path: ${{ env.NODE_PACKAGE_ROOT }}/out/*.zip
           retention-days: 14

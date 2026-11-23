@@ -1,6 +1,0 @@
-# SPDX-FileCopyrightText: © 2025 The K2s Authors
-#
-# SPDX-License-Identifier: CC0-1.0
-
-generated_*
-kustomization.yaml

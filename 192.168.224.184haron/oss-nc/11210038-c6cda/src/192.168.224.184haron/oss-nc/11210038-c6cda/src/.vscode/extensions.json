@@ -1,9 +1,0 @@
-{
-    "recommendations": [
-        "ms-vscode.powershell",
-        "golang.go",
-        "yzhang.markdown-all-in-one",
-        "sonarsource.sonarlint-vscode",
-        "onsi.vscode-ginkgo"
-    ]
-}

@@ -537,6 +537,7 @@ func runLinuxSystemRestoreWithProviderConfig(installDir string, providerCfg Prov
 	}
 
 	slog.Info("[System Restore] System restore completed successfully")
+	pterm.Success.Println("System restore completed successfully")
 	return nil
 }
 

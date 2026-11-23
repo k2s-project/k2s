@@ -28,6 +28,7 @@ import (
 
 	"github.com/k2s-project/k2s/test/e2e/addons/exportimport"
 	gitopssync "github.com/k2s-project/k2s/test/e2e/addons/gitopssync"
+	"github.com/k2s-project/k2s/test/e2e/addons/rollout/argocd/gitops-sync/poller"
 	"github.com/k2s-project/k2s/test/framework"
 	"github.com/k2s-project/k2s/test/framework/dsl"
 	"k8s.io/client-go/kubernetes"
@@ -294,7 +295,7 @@ var _ = Describe("'rollout argocd' GitOps addon sync", Ordered, func() {
 
 			// Delete any digest file from previous runs so sync runs unconditionally.
 			digestFile := filepath.Join(suite.RootDir(), "addons", ".addon-sync-digests", testAddonName)
-			Expect(resetSyncDigest(digestFile)).To(Succeed(), "must clear the metrics digest before manual sync")
+			Expect(poller.ResetSyncDigest(digestFile)).To(Succeed(), "must clear the metrics digest before manual sync")
 
 			DeferCleanup(func(ctx context.Context) {
 				// Remove manually triggered Job (ignore if already gone via ttlSecondsAfterFinished).
@@ -452,7 +453,7 @@ var _ = Describe("'rollout argocd' GitOps addon sync", Ordered, func() {
 				suite.K2sCli().MustExec(ctx, "addons", "enable", "registry", "-o")
 				k2s.VerifyAddonIsEnabled("registry")
 				// Remove stale digest so the poller unconditionally tries to sync bad-sync-test.
-				Expect(resetSyncDigest(filepath.Join(suite.RootDir(), "addons", ".addon-sync-digests", badAddonName))).
+				Expect(poller.ResetSyncDigest(filepath.Join(suite.RootDir(), "addons", ".addon-sync-digests", badAddonName))).
 					To(Succeed(), "must clear the malformed addon's digest before manual sync")
 
 				// Best-effort delete the tag from a prior run so re-runs don't get AlreadyExists
@@ -525,16 +526,13 @@ func isolateScheduledPoller(ctx context.Context) {
 	client, err := kubernetes.NewForConfig(suite.Cluster().Client().Resources().GetConfig())
 	Expect(err).NotTo(HaveOccurred())
 
-	uid, restore, err := suspendPoller(ctx, client, addonSyncNamespace, addonSyncPoller)
+	uid, restore, err := poller.Suspend(ctx, client, addonSyncNamespace, addonSyncPoller)
 	Expect(err).NotTo(HaveOccurred(), "must suspend scheduled addon sync before changing registry or digest state")
 	DeferCleanup(func(ctx context.Context) {
 		Expect(restore(ctx)).To(Succeed(), "must restore the poller's original suspension state")
 	})
 
-	Eventually(func(g Gomega) {
-		idle, err := pollerIsIdle(ctx, client, addonSyncNamespace, uid)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(idle).To(BeTrue(), "scheduled poller Jobs and pods must finish before manual sync")
-	}, 6*time.Minute, 5*time.Second, ctx).Should(Succeed())
-	GinkgoWriter.Println("[Setup] Scheduled addon-sync poller suspended and idle")
+	Expect(poller.WaitForIdle(ctx, client, addonSyncNamespace, uid, 30*time.Second, 5*time.Second)).
+		To(Succeed(), "scheduled poller Jobs and pods must remain idle before manual sync")
+	GinkgoWriter.Println("[Setup] Scheduled addon-sync poller suspended and idle for 30 seconds")
 }

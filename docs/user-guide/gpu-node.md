@@ -209,6 +209,9 @@ In addition to the KubeMaster VM, you can add external Linux machines with NVIDI
 !!! warning "Driver Installation"
     K2s does **not** install NVIDIA kernel drivers. Install them using your distribution's package manager or NVIDIA's official installer **before** running `k2s node add`.
 
+!!! note "Linux host (experimental)"
+    External GPU workers are supported on a Windows host only. On a Linux host, `k2s node add` does not configure GPU support yet; a node with an NVIDIA GPU joins as a regular worker.
+
 ### Online Workflow (Internet Available)
 
 When the target machine has internet access, GPU support is **automatically detected and configured**:
@@ -299,6 +302,7 @@ This removes the Device Plugin and DCGM Exporter DaemonSets, uninstalls the NVID
 | **`nvidia-smi` reports limited info** | Only UUID queries work reliably. Power draw, temperature, and utilization queries are not available via dxcore. |
 | **Single GPU only** | Only one physical GPU is exposed to the VM per K2s node. Multi-GPU passthrough is not supported. |
 | **Hyper-V requirement** | GPU-PV (Hyper-V path) requires Windows 10 version 20H1 (build 19041) or later and a GPU with a WDDM 2.9+ driver. |
+| **Linux host** | External GPU workers are not configured on a Linux host *(experimental)* yet. |
 
 ---
 

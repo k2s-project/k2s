@@ -14,11 +14,17 @@ Complete the following preparation on the K2s host and on the Debian 13 target b
 ### K2s host
 
 - K2s is installed and the cluster is running and healthy.
-- Run the command from an elevated PowerShell or command prompt on the K2s Windows host.
-- The K2s SSH key pair exists. The public key is `%USERPROFILE%\.ssh\k2s\id_rsa.pub`.
 
-!!! note "Linux host (experimental)"
-    On a Linux host the public key is `~/.ssh/k2s/id_ed25519.pub` of the user running `k2s` (`/root/.ssh/k2s/id_ed25519.pub` when using `sudo`). The location and file names are configured in the `sshKey` section and `configDir.ssh` of `cfg/config.json`, see the [configuration reference](configuration-reference.md).
+=== "Windows host"
+
+    - Run the command from an elevated PowerShell or command prompt on the K2s Windows host.
+    - The K2s SSH key pair exists. The public key is `%USERPROFILE%\.ssh\k2s\id_rsa.pub`.
+
+=== "Linux host (experimental)"
+
+    - Run `k2s` with `sudo` on the Debian 13 host.
+    - The K2s SSH key pair is created by `k2s install`. The public key is `/root/.ssh/k2s/id_ed25519.pub`. The location and file names are configured in the `sshKey` section and `configDir.ssh` of `cfg/config.json`, see the [configuration reference](configuration-reference.md#ssh-key).
+    - `k2s node add` records the SSH host key of the node in `/root/.ssh/known_hosts` on first contact (trust on first use).
 
 ### Debian 13 target
 
@@ -92,23 +98,40 @@ For details, see [Debian 13 Node Hardening](../security/security-features.md#deb
 
 ### Network requirements
 
-- **Bare-metal target**: the target IP must be in a physical network subnet (LAN/Wi-Fi/Ethernet) reachable by the Windows host. It must not be an address from the K2s internal KubeSwitch network.
-- **Existing Hyper-V VM**: attach the VM to KubeSwitch, keep it running, and assign it an IP in the KubeSwitch CIDR, for example `172.19.1.x`. The Windows host's KubeSwitch network profile must be `Private`.
-- Verify reachability from the K2s host before continuing:
+=== "Windows host"
 
-```powershell
-Test-NetConnection -ComputerName <node-ip> -Port 22
-```
+    - **Bare-metal target**: the target IP must be in a physical network subnet (LAN/Wi-Fi/Ethernet) reachable by the Windows host. It must not be an address from the K2s internal KubeSwitch network.
+    - **Existing Hyper-V VM**: attach the VM to KubeSwitch, keep it running, and assign it an IP in the KubeSwitch CIDR, for example `172.19.1.x`. The Windows host's KubeSwitch network profile must be `Private`.
+    - Verify reachability from the K2s host before continuing:
 
-The command must report `TcpTestSucceeded : True`.
+        ```powershell
+        Test-NetConnection -ComputerName <node-ip> -Port 22
+        ```
+
+        The command must report `TcpTestSucceeded : True`.
+
+=== "Linux host (experimental)"
+
+    - The target is a physical machine or a VM outside of K2s, for example in the host's LAN. The node IP must not be in one of the K2s networks (`masterNetworkCIDR`, `podNetworkCIDR`, `servicesCIDR` in `cfg/config.json`).
+    - The node reaches the API server on the host's primary IP address (TCP 6443), and the host reaches the node on TCP 22 (SSH) and TCP 10250 (kubelet).
+    - With `k2s install --linux-only`, Flannel uses VXLAN: UDP 8472 must be open in both directions between host and node. The node may be in another subnet if it is routed.
+    - With the default install (managed Windows worker), Flannel uses `host-gw`: the node must be in a subnet directly connected to the host (same layer-2 network). `k2s node add` checks this before it changes the node, and installs the `k2s-routes` service on the node, which routes the K2s switch and pod networks via the host.
+    - Verify reachability from the K2s host before continuing (`nc` is in the Debian package `netcat-openbsd`):
+
+        ```bash
+        nc -vz <node-ip> 22
+        ```
+
+        The command must report that the connection succeeded.
 
 ---
 
 ## Known Limitations
 
-- Adding a Linux worker node is currently supported for *Debian 12* and *Debian 13*.
+- Adding a Linux worker node is currently supported for *Debian 12* and *Debian 13* on a Windows host, and for *Debian 13* only on a Linux host.
 - The supported target can be either a physical host or a virtual machine, as long as SSH access and the OS requirements are met.
 - The node IP address supplied to `k2s node add` must stay stable. Use a static IP address or a DHCP reservation.
+- On a Linux host, GPU workers are not supported yet: `k2s node add` does not configure the NVIDIA Container Toolkit.
 
 ---
 
@@ -138,24 +161,30 @@ Use offline mode when the new node has no internet connectivity, is behind a res
 Before running `k2s node add`, make sure your target matches one of the supported types:
 
 - **Bare-metal host**: reachable over SSH and IP belongs to a physical host subnet.
-- **Existing Hyper-V VM**: reachable over SSH, connected to KubeSwitch, and currently running.
+- **Existing Hyper-V VM** (Windows host only): reachable over SSH, connected to KubeSwitch, and currently running.
 
 ### 1. Install and verify the K2s SSH key
 
-When K2s is installed, an SSH public key is available under the directory `%USERPROFILE%\.ssh\k2s\id_rsa.pub`.
+When K2s is installed, an SSH public key is available on the K2s host.
 This key must be copied to the Linux physical host or VM to establish communication and initiate the installation.
+K2s does not install the key on the node for you; it has to be authorized before `k2s node add`.
 
 Copy the public key to the target. For example, from the K2s host:
 
-```powershell
-scp -o StrictHostKeyChecking=no "$env:USERPROFILE\.ssh\k2s\id_rsa.pub" <usernameOfNode>@<IpAddressOfNode>:/tmp/temp_k2s.pub
-```
+=== "Windows host"
+
+    ```powershell
+    scp -o StrictHostKeyChecking=no "$env:USERPROFILE\.ssh\k2s\id_rsa.pub" <usernameOfNode>@<IpAddressOfNode>:/tmp/temp_k2s.pub
+    ```
+
+=== "Linux host (experimental)"
+
+    ```bash
+    sudo scp -o StrictHostKeyChecking=no /root/.ssh/k2s/id_ed25519.pub <usernameOfNode>@<IpAddressOfNode>:/tmp/temp_k2s.pub
+    ```
 
 !!! hint "scp"
     The target user's password may be requested for this initial copy. The password is not needed by K2s after the public key is installed.
-
-!!! note "Linux host (experimental)"
-    Copy `~/.ssh/k2s/id_ed25519.pub` (`/root/.ssh/k2s/id_ed25519.pub` when using `sudo`) instead, e.g. `scp -o StrictHostKeyChecking=no ~/.ssh/k2s/id_ed25519.pub <usernameOfNode>@<IpAddressOfNode>:/tmp/temp_k2s.pub`. K2s does not install the key on the node for you; it has to be authorized before `k2s node add`.
 
 On the Debian 13 target, append the key and verify it:
 
@@ -167,32 +196,66 @@ grep -F "$(cat /tmp/temp_k2s.pub)" ~/.ssh/authorized_keys
 
 From the K2s host, verify key-based, non-interactive access before starting provisioning:
 
-```powershell
-ssh -o BatchMode=yes -o StrictHostKeyChecking=no <usernameOfNode>@<IpAddressOfNode> "hostname; lsb_release -is; lsb_release -rs; sudo -n true"
-```
+=== "Windows host"
 
-The command should print the hostname, `Debian`, `13`, and complete without asking for a password. If `sudo -n true` fails, configure sudo for the selected user before continuing.
+    ```powershell
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i "$env:USERPROFILE\.ssh\k2s\id_rsa" <usernameOfNode>@<IpAddressOfNode> "hostname; lsb_release -is; lsb_release -rs; sudo -n true"
+    ```
+
+=== "Linux host (experimental)"
+
+    ```bash
+    sudo ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i /root/.ssh/k2s/id_ed25519 <usernameOfNode>@<IpAddressOfNode> "hostname; lsb_release -is; lsb_release -rs; sudo -n true"
+    ```
+
+The command should print the hostname, `Debian`, `13`, and complete without asking for a password. If `sudo -n true` fails, configure passwordless sudo for the selected user before continuing.
 
 ### 2. Add the new node with K2s CLI
 
-```cmd
-k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection>
-```
+=== "Windows host"
 
-If the node should be installed **offline**, first create a node package and then pass it to `k2s node add`:
+    ```console
+    k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection>
+    ```
 
-```console
-k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection> --node-package <PathToNodePackageZip>
-```
+    If the node should be installed **offline**, first [create a node package](#offline-installation-of-a-linux-worker-node) and then pass it to `k2s node add`:
 
-!!! note "Linux host (experimental)"
+    ```console
+    k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection> --node-package <PathToNodePackageZip>
+    ```
+
+=== "Linux host (experimental)"
+
+    ```console
+    sudo k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection>
+    ```
+
+    If the node should be installed **offline**, first [create a node package](#offline-installation-of-a-linux-worker-node) and then pass it to `k2s node add`:
+
+    ```console
+    sudo k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection> --node-package <PathToNodePackageZip>
+    ```
+
     In online mode the node downloads the Debian packages for its own architecture and pulls the container images itself. Like on a Windows host, the node uses the proxy given at `k2s install` (stored in `/var/lib/k2s/proxy.conf`); without one it needs direct internet access. The local cluster proxy `http://172.19.1.1:8181` of a Linux host only accepts clients from the K2s networks (for example `172.19.1.0/24`) and the host itself; it rejects nodes with other addresses, such as a node in the host's LAN.
+
+    The node gets the role `worker` and is recorded in `/var/lib/k2s/cluster.json`. The command logs to `/var/log/k2s.log`.
 
 ### 3. Check new node status
 
-```cmd
+```console
 k2s status -o wide
 ```
+
+### If adding the node fails (Linux host)
+
+On a Linux host, `k2s node add` stops at the first failing step and collects diagnostics from the node into `/var/log/k2s.log`. The node entry in `cluster.json` is kept, so a second `k2s node add` for the same node is rejected. Fix the cause, then clean up and add the node again:
+
+```console
+sudo k2s node remove --name <NodeName>
+sudo k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection>
+```
+
+If the node's operating system or architecture is not supported, the command ends with a warning before it changes the node.
 
 ## Offline Installation of a Linux Worker Node
 
@@ -203,25 +266,39 @@ The offline workflow has two phases:
 
 ### 1. Create the node package
 
-Generate an OS-specific node package. This step requires an installed and running *K2s* cluster on the machine where you run the command. The local cluster proxy `http://172.19.1.1:8181` is used by default, so `--proxy` can be omitted; pass `-p` only to override it.
+Generate an OS-specific node package.
 
-Example using `k2s.exe` directly from a local directory:
+=== "Windows host"
 
-```console
-.\k2s.exe system package --node-package --os debian12 --target-dir "D:\Linuxpackagetest" --name "debian12.zip"
-```
+    This step requires an installed and running *K2s* cluster on the machine where you run the command. The local cluster proxy `http://172.19.1.1:8181` is used by default, so `--proxy` can be omitted; pass `-p` only to override it.
 
-You can also generate the package on an existing *K2s* host:
+    Example using `k2s.exe` directly from a local directory:
 
-```console
-k2s system package --node-package --os debian12 --target-dir "C:\out" --name "debian12-node.zip"
-```
+    ```console
+    .\k2s.exe system package --node-package --os debian12 --target-dir "D:\Linuxpackagetest" --name "debian12.zip"
+    ```
 
-For Debian 13 nodes, create a Debian 13 package instead:
+    You can also generate the package on an existing *K2s* host:
 
-```console
-k2s system package --node-package --os debian13 --target-dir "C:\out" --name "debian13-node.zip"
-```
+    ```console
+    k2s system package --node-package --os debian12 --target-dir "C:\out" --name "debian12-node.zip"
+    ```
+
+    For Debian 13 nodes, create a Debian 13 package instead:
+
+    ```console
+    k2s system package --node-package --os debian13 --target-dir "C:\out" --name "debian13-node.zip"
+    ```
+
+=== "Linux host (experimental)"
+
+    The package is built with the build host's own `apt`, so the build host must run the same Debian release and architecture as the node (see [Node Package on a Linux Host](creating-offline-package.md#node-package-on-a-linux-host)):
+
+    ```console
+    sudo k2s system package --node-package --os debian13 --target-dir /tmp/out --name debian13-node.zip
+    ```
+
+    `k2s node add` checks that the package architecture matches the node before it changes the node.
 
 !!! note
     The node package contains Linux worker node artifacts such as `.deb` packages and container images needed during `k2s node add`.
@@ -258,6 +335,9 @@ k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnect
 
 K2s automatically detects the NVIDIA GPU and configures GPU support using the bundled packages. If the target has no NVIDIA GPU, it joins as a regular worker.
 
+!!! note "Linux host (experimental)"
+    GPU workers are not supported on a Linux host yet: `k2s node add` does not configure GPU support, also not from a GPU package.
+
 !!! warning "Prerequisites"
     NVIDIA kernel drivers must be pre-installed on the target node. Verify with `nvidia-smi` before running `k2s node add`.
 
@@ -265,16 +345,13 @@ See [GPU Node addon](../user-guide/gpu-node.md#external-gpu-worker-nodes) for co
 
 ### 2. Prepare SSH access to the target node
 
-Follow the SSH key setup described above:
-
-- Copy `%USERPROFILE%\.ssh\k2s\id_rsa.pub` to the target node.
-- Add it to the authorized SSH keys on the target node.
+Follow the [SSH key setup](#1-install-and-verify-the-k2s-ssh-key) described above: copy the K2s public key to the target node and add it to the authorized SSH keys there.
 
 This step is required in both online and offline mode because `k2s node add` still connects to the node over SSH.
 
 ### 3. Add the node using the offline package
 
-Run `k2s node add` and point it to the node package ZIP:
+Run `k2s node add` (with `sudo` on a Linux host) and point it to the node package ZIP:
 
 ```console
 k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection> --node-package C:\temp\debian13-node.zip
@@ -287,6 +364,28 @@ k2s status -o wide
 ```
 
 You can also use `k2s node connect` or `k2s node exec` to confirm SSH connectivity to the node after provisioning.
+
+## Starting, Stopping and Removing Added Nodes
+
+`k2s stop` and `k2s start` also stop and start the added nodes. To stop or start a single node, pass its name:
+
+```console
+k2s stop --node <NodeName>
+k2s start --node <NodeName>
+```
+
+On a Linux host, run the commands with `sudo`. Stopping a node stops kubelet and CRI-O on it; starting waits until the node is `Ready` again.
+
+To remove a node from the cluster:
+
+```console
+k2s node remove --name <NodeName>
+```
+
+The node is drained and deleted from the cluster. If it is reachable, K2s resets Kubernetes on it and removes the installed Kubernetes and CRI-O packages and the K2s configuration; the [hardening changes](#changes-made-to-a-debian-13-target) remain. The node can be added again afterwards.
+
+!!! warning "Linux host (experimental)"
+    `k2s uninstall` does not remove added nodes yet. Remove them with `sudo k2s node remove` before uninstalling *K2s*.
 
 ## When the Node IP Changes
 

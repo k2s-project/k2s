@@ -72,7 +72,7 @@ On Linux, the CLI is a native Go binary with **no PowerShell dependency**:
 - **Cluster status** (`k2s status`) stays Go-native (kubectl-based) to preserve its typed output contract.
 - **Worker node join** (`k2s node add`) runs `lib/scripts/linux/debian/worker/bare-metal/Add.sh` and requires an offline node package (`--node-package`).
 - **Image operations** dispatch to Bash scripts in `lib/scripts/linux/debian/host/image/` (CRI-O tooling and Buildah).
-- **Addons, health checks, backup, and certificate operations** are implemented in Go.
+- **Addons, health checks, system backup/restore, and certificate operations** are implemented in Go.
 
 Linux host support is experimental: the Linux provider registry prints an `[EXPERIMENTAL]` warning on every CLI invocation. See [Linux Host Capability Status](#linux-host-capability-status) for operations that are not yet available.
 
@@ -189,7 +189,7 @@ The following operations are **not yet available** on Linux hosts and return an 
 
 | Area | Operation |
 |------|-----------|
-| System | `upgrade`, `restore`, `compact`, full offline `package`, node delta package |
+| System | `upgrade`, `compact`, full offline `package`, node delta package |
 | Addons | `export`, `import` |
 | Nodes | `node rename`; `node add` without `--node-package` |
 | Images | `image repair` (Windows-only) |

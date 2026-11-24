@@ -301,7 +301,7 @@ spec:
   containers:
   - name: writer
     image: busybox:1.36
-    command: ["sh", "-c", "echo '%s' > /data/restore-test.txt && sleep 2"]
+    command: ["sh", "-c", "echo '%s' > /data/restore-test.txt && sleep 600"]
     volumeMounts:
     - name: data
       mountPath: /data
@@ -319,12 +319,18 @@ spec:
 			return output
 		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Or(Equal("Running"), Equal("Succeeded")))
 
-		time.Sleep(1 * time.Second) // Reduced from 2s
+		time.Sleep(1 * time.Second) // Allow the writer to finish the initial write.
 
 		GinkgoWriter.Println("Creating backup for PV restore test at:", pvRestoreBackup)
 		// Use --skip-images since we're testing PV restore, not image backup
 		suite.K2sCli().MustExec(ctx, "system", "backup", "-f", pvRestoreBackup, "--skip-images")
 		Expect(pvRestoreBackup).To(BeAnExistingFile())
+
+		// Remove the marker after backup so the test only passes if restore
+		// actually puts the backed-up volume data back.
+		_, exitCode := suite.Kubectl().Exec(ctx, "exec", podName, "-n", testNamespace, "--",
+			"sh", "-c", "rm -f /data/restore-test.txt && test ! -e /data/restore-test.txt")
+		Expect(exitCode).To(Equal(0), "the marker must be absent from the source volume before restore")
 
 		// Now test restore - delete PV, PVC, and pod so restore creates them fresh.
 		// The PV must be deleted because the backup strips spec.claimRef (by design),

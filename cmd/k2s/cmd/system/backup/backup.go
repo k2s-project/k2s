@@ -36,9 +36,9 @@ func init() {
 	SystemBackupCmd.Flags().Bool(skipPVsFlag, false, "Skip backing up persistent volumes")
 }
 
-func runSystemBackup(cmd *cobra.Command, args []string) error {
+func runSystemBackup(cmd *cobra.Command, args []string) (err error) {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
-	defer cmdSession.Finish()
+	defer func() { cmdSession.Finish(err != nil) }()
 
 	pterm.Println("📦 Creating K2s system backup ...")
 

@@ -219,6 +219,27 @@ k2s_proxy_config_http "$1/missing"`
 		Expect(strings.TrimSpace(string(commands))).To(Equal("label node worker1 kubernetes.io/role=worker --overwrite"))
 	})
 
+	It("waits until the joined node is registered", func() {
+		counter := filepath.Join(GinkgoT().TempDir(), "count")
+		stubs := map[string]string{
+			"kubectl": `n=$(( $(cat "` + counter + `" 2>/dev/null || echo 0) + 1 )); echo "$n" > "` + counter + `"; [[ $n -lt 3 ]] || echo node/worker1`,
+			"sleep":   `:`,
+		}
+
+		_, err := runNodeModuleFunction(stubs, `k2s_node_wait_registered worker1 10 1`)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(os.ReadFile(counter)).To(BeEquivalentTo("3\n"))
+	})
+
+	It("fails when the joined node is not registered in time", func() {
+		stubs := map[string]string{"kubectl": `:`, "sleep": `:`}
+
+		_, err := runNodeModuleFunction(stubs, `k2s_node_wait_registered worker1 3 1`)
+
+		Expect(err).To(MatchError(ContainSubstring("was not registered in the cluster within 3 seconds")))
+	})
+
 	DescribeTable("k2s_node_flannel_backend reads the backend of kube-flannel-cfg",
 		func(netConf string, want string, wantErr bool) {
 			stubs := map[string]string{"kubectl": `printf '%s' '` + netConf + `'`}

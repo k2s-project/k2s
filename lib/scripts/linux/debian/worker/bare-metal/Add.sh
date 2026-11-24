@@ -123,6 +123,7 @@ if [[ -n $host_ip ]]; then
   k2s_node_add_routes "$host_ip"
 fi
 k2s_node_join
+k2s_node_wait_registered "$node_name"
 k2s_node_label_worker "$node_name"
 k2s_node_wait_ready "$node_name"
 k2s_node_remove_staging

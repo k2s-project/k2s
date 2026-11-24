@@ -334,6 +334,20 @@ EOF
     || { k2s_log ERROR "kubeadm join failed on $K2S_NODE_IP."; return 1; }
 }
 
+# kubeadm join can return before the kubelet has registered the Node object (slow nodes, e.g. arm64 under TCG).
+k2s_node_wait_registered() {
+  local node_name="$1" timeout="${2:-300}" interval="${3:-2}" waited=0
+  while (( waited < timeout )); do
+    if [[ -n $(KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl get node "$node_name" --ignore-not-found -o name 2>/dev/null || true) ]]; then
+      return 0
+    fi
+    sleep "$interval"
+    waited=$((waited + interval))
+  done
+  k2s_log ERROR "Node $node_name was not registered in the cluster within $timeout seconds after the join."
+  return 1
+}
+
 # Same label as Join-LinuxNode on a Windows host; kubectl shows it as role.
 k2s_node_label_worker() {
   local node_name="$1"

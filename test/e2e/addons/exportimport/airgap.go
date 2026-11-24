@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/k2s-project/k2s/internal/core/addons"
@@ -232,12 +233,123 @@ func StageAddonRemovedFromHost(rootDir string, addon *addons.Addon, impl *addons
 	GinkgoWriter.Println("=== REMOVE ADDON FOLDER AND WINDOWS PACKAGES FROM K2S DIRECTORY END ===")
 }
 
-// RemoveAddonPackagesFromControlPlane deletes the staged debian/linux packages (~/.<ExportDirectoryName>) and verifies they are gone.
+// Packages the K2s control plane setup itself installs or relies on; they are never purged even if an addon declares them.
+var baseSystemDebPackages = []string{"curl", "gpg", "gnupg", "ca-certificates", "dnsutils", "dnsmasq", "util-linux", "util-linux-extra", "lsb-release"}
+
+var (
+	debPackageNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)
+	purgeResultRegex    = regexp.MustCompile(`K2S_PURGE (\w[\w-]*) (\S+)(.*)`)
+)
+
+// PurgeAddonDebianPackages purges the debian packages the addon declares (offline_usage.linux.deb) from the control
+// plane, so an import starts without anything a previous enable of the addon installed, and verifies the result.
+//
+// Two guards keep the node intact; a package that is skipped is logged and added to the report as a remaining item:
+//   - packages of the K2s base system (baseSystemDebPackages) are never purged
+//   - a package is only purged if apt's simulation shows that nothing else would be removed with it
+//
+// Dependencies that were pulled in by the packages are not removed (no autoremove), and nothing is reinstalled afterwards.
+func PurgeAddonDebianPackages(ctx context.Context, suite *framework.K2sTestSuite, impl *addons.Implementation, controlPlaneIP string) {
+	GinkgoWriter.Println("=== PURGE ADDON DEBIAN PACKAGES START ===")
+
+	var candidates []string
+	for _, pkg := range impl.OfflineUsage.LinuxResources.DebPackages {
+		Expect(pkg).To(MatchRegexp(debPackageNameRegex.String()), "[AirGap] unsupported debian package name '%s'", pkg)
+		if slices.Contains(baseSystemDebPackages, pkg) {
+			GinkgoWriter.Printf("[AirGap] Debian package '%s' belongs to the K2s base system, not purging\n", pkg)
+			continue
+		}
+		candidates = append(candidates, pkg)
+	}
+	if len(candidates) == 0 {
+		GinkgoWriter.Printf("[AirGap] Implementation '%s' declares no debian packages that can be purged\n", impl.Name)
+		GinkgoWriter.Println("=== PURGE ADDON DEBIAN PACKAGES END ===")
+		return
+	}
+
+	cmd := fmt.Sprintf(`for p in %s; do `+
+		`if ! dpkg -s "$p" >/dev/null 2>&1; then echo "K2S_PURGE absent $p"; continue; fi; `+
+		`extra=$(sudo apt-get purge --simulate -y "$p" 2>/dev/null | grep '^Remv' | awk '{print $2}' | grep -vx "$p" | tr '\n' ' '); `+
+		`if [ -n "$extra" ]; then echo "K2S_PURGE skipped $p would also remove: $extra"; continue; fi; `+
+		`if sudo DEBIAN_FRONTEND=noninteractive apt-get purge -y "$p" >/dev/null 2>&1; then echo "K2S_PURGE purged $p"; else echo "K2S_PURGE failed $p"; fi; `+
+		`done`, strings.Join(candidates, " "))
+	output, _ := suite.K2sCli().Exec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", cmd, "-r")
+
+	results := purgeResultRegex.FindAllStringSubmatch(output, -1)
+	Expect(results).To(HaveLen(len(candidates)), "[AirGap] every debian package must report a purge result, output: %s", output)
+
+	var failed, skipped []string
+	for _, r := range results {
+		state, pkg, detail := r[1], r[2], strings.TrimSpace(r[3])
+		GinkgoWriter.Printf("[AirGap] debian package %-20s -> %s %s\n", pkg, state, detail)
+		switch state {
+		case "failed":
+			failed = append(failed, pkg)
+		case "skipped":
+			skipped = append(skipped, pkg+" ("+detail+")")
+		}
+	}
+	Expect(failed).To(BeEmpty(), "[AirGap] debian packages could not be purged")
+
+	for _, r := range results {
+		if r[1] == "skipped" {
+			continue
+		}
+		suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", fmt.Sprintf("! dpkg -s %s >/dev/null 2>&1", r[2]), "-o")
+		GinkgoWriter.Printf("[AirGap] VERIFIED not installed before import: debian package %s\n", r[2])
+	}
+
+	if len(skipped) > 0 {
+		warning := fmt.Sprintf("These debian packages of '%s' remain installed because purging them would remove other packages: %v", impl.Name, skipped)
+		GinkgoWriter.Printf("[AirGap] WARNING: %s\n", warning)
+		AddReportEntry("AIR-GAP WARNING: debian packages remain installed", warning)
+	}
+	GinkgoWriter.Println("=== PURGE ADDON DEBIAN PACKAGES END ===")
+}
+
+const controlPlaneBackupDir = "/tmp/k2s-airgap-backup"
+
+func execOnControlPlane(ctx context.Context, suite *framework.K2sTestSuite, controlPlaneIP string, cmd string) {
+	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", cmd, "-o")
+}
+
+// RemoveAddonPackagesFromControlPlane removes everything an import stages on the control plane and verifies it is gone:
+//   - the staged debian packages and relative linux files (~/.<ExportDirectoryName>)
+//   - linux binaries with an absolute destination (e.g. /usr/local/bin/virtctl); they are moved to a backup on the
+//     control plane and restored automatically at the end of the enclosing container (DeferCleanup)
+//   - the apt package cache, so that no previously downloaded .deb file can hide a missing package
 func RemoveAddonPackagesFromControlPlane(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, impl *addons.Implementation, controlPlaneIP string) {
 	GinkgoWriter.Printf("[AirGap] Removing staged packages '.%s' on control plane %s\n", impl.ExportDirectoryName, controlPlaneIP)
-	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", fmt.Sprintf("sudo rm -rf .%s", impl.ExportDirectoryName), "-o")
+	execOnControlPlane(ctx, suite, controlPlaneIP, fmt.Sprintf("sudo rm -rf .%s", impl.ExportDirectoryName))
 	VerifyResourcesCleanedUp(ctx, suite, k2sDsl, impl, controlPlaneIP)
 	GinkgoWriter.Printf("[AirGap] VERIFIED absent before import: control plane folder .%s\n", impl.ExportDirectoryName)
+
+	GinkgoWriter.Println("[AirGap] Cleaning the apt package cache on the control plane")
+	execOnControlPlane(ctx, suite, controlPlaneIP, "sudo apt-get clean")
+
+	for _, pkg := range impl.OfflineUsage.LinuxResources.CurlPackages {
+		destination := pkg.Destination
+		if !strings.HasPrefix(destination, "/") {
+			continue // relative destinations live in the staged folder removed above
+		}
+		Expect(destination).To(MatchRegexp(`^/[A-Za-z0-9._/-]+$`), "[AirGap] unsupported linux curl destination '%s'", destination)
+		Expect(destination).ToNot(Or(Equal("/"), HaveSuffix("/")), "[AirGap] linux curl destination '%s' must be a file", destination)
+
+		backupPath := controlPlaneBackupDir + "/" + strings.ReplaceAll(strings.TrimPrefix(destination, "/"), "/", "_")
+		GinkgoWriter.Printf("[AirGap] Moving linux package %s to %s on the control plane\n", destination, backupPath)
+		execOnControlPlane(ctx, suite, controlPlaneIP,
+			fmt.Sprintf("sudo mkdir -p %s && if [ -e %s ]; then sudo mv -f %s %s; fi", controlPlaneBackupDir, destination, destination, backupPath))
+
+		// Also restores a backup left behind by an aborted earlier run.
+		DeferCleanup(func() {
+			GinkgoWriter.Printf("[AirGap] Restoring linux package %s on the control plane\n", destination)
+			execOnControlPlane(context.Background(), suite, controlPlaneIP,
+				fmt.Sprintf("if [ -e %s ]; then sudo rm -rf %s && sudo mv -f %s %s; fi", backupPath, destination, backupPath, destination))
+		})
+
+		suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", fmt.Sprintf("[ ! -e %s ]", destination), "-o")
+		GinkgoWriter.Printf("[AirGap] VERIFIED absent before import: control plane file %s\n", destination)
+	}
 }
 
 var addonImageCache = map[string][]string{}

@@ -124,6 +124,7 @@ func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSu
 	VerifyNoNonCoreImagesInContainerRuntimes(ctx, suite, k2sDsl, addon, impl)
 
 	RemoveAddonPackagesFromControlPlane(ctx, suite, k2sDsl, impl, controlPlaneIP)
+	PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIP)
 	StageAddonRemovedFromHost(suite.RootDir(), addon, impl)
 
 	VerifyNoInternetConnectivity(ctx, suite, controlPlaneIP, proxyInUse)

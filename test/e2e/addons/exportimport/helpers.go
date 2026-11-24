@@ -97,24 +97,48 @@ func ConfigJsonMirrorRegistries(suite *framework.K2sTestSuite) []MirrorRegistry 
 	return config.SmallSetup.MirrorRegistries
 }
 
-// PrepareAirGappedAddonImport removes proxy environment variables and runtime mirror files.
-func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSuite, controlPlaneIP string) func() {
+// PrepareAirGappedAddonImport brings the system into a state in which an addon import can only succeed
+// if the OCI artifact is self-contained, and verifies (with logs) that every precondition is met:
+//  1. no internet connectivity (host and control plane, direct and via the K2s proxy) - verified, not enforced
+//  2. no non-core images in the container runtimes of any node (and none of the addon's images)
+//  3. the addon folder and the Windows curl packages of the addon are removed from the K2s directory
+//     (moved to a backup and restored automatically at the end of the enclosing container)
+//  4. staged packages on the control plane, proxy environment variables and registry mirrors are removed
+//
+// The returned function restores the proxy environment variables.
+func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, addon *addons.Addon, impl *addons.Implementation, controlPlaneIP string) func() {
 	GinkgoWriter.Println("=== PREPARE AIR-GAPPED ADDON IMPORT START ===")
+	Expect(addon).NotTo(BeNil(), "addon must be set")
+	Expect(impl).NotTo(BeNil(), "addon implementation must be set")
+
+	// must happen before the proxy environment variables are removed
+	proxyInUse, _ := DetectProxyUsage(ctx, suite)
+
 	restoreProxyEnvironment := RemoveProxyEnvironment()
 	mirrors := ConfigJsonMirrorRegistries(suite)
 
 	RemoveAirGappedMirrorRuntimeFiles(ctx, suite, mirrors, controlPlaneIP)
 	VerifyAirGappedMirrorsRemoved(ctx, suite, mirrors, controlPlaneIP)
 
+	RemoveAllAddonImages(ctx, suite, k2sDsl)
+	VerifyNoNonCoreImagesInContainerRuntimes(ctx, suite, k2sDsl, impl)
+
+	RemoveAddonPackagesFromControlPlane(ctx, suite, k2sDsl, impl, controlPlaneIP)
+	StageAddonRemovedFromHost(suite.RootDir(), addon, impl)
+
+	VerifyNoInternetConnectivity(ctx, suite, controlPlaneIP, proxyInUse)
+
 	GinkgoWriter.Println("=== PREPARE AIR-GAPPED ADDON IMPORT END ===")
 	return restoreProxyEnvironment
 }
+
+var proxyEnvironmentKeys = []string{"SYSTEM_TEST_PROXY", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"}
 
 // RemoveProxyEnvironment unsets proxy variables for the current test process and returns a restore function.
 func RemoveProxyEnvironment() func() {
 	GinkgoWriter.Println("[AirGap] Removing proxy environment variables for air-gapped phase")
 
-	keys := []string{"SYSTEM_TEST_PROXY", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"}
+	keys := proxyEnvironmentKeys
 	originalValues := map[string]*string{}
 
 	for _, key := range keys {

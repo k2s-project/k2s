@@ -30,6 +30,7 @@ const offlineNodeImportTimeout = 30 * time.Minute
 var (
 	suite                  *framework.K2sTestSuite
 	k2s                    *dsl.K2s
+	monitoringAddon        *addons.Addon
 	monitoringImpl         *addons.Implementation
 	exportPath             string
 	exportedOciFile        string
@@ -54,7 +55,7 @@ var _ = BeforeSuite(func(ctx context.Context) {
 	controlPlaneIpAddress = suite.SetupInfo().Config.ControlPlane().IpAddress()
 	exportPath = filepath.Join(suite.RootDir(), "tmp", "monitoring-offline-node-import")
 
-	monitoringAddon := exportimport.GetAddonByName(suite.AddonsAdditionalInfo().AllAddons(), "monitoring")
+	monitoringAddon = exportimport.GetAddonByName(suite.AddonsAdditionalInfo().AllAddons(), "monitoring")
 	Expect(monitoringAddon).NotTo(BeNil(), "monitoring addon should exist")
 	monitoringImpl = exportimport.GetImplementation(monitoringAddon, "monitoring")
 	Expect(monitoringImpl).NotTo(BeNil(), "monitoring implementation should exist")
@@ -128,7 +129,8 @@ var _ = It("imports monitoring images onto added Linux workers and enables their
 
 	exportimport.CleanAddonResources(ctx, suite, k2s, monitoringImpl, controlPlaneIpAddress)
 	exportimport.VerifyResourcesCleanedUp(ctx, suite, k2s, monitoringImpl, controlPlaneIpAddress)
-	restoreProxy = exportimport.PrepareAirGappedAddonImport(ctx, suite, controlPlaneIpAddress)
+	restoreProxy = exportimport.PrepareAirGappedAddonImport(ctx, suite, k2s, monitoringAddon, monitoringImpl, controlPlaneIpAddress)
+	exportimport.LogAirGapState(ctx, suite, k2s, monitoringAddon, monitoringImpl, controlPlaneIpAddress)
 
 	suite.K2sCli().MustExec(ctx, "addons", "import", "-f", exportedOciFile, "--nodes", strings.Join(importTargetNodeNames, ","))
 	expectMonitoringImageOnLinuxWorkers(ctx)

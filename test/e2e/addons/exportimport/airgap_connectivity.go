@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -168,14 +169,27 @@ func ResetK2sProxyForAirGap(ctx context.Context, suite *framework.K2sTestSuite) 
 			GinkgoWriter.Printf("[AirGap] Restoring the K2s proxy '%s' and overrides %v\n", settings.proxy, settings.overrides)
 			restoreCtx := context.Background()
 			suite.K2sCli().MustExec(restoreCtx, "system", "proxy", "set", settings.proxy)
-			if len(settings.overrides) > 0 {
-				suite.K2sCli().MustExec(restoreCtx, append([]string{"system", "proxy", "override", "add"}, settings.overrides...)...)
+
+			// 'proxy set' itself adds the K2s default overrides (.cluster.local, localhost, cluster CIDRs, ...), so only
+			// the overrides that are still missing are added again; extra default overrides are fine.
+			restored := readK2sProxySettings(restoreCtx, suite)
+			var missing []string
+			for _, override := range settings.overrides {
+				if !slices.Contains(restored.overrides, override) {
+					missing = append(missing, override)
+				}
+			}
+			if len(missing) > 0 {
+				GinkgoWriter.Printf("[AirGap] Re-adding missing K2s proxy overrides %v\n", missing)
+				suite.K2sCli().MustExec(restoreCtx, append([]string{"system", "proxy", "override", "add"}, missing...)...)
+				restored = readK2sProxySettings(restoreCtx, suite)
 			}
 
-			restored := readK2sProxySettings(restoreCtx, suite)
 			GinkgoWriter.Printf("[AirGap] K2s proxy after restore: '%s' overrides %v\n", restored.proxy, restored.overrides)
 			Expect(restored.proxy).To(Equal(settings.proxy), "the K2s proxy must be restored for the tests that run afterwards")
-			Expect(restored.overrides).To(ConsistOf(settings.overrides), "the K2s proxy overrides must be restored")
+			for _, override := range settings.overrides {
+				Expect(restored.overrides).To(ContainElement(override), "the K2s proxy override '%s' must be restored", override)
+			}
 		})
 	}
 	// registered before the reset so that a failing reset is restored as well

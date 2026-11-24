@@ -8,10 +8,16 @@
 #     control plane: amd64, KVM, 4 GB RAM. K2s is installed with --linux-only (same setup as ci-e2e-linux-cluster.yml).
 #     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add' joins it.
 #   Both guests share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24.
-# - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64, flannel and kube-proxy run on it,
-#   and an arm64 workload runs there.
+# - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64 and the worker role, flannel and
+#   kube-proxy run on it, and an arm64 workload runs there.
+# - 'k2s node remove' removes it (cluster, cluster.json, Kubernetes packages on the worker), and the worker is added
+#   again from the same package.
 #
 # The arm64 package is built without GPU packages: the worker has no GPU and the test does not need them.
+# Steps shared with ci-e2e-linux-cluster-node-amd64.yml are composite actions in .github/actions/.
+#
+# Why the arm64 worker is emulated: both nodes must share a network, so they run as guests on one runner, and the
+# GitHub-hosted arm64 runners offer no KVM. The amd64 runner runs the control plane with KVM and the worker under TCG.
 
 name: CI - E2E Linux Cluster with arm64 Node
 
@@ -69,82 +75,30 @@ jobs:
       run:
         shell: bash
     env:
-      KVM_MAX_ATTEMPTS: 5
+      ENV_SCRIPT: .github/scripts/linux-cluster-arm64-env.sh
     steps:
-      - name: Check KVM (re-dispatch on a new runner if missing)
-        id: kvm
-        timeout-minutes: 5
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
-          K2S_NIGHTLY: ${{ inputs.nightly }}
-        run: |
-          set -uo pipefail
-          echo "KVM attempt ${KVM_ATTEMPT} of ${KVM_MAX_ATTEMPTS}"
-          uname -m | grep -qx x86_64 || { echo "::error::Runner is not amd64: $(uname -m)"; exit 1; }
-          if [ -e /dev/kvm ]; then
-            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
-            sudo udevadm control --reload-rules
-            sudo udevadm trigger --name-match=kvm
-            sudo chmod 666 /dev/kvm
-            ls -la /dev/kvm
-          else
-            echo "/dev/kvm does not exist on this runner"
-          fi
-          if test -r /dev/kvm && test -w /dev/kvm; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "KVM is usable on this runner."
-            exit 0
-          fi
-          echo "available=false" >> "$GITHUB_OUTPUT"
-          if [ "$K2S_NIGHTLY" = "true" ]; then
-            # A re-dispatch would start a separate run outside the nightly and this one would end green
-            # without testing anything. Failing keeps the nightly statistics honest (the email reports NO_KVM).
-            echo "::error::NO_KVM: no usable /dev/kvm on this runner (nightly run, not re-dispatched)."
-            exit 1
-          fi
-          if [ "$KVM_ATTEMPT" -ge "$KVM_MAX_ATTEMPTS" ]; then
-            echo "::error::No usable /dev/kvm after ${KVM_ATTEMPT} attempts; giving up."
-            exit 1
-          fi
-          next=$((KVM_ATTEMPT + 1))
-          echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
-          gh workflow run ci-e2e-linux-cluster-node-arm64.yml --ref "$GITHUB_REF_NAME" -f kvm_attempt="$next"
-          echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"
-
       - name: Checkout
-        if: ${{ steps.kvm.outputs.available == 'true' }}
         uses: actions/checkout@v4
         timeout-minutes: 10
         with:
           persist-credentials: false
 
-      - name: Free runner disk space for the guest images
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          df -h /
-
-      - name: Set up Go
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        uses: actions/setup-go@v5
-        timeout-minutes: 10
+      - name: Check KVM (re-dispatch on a new runner if missing)
+        id: kvm
+        uses: ./.github/actions/kvm-check
+        timeout-minutes: 5
         with:
-          go-version-file: go.mod
-          cache: false
+          workflow: ci-e2e-linux-cluster-node-arm64.yml
+          attempt: ${{ inputs.kvm_attempt }}
+          nightly: ${{ inputs.nightly || false }}
+          token: ${{ github.token }}
 
-      - name: Build K2s executables (linux/amd64)
+      - name: Build K2s and install the control plane
         if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          bash build.sh
-          for binary in k2s bin/httpproxy bin/dnsproxy bin/cloudinitisobuilder bin/yaml2json; do
-            test -x "$binary" || { echo "::error::Build did not produce $binary"; exit 1; }
-          done
-          file k2s | grep -q 'ELF 64-bit' || { echo "::error::k2s is not a linux/amd64 ELF binary"; exit 1; }
+        uses: ./.github/actions/linux-cluster-control-plane
+        timeout-minutes: 180
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
 
       - name: Download the arm64 node package
         if: ${{ steps.kvm.outputs.available == 'true' }}
@@ -154,107 +108,19 @@ jobs:
           name: debian13-arm64-node-package-${{ inputs.run || 1 }}
           path: ${{ runner.temp }}/node-package
 
-      - name: Start control-plane guest (amd64, KVM, 4 GB)
+      - name: Start the worker guest (arm64, TCG, 2 GB) and authorize the K2s key
         if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          cp_vm prepare
-          cp_vm start
-          cp_vm wait-ssh
-
-      - name: Prepare control-plane guest (Go toolchain and source tree)
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          go_version=$(awk '/^go /{print $2}' go.mod)
-          {
-            printf 'GO_VERSION=%q\n' "$go_version"
-            cat <<'EOF'
-          cloud-init status --wait || echo 'cloud-init reported errors; continuing'
-          if [ ! -x /usr/local/go/bin/go ]; then
-            curl -fsSL --retry 3 "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
-          fi
-          /usr/local/go/bin/go version
-          EOF
-          } | cp_vm exec
-          tar --exclude=.git -czf "$RUNNER_TEMP/k2s-src.tgz" .
-          cp_vm push "$RUNNER_TEMP/k2s-src.tgz" k2s-src.tgz
-          cp_vm exec <<'EOF'
-          set -euo pipefail
-          mkdir -p ~/k2s
-          tar -xzf ~/k2s-src.tgz -C ~/k2s
-          test -x ~/k2s/k2s
-          EOF
-
-      - name: Install K2s on the control plane (Linux host, linux-only)
-        id: install
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 120
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          {
-            printf 'cd ~/k2s\n'
-            printf 'sudo ./k2s install --linux-only --output\n'
-          } | cp_vm exec
-
-      - name: Verify control plane and system pods
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 25
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          cp_vm exec <<'EOF'
-          set -euo pipefail
-          cd ~/k2s
-          sudo ./k2s status --output wide
-          command -v kubectl >/dev/null || { echo 'kubectl is not on PATH for the guest user'; exit 1; }
-          kubectl wait --for=condition=Ready nodes --all --timeout=600s
-          kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=300s
-          EOF
-
-      - name: Start worker guest (arm64, TCG, 2 GB)
-        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-worker-guest
         timeout-minutes: 60
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          wk_vm prepare
-          wk_vm start
-          wk_vm wait-ssh
-
-      - name: Authorize the K2s public key on the worker
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          # The K2s key pair lives on the control-plane guest and never leaves it: only the public half is copied.
-          pubkey_file="$RUNNER_TEMP/k2s-node.pub"
-          cp_vm exec <<'EOF' > "$pubkey_file"
-          set -euo pipefail
-          sudo test -f /root/.ssh/k2s/id_ed25519.pub
-          sudo cat /root/.ssh/k2s/id_ed25519.pub
-          EOF
-          grep -q '^ssh-ed25519 ' "$pubkey_file"
-          pubkey="$(cat "$pubkey_file")"
-          wk_vm exec <<EOF
-          set -euo pipefail
-          install -d -m 700 ~/.ssh
-          grep -qxF '$pubkey' ~/.ssh/authorized_keys 2>/dev/null || echo '$pubkey' >> ~/.ssh/authorized_keys
-          chmod 600 ~/.ssh/authorized_keys
-          EOF
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
 
       - name: Copy the node package to the control plane
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
+          source "$ENV_SCRIPT"
           zip_path="$(find "$RUNNER_TEMP/node-package" -maxdepth 1 -name 'k2s-*-node-debian13-arm64.zip' | head -n 1)"
           test -n "$zip_path" || { echo '::error::arm64 node package not found in the artifact'; exit 1; }
           echo "Node package: $(basename "$zip_path") ($(du -h "$zip_path" | cut -f1))"
@@ -266,7 +132,7 @@ jobs:
         timeout-minutes: 120
         run: |
           set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
+          source "$ENV_SCRIPT"
           cp_vm exec <<EOF
           set -euo pipefail
           cd ~/k2s
@@ -278,7 +144,7 @@ jobs:
         timeout-minutes: 60
         run: |
           set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
+          source "$ENV_SCRIPT"
           cp_vm exec <<'EOF'
           set -euo pipefail
           export KUBECONFIG=/etc/kubernetes/admin.conf
@@ -306,43 +172,45 @@ jobs:
           test "$(kube get pod arm64-smoke -o jsonpath='{.spec.nodeName}')" = "$arm_node"
           kube logs arm64-smoke | grep -qx aarch64 || { echo '::error::workload did not report aarch64'; exit 1; }
           echo "arm64 workload ran on $arm_node as aarch64"
+
+          test "$(kube get node "$arm_node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
+            || { echo "::error::$arm_node is not labeled kubernetes.io/role=worker"; exit 1; }
+          sudo jq -e --arg name "$arm_node" '.nodes | any(.Name == $name and .NodeType == "HOST")' /var/lib/k2s/cluster.json >/dev/null \
+            || { echo "::error::$arm_node has no HOST entry in /var/lib/k2s/cluster.json"; exit 1; }
+          kube delete pod arm64-smoke --wait=true
           EOF
 
-      - name: Collect diagnostics (control plane and worker)
+      - name: Remove the arm64 worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-node-remove
+        timeout-minutes: 30
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
+
+      - name: Re-add the arm64 worker from the same node package
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 120
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          {
+            printf 'node=%q\nworker_ip=%q\n' "$WK_NAME" "$WK_IP"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          kube wait --for=condition=Ready "node/$node" --timeout=900s
+          test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
+            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the re-add"; exit 1; }
+          EOF
+          } | cp_vm exec
+
+      - name: Collect diagnostics, stop guests, upload
         if: ${{ always() && steps.kvm.outputs.available == 'true' }}
         continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          set -uo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          out="$RUNNER_TEMP/k2s-results-export"
-          mkdir -p "$out"
-          cp_vm exec <<'EOF' || true
-          set -uo pipefail
-          sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get nodes -o wide > ~/cluster-nodes.txt 2>&1
-          sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get pods -A -o wide > ~/cluster-pods.txt 2>&1
-          sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get events -A --sort-by=.lastTimestamp > ~/cluster-events.txt 2>&1
-          sudo cat /var/log/k2s.log > ~/k2s.log 2>/dev/null || true
-          EOF
-          cp_vm pull '~/cluster-*.txt' "$out" || true
-          cp_vm pull '~/k2s.log' "$out" || true
-          cp "$CP_VM_DIR/console.log" "$out/control-plane-console.log" 2>/dev/null || true
-          cp "$WK_VM_DIR/console.log" "$out/worker-console.log" 2>/dev/null || true
-
-      - name: Stop guests
-        if: ${{ always() && steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 5
-        run: |
-          source .github/scripts/linux-cluster-arm64-env.sh
-          cp_vm stop || true
-          wk_vm stop || true
-
-      - name: Upload diagnostics
-        if: ${{ always() && steps.kvm.outputs.available == 'true' }}
-        uses: actions/upload-artifact@v4
-        timeout-minutes: 5
+        uses: ./.github/actions/linux-cluster-diagnostics
+        timeout-minutes: 20
         with:
-          name: linux-cluster-node-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}
-          path: ${{ runner.temp }}/k2s-results-export/
-          if-no-files-found: warn
-          retention-days: 7
+          env-script: ${{ env.ENV_SCRIPT }}
+          artifact-name: linux-cluster-node-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}

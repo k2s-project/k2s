@@ -175,7 +175,7 @@ k2s_node_configure_from_config() {
 
 k2s_node_flannel_backend() {
   KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl -n kube-flannel get configmap kube-flannel-cfg -o jsonpath='{.data.net-conf\.json}' \
-    | jq -er '.Backend.Type' || { k2s_log ERROR 'Could not read the Flannel backend from kube-flannel-cfg.'; return 1; }
+    | jq -er '.Backend.Type // empty' || { k2s_log ERROR 'Could not read the Flannel backend from kube-flannel-cfg.'; return 1; }
 }
 
 # Prints this host's address in the node's subnet.

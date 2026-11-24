@@ -3,7 +3,7 @@
 
 # Nightly run of the ci-e2e-* workflows, each one repeated three times to expose flaky results.
 #
-# - The three workflows run in parallel with each other. The repetitions of one workflow run one after
+# - The workflows run in parallel with each other. The repetitions of one workflow run one after
 #   another (max-parallel: 1): the Windows workflow takes one runner VM from the K2s CI cluster, and its
 #   concurrency group keeps only one pending run, so parallel repetitions would be cancelled.
 # - A failed repetition does not stop the following ones (fail-fast: false).
@@ -13,7 +13,7 @@
 #
 # The morning e-mail of the K2s CI (k2s-support, ci/email) reads this workflow's jobs through the GitHub API
 # and reports the results per workflow. It parses the job names 'Windows (run N) / ...', 'Linux (run N) / ...'
-# and 'Linux arm64 node (run N) / ...'. Keep these names in sync with ci/email/send-failed-workflow-email.ps1
+# 'Linux arm64 node (run N) / ...' and 'Linux amd64 node (run N) / ...'. Keep these names in sync with ci/email/send-failed-workflow-email.ps1
 # in k2s-support.
 #
 # Scheduled workflows only run from the default branch. GitHub cron has no time zone: 22:00 UTC is
@@ -47,6 +47,7 @@ on:
           - windows
           - linux
           - arm64
+          - amd64
       windows_timeout_minutes:
         description: 'Timeout of one Windows repetition. Three sequential repetitions must fit between the start and the morning e-mail.'
         type: number
@@ -106,6 +107,22 @@ jobs:
       contents: read
       actions: write # requested by the called workflow (re-dispatch in non-nightly mode); not used here
     uses: ./.github/workflows/ci-e2e-linux-cluster-node-arm64.yml
+    with:
+      nightly: true
+      run: ${{ matrix.run }}
+
+  amd64:
+    name: Linux amd64 node (run ${{ matrix.run }})
+    if: ${{ inputs.workflows == '' || inputs.workflows == 'all' || inputs.workflows == 'amd64' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        run: ${{ fromJSON(inputs.repeats == '1' && '[1]' || inputs.repeats == '2' && '[1,2]' || '[1,2,3]') }}
+    permissions:
+      contents: read
+      actions: write # requested by the called workflow (re-dispatch in non-nightly mode); not used here
+    uses: ./.github/workflows/ci-e2e-linux-cluster-node-amd64.yml
     with:
       nightly: true
       run: ${{ matrix.run }}

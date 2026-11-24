@@ -219,6 +219,68 @@ k2s_proxy_config_http "$1/missing"`
 		Expect(strings.TrimSpace(string(commands))).To(Equal("label node worker1 kubernetes.io/role=worker --overwrite"))
 	})
 
+	DescribeTable("k2s_node_flannel_backend reads the backend of kube-flannel-cfg",
+		func(netConf string, want string, wantErr bool) {
+			stubs := map[string]string{"kubectl": `printf '%s' '` + netConf + `'`}
+
+			backend, err := runNodeModuleFunction(stubs, `k2s_node_flannel_backend`)
+
+			Expect(err != nil).To(Equal(wantErr), "got %v", err)
+			Expect(backend).To(Equal(want))
+		},
+		Entry("vxlan", `{"Network":"172.20.0.0/16","Backend":{"Type":"vxlan"}}`, "vxlan", false),
+		Entry("host-gw", `{"Network":"172.20.0.0/16","Backend":{"Type":"host-gw"}}`, "host-gw", false),
+		Entry("no backend", `{"Network":"172.20.0.0/16"}`, "", true),
+	)
+
+	Describe("remote steps", func() {
+		var record string
+
+		BeforeEach(func() {
+			record = GinkgoT().TempDir()
+		})
+
+		sshStub := func() map[string]string {
+			return map[string]string{"ssh": `printf '%s\n' "$@" > "` + record + `/args"; cat > "` + record + `/stdin"`}
+		}
+
+		It("joins with a JoinConfiguration on stdin, not with the token in the command line", func() {
+			stubs := sshStub()
+			stubs["kubeadm"] = `echo 'kubeadm join 10.10.0.10:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:1234'`
+
+			_, err := runNodeModuleFunction(stubs, `k2s_node_configure debian 10.10.0.20 key && k2s_node_join`)
+
+			Expect(err).ToNot(HaveOccurred())
+			args, err := os.ReadFile(filepath.Join(record, "args"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(args)).To(And(ContainSubstring("debian@10.10.0.20"), ContainSubstring("kubeadm join --config"), Not(ContainSubstring("abcdef"))))
+			config, err := os.ReadFile(filepath.Join(record, "stdin"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(config)).To(And(
+				ContainSubstring("kind: JoinConfiguration"),
+				ContainSubstring(`apiServerEndpoint: "10.10.0.10:6443"`),
+				ContainSubstring(`token: "abcdef.0123456789abcdef"`),
+				ContainSubstring(`- "sha256:1234"`),
+				ContainSubstring("criSocket: unix:///run/crio/crio.sock"),
+				ContainSubstring(`value: "10.10.0.20"`),
+			))
+		})
+
+		It("resets the node with a valid script and the configured KubeSwitch and pod CIDRs", func() {
+			_, err := runNodeModuleFunction(sshStub(), `k2s_node_configure debian 10.10.0.20 key && k2s_node_reset`)
+
+			Expect(err).ToNot(HaveOccurred())
+			args, err := os.ReadFile(filepath.Join(record, "args"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(args)).To(ContainSubstring("sudo bash -s -- 172.19.1.0/24 172.20.0.0/16"))
+			script := filepath.Join(record, "stdin")
+			Expect(exec.Command("bash", "-n", script).Run()).To(Succeed())
+			content, err := os.ReadFile(script)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(content)).To(And(ContainSubstring("kubeadm reset --force"), ContainSubstring("dpkg -P")))
+		})
+	})
+
 	DescribeTable("k2s_node_remove_from_cluster",
 		func(kubectl string, wantErr bool, wantCommands string) {
 			calls := filepath.Join(GinkgoT().TempDir(), "calls")

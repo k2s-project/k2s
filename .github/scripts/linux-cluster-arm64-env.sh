@@ -11,6 +11,7 @@ CP_VM_DIR="${CP_VM_DIR:-$RUNNER_TEMP/vm-cp}"
 WK_VM_DIR="${WK_VM_DIR:-$RUNNER_TEMP/vm-worker}"
 CP_IP=10.10.0.10
 WK_IP=10.10.0.20
+WK_NAME=k2s-arm64-worker
 
 cp_vm() {
   VM_DIR="$CP_VM_DIR" VM_NAME=k2s-linux-cp VM_CPUS=2 VM_MEMORY_MB=4096 \
@@ -19,7 +20,7 @@ cp_vm() {
 }
 
 wk_vm() {
-  VM_DIR="$WK_VM_DIR" VM_ARCH=arm64 VM_NAME=k2s-arm64-worker VM_CPUS=2 VM_MEMORY_MB=2048 \
+  VM_DIR="$WK_VM_DIR" VM_ARCH=arm64 VM_NAME="$WK_NAME" VM_CPUS=2 VM_MEMORY_MB=2048 \
     VM_NET_MODE=bridge VM_NET_IP="$WK_IP" VM_TAP=k2s-tap-w \
     bash .github/scripts/linux-cluster-vm.sh "$@"
 }

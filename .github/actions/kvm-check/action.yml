@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Makes /dev/kvm usable for the guests of the Linux-host e2e workflows. A runner without KVM re-dispatches the calling
+# workflow on a new runner (up to max-attempts); in nightly mode it fails instead (NO_KVM), so the nightly counts
+# every repetition. The job needs 'actions: write' for the re-dispatch.
+
+name: KVM check
+description: Checks /dev/kvm and re-dispatches the calling workflow when it is missing.
+
+inputs:
+  workflow:
+    description: File name of the calling workflow, re-dispatched when KVM is missing.
+    required: true
+  attempt:
+    description: Current attempt number (kvm_attempt input of the workflow).
+    required: true
+  nightly:
+    description: "'true' fails without KVM instead of re-dispatching."
+    required: false
+    default: 'false'
+  max-attempts:
+    description: Maximum number of attempts.
+    required: false
+    default: '5'
+  token:
+    description: Token for 'gh workflow run'.
+    required: true
+
+outputs:
+  available:
+    description: "'true' if KVM is usable on this runner."
+    value: ${{ steps.kvm.outputs.available }}
+
+runs:
+  using: composite
+  steps:
+    - id: kvm
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        KVM_ATTEMPT: ${{ inputs.attempt }}
+        KVM_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+        K2S_NIGHTLY: ${{ inputs.nightly }}
+        WORKFLOW: ${{ inputs.workflow }}
+      run: |
+        set -uo pipefail
+        echo "KVM attempt ${KVM_ATTEMPT} of ${KVM_MAX_ATTEMPTS}"
+        uname -m | grep -qx x86_64 || { echo "::error::Runner is not amd64: $(uname -m)"; exit 1; }
+        if [ -e /dev/kvm ]; then
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+          ls -la /dev/kvm
+        else
+          echo "/dev/kvm does not exist on this runner"
+        fi
+        if test -r /dev/kvm && test -w /dev/kvm; then
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "KVM is usable on this runner."
+          exit 0
+        fi
+        echo "available=false" >> "$GITHUB_OUTPUT"
+        if [ "$K2S_NIGHTLY" = "true" ]; then
+          # A re-dispatch would start a separate run outside the nightly and this one would end green
+          # without testing anything. Failing keeps the nightly statistics honest (the email reports NO_KVM).
+          echo "::error::NO_KVM: no usable /dev/kvm on this runner (nightly run, not re-dispatched)."
+          exit 1
+        fi
+        if [ "$KVM_ATTEMPT" -ge "$KVM_MAX_ATTEMPTS" ]; then
+          echo "::error::No usable /dev/kvm after ${KVM_ATTEMPT} attempts; giving up."
+          exit 1
+        fi
+        next=$((KVM_ATTEMPT + 1))
+        echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
+        gh workflow run "$WORKFLOW" --ref "$GITHUB_REF_NAME" -f kvm_attempt="$next"
+        echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"

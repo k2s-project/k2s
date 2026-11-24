@@ -393,10 +393,11 @@ mounts in a caller pod are not automatically inherited by referenced templates.
 
 The **CI - E2E Nightly** workflow (`.github/workflows/ci-e2e-nightly.yml`) runs every night at `0 22 * * *` UTC
 (23:00 CET, 00:00 CEST; GitHub cron has no time zone) and can also be started manually. It calls
-`ci-e2e-windows-cluster.yml`, `ci-e2e-linux-cluster.yml` and `ci-e2e-linux-cluster-node-arm64.yml` through
+`ci-e2e-windows-cluster.yml`, `ci-e2e-linux-cluster.yml`, `ci-e2e-linux-cluster-node-arm64.yml` and
+`ci-e2e-linux-cluster-node-amd64.yml` through
 `workflow_call`, core suite only (`addon: none`), and repeats each of them three times to expose flaky results.
 
-- The three workflows run in parallel with each other. The repetitions of one workflow run one after another
+- The workflows run in parallel with each other. The repetitions of one workflow run one after another
   (`max-parallel: 1`): the Windows workflow takes one runner VM from the K2s CI cluster, and its concurrency group
   keeps only one pending run, so parallel repetitions would be cancelled.
 - A failed repetition does not stop the following ones (`fail-fast: false`).

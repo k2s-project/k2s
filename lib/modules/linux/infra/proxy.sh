@@ -86,6 +86,20 @@ EOF
   systemctl restart k2s-httpproxy || return 1
 }
 
+# Same file and format as on a Windows host (Get-ProxyConfig); it may contain credentials.
+k2s_proxy_config_write() {
+  local file="$K2S_CONFIG_DIR/proxy.conf"
+  (umask 077 && printf 'http_proxy=%s\nhttps_proxy=%s\nno_proxy=%s\n' "$K2S_PROXY" "$K2S_PROXY" "$K2S_NO_PROXY" > "$file") || return 1
+  chmod 600 "$file"
+}
+
+# Prints the http_proxy of the proxy configuration; nothing without a configuration or proxy.
+k2s_proxy_config_http() {
+  local file="${1:-$K2S_CONFIG_DIR}/proxy.conf"
+  [[ -f $file ]] || return 0
+  sed -n 's/^http_proxy=//p' "$file" | head -n 1 | tr -d "\"'\r"
+}
+
 k2s_proxy_cleanup() {
   systemctl disable --now k2s-httpproxy 2>/dev/null || true
   rm -f /etc/systemd/system/k2s-httpproxy.service

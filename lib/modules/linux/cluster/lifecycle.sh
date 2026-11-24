@@ -152,6 +152,7 @@ k2s_install_cluster() {
   k2s_enable_host_ssh || return $?
   k2s_log INFO 'Configuring K2s HTTP proxy service.'
   k2s_proxy_install || return $?
+  k2s_proxy_config_write || return $?
   k2s_log INFO 'Provisioning Kubernetes and CRI-O packages.'
   k2s_packages_install || return $?
   k2s_log INFO 'Initializing the Kubernetes control plane.'

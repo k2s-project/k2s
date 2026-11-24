@@ -141,6 +141,23 @@ func TestRequireNodePackageToolsNamesMissingPackages(t *testing.T) {
 	}
 }
 
+func TestDefaultNodePackageProxyUsesK2sProxyOnlyWhenInstalled(t *testing.T) {
+	configDir := t.TempDir()
+
+	proxy, err := defaultNodePackageProxy(repositoryRoot, configDir)
+	if err != nil || proxy != "" {
+		t.Fatalf("without K2s installation: got %q, %v, want no proxy", proxy, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(configDir, "setup.json"), []byte(`{"SetupType":"k2s","LinuxOnly":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proxy, err = defaultNodePackageProxy(repositoryRoot, configDir)
+	if err != nil || proxy != "http://172.19.1.1:8181" {
+		t.Fatalf("with K2s installation: got %q, %v, want http://172.19.1.1:8181", proxy, err)
+	}
+}
+
 func TestValidateNodePackageProxy(t *testing.T) {
 	tests := []struct {
 		name    string

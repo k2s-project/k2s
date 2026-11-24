@@ -185,6 +185,9 @@ If the node should be installed **offline**, first create a node package and the
 k2s node add --ip-addr <IPAddressOfNewNode> --username <UserNameForRemoteConnection> --node-package <PathToNodePackageZip>
 ```
 
+!!! note "Linux host (experimental)"
+    In online mode the node downloads the Debian packages for its own architecture and pulls the container images itself. Like on a Windows host, the node uses the proxy given at `k2s install` (stored in `/var/lib/k2s/proxy.conf`); without one it needs direct internet access. The local cluster proxy `http://172.19.1.1:8181` of a Linux host only accepts clients from the K2s networks (for example `172.19.1.0/24`) and the host itself; it rejects nodes with other addresses, such as a node in the host's LAN.
+
 ### 3. Check new node status
 
 ```cmd

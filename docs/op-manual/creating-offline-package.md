@@ -108,7 +108,7 @@ On a Linux host *(experimental)*, `k2s system package --node-package` builds the
 - Run the command with `sudo`.
 - `--os` must match the host's Debian release (for example `debian13` on a Debian 13 host) and `--arch` the host's architecture. There is no cross-build.
 - The host needs `skopeo`, `dpkg-deb` and `apt-get`. `skopeo` is not installed by *K2s*; install it with `sudo apt-get install skopeo`. The command checks these tools before it downloads anything.
-- The host needs network access to the Debian and Kubernetes package repositories and to the container registries.
+- Without `--proxy`, packages and images are downloaded through the local cluster proxy `http://172.19.1.1:8181` (it uses the proxy given at `k2s install`), like on a Windows host; *K2s* must be running. A build host without a *K2s* installation, such as an arm64 build host, downloads directly and needs network access to the package repositories and container registries.
 
 ```console
 sudo k2s system package --node-package --os debian13 --target-dir /tmp/out --name debian13-node.zip

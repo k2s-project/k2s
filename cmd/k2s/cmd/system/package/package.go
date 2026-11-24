@@ -79,7 +79,7 @@ const (
 	ControlPlaneDiskSizeFlagUsage = "Disk size allocated to the master VM (minimum 10GB, format: <number>[<unit>], where unit = KB, MB or GB)"
 
 	ProxyFlagName  = "proxy"
-	ProxyFlagUsage = "HTTP proxy if available to be used; required for --node-package, use the local cluster proxy http://172.19.1.1:8181"
+	ProxyFlagUsage = "HTTP proxy if available to be used; for --node-package it defaults to the local cluster proxy http://172.19.1.1:8181"
 
 	TargetDirectoryFlagName  = "target-dir"
 	TargetDirectoryFlagUsage = "Target directory"

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/k2s-project/k2s/internal/core/config"
 )
 
 // zipSource places the files under root into the zip under the given top-level prefix.
@@ -238,6 +240,19 @@ func requireNodePackageTools(lookPath func(string) (string, error)) error {
 	}
 	return fmt.Errorf("building a node package needs %s on this host; install it with 'sudo apt-get install %s'",
 		strings.Join(missingCommands, ", "), strings.Join(missingPackages, " "))
+}
+
+// defaultNodePackageProxy returns the K2s proxy, which forwards to the install proxy, like New-K2sNodePackage.ps1.
+// A build host without a K2s installation (e.g. an arm64 build host) downloads directly.
+func defaultNodePackageProxy(installDir, configDir string) (string, error) {
+	if _, err := config.ReadRuntimeConfig(configDir); err != nil {
+		return "", nil
+	}
+	kubeSwitch, err := config.ReadKubeSwitchConfig(installDir)
+	if err != nil {
+		return "", fmt.Errorf("could not determine the K2s proxy address: %w", err)
+	}
+	return "http://" + kubeSwitch.Address + ":8181", nil
 }
 
 func validateNodePackageProxy(proxy string) error {
@@ -568,6 +583,16 @@ func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildEr
 	osName := cfg.OS
 	arch := cfg.Architecture
 	includeGpu := cfg.IncludeGPU
+	if proxy == "" {
+		defaultProxy, err := defaultNodePackageProxy(p.installDir, p.configDir)
+		if err != nil {
+			return err
+		}
+		if defaultProxy != "" {
+			proxy = defaultProxy
+			fmt.Printf("[NodePkg] No proxy specified. Defaulting to K2s transparent proxy '%s'.\n", proxy)
+		}
+	}
 	if err := validateNodePackageProxy(proxy); err != nil {
 		return err
 	}

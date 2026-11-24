@@ -195,20 +195,47 @@ k2s_node_host_ip() {
 # Directories are streamed through tar, which keeps permissions and avoids one scp per file.
 k2s_node_copy_artifacts() {
   local package_dir="$1" scripts_dir="$2"
-  k2s_log INFO "Copying the node package to $K2S_NODE_IP."
-  k2s_node_ssh "rm -rf $K2S_NODE_REMOTE_DIR && mkdir -p $K2S_NODE_REMOTE_DIR/packages $K2S_NODE_REMOTE_DIR/images $K2S_NODE_REMOTE_DIR/scripts" || return 1
-  tar -C "$package_dir" -cf - packages images | k2s_node_ssh "tar -C $K2S_NODE_REMOTE_DIR -xf -" || return 1
+  k2s_log INFO "Copying the node-extension scripts${package_dir:+ and the node package} to $K2S_NODE_IP."
+  k2s_node_ssh "rm -rf $K2S_NODE_REMOTE_DIR && mkdir -p $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes $K2S_NODE_REMOTE_DIR/packages/debian13/buildah $K2S_NODE_REMOTE_DIR/images $K2S_NODE_REMOTE_DIR/scripts" || return 1
+  if [[ -n $package_dir ]]; then
+    tar -C "$package_dir" -cf - packages images | k2s_node_ssh "tar -C $K2S_NODE_REMOTE_DIR -xf -" || return 1
+  fi
   tar -C "$scripts_dir" -cf - . | k2s_node_ssh "tar -C $K2S_NODE_REMOTE_DIR/scripts -xf -" || return 1
+}
+
+# Online: the node downloads the packages for its own architecture, like the Windows cross-architecture path.
+k2s_node_download_packages() {
+  local k8s_version="$1" proxy="$2" packages_dir="$K2S_NODE_REMOTE_DIR/packages/debian13"
+  k2s_log INFO "Downloading Kubernetes $k8s_version and buildah packages on $K2S_NODE_IP."
+  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/download-k8s-packages.sh $packages_dir/kubernetes $(printf '%q %q' "$k8s_version" "$proxy") && sudo bash $K2S_NODE_REMOTE_DIR/scripts/download-buildah-packages.sh $packages_dir/buildah $(printf '%q' "$proxy")" 2>&1 \
+    | k2s_node_mask_proxy "$proxy" | k2s_log_output \
+    || { k2s_log ERROR "Downloading the packages failed on $K2S_NODE_IP."; return 1; }
+}
+
+# Masks the credentials of a proxy URL in the output passed through.
+k2s_node_mask_proxy() {
+  local proxy="$1" masked line
+  if [[ $proxy != *@* ]]; then
+    cat
+    return
+  fi
+  masked="${proxy%%://*}://***@${proxy##*@}"
+  while IFS= read -r line || [[ -n $line ]]; do
+    printf '%s\n' "${line//"$proxy"/"$masked"}"
+  done
 }
 
 # Installs buildah first (the image import needs it), then the Kubernetes packages. The scripts are the
 # node-extension scripts of cfg/nodeextension/debian13: they only install packages the node does not have.
 k2s_node_install_packages() {
-  local registry_token="$1"
+  local registry_token="$1" proxy="$2"
   k2s_log INFO "Installing buildah packages on $K2S_NODE_IP."
-  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-buildah-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/buildah" || return 1
+  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-buildah-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/buildah" 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Installing the buildah packages failed on $K2S_NODE_IP."; return 1; }
   k2s_log INFO "Installing Kubernetes packages on $K2S_NODE_IP."
-  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-k8s-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes '' '$registry_token' false" || return 1
+  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-k8s-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes $(printf '%q' "$proxy") '$registry_token' false" 2>&1 \
+    | k2s_node_mask_proxy "$proxy" | k2s_log_output \
+    || { k2s_log ERROR "Installing the Kubernetes packages failed on $K2S_NODE_IP."; return 1; }
 }
 
 # Imports every image archive into the container storage that CRI-O uses.
@@ -307,6 +334,13 @@ EOF
     || { k2s_log ERROR "kubeadm join failed on $K2S_NODE_IP."; return 1; }
 }
 
+# Same label as Join-LinuxNode on a Windows host; kubectl shows it as role.
+k2s_node_label_worker() {
+  local node_name="$1"
+  KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl label node "$node_name" kubernetes.io/role=worker --overwrite 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Could not label node $node_name as worker."; return 1; }
+}
+
 # Waits until the node's Ready condition is the wanted status (True or not True); polls every interval seconds.
 k2s_node_wait_ready() {
   local node_name="$1" want="${2:-True}" timeout="${3:-900}" interval="${4:-15}" waited=0 ready label=Ready
@@ -388,15 +422,20 @@ k2s_node_reset() {
   k2s_node_ssh "sudo bash -s -- $(printf '%q %q' "$switch_cidr" "$pod_cidr")" <<'SCRIPT' 2>&1 | k2s_log_output
 switch_cidr=$1
 pod_cidr=$2
-systemctl disable --now k2s-routes.service
+if systemctl cat k2s-routes.service >/dev/null 2>&1; then
+  systemctl disable --now k2s-routes.service
+fi
 rm -f /etc/systemd/system/k2s-routes.service
 kubeadm reset --force
 systemctl disable --now kubelet crio
 for cidr in "$switch_cidr" "$pod_cidr"; do
   ip -4 route show root "$cidr" | grep -v 'proto kernel' | while read -r route; do ip route delete $route; done
 done
-ip link delete cni0
-ip link delete flannel.1
+for link in cni0 flannel.1; do
+  if ip link show "$link" >/dev/null 2>&1; then
+    ip link delete "$link"
+  fi
+done
 for package in kubeadm kubectl kubelet cri-tools cri-o buildah; do
   DEBIAN_FRONTEND=noninteractive dpkg -P "$package"
 done
@@ -406,7 +445,10 @@ done
 rm -rf /etc/kubernetes /etc/cni /etc/crio /var/lib/crio/* /etc/crictl.yaml /etc/systemd/system/crio.service.d \
   /root/.config/containers /etc/containers/registries.conf /etc/containers/containers.conf.d/20-k2s-proxy.conf \
   /etc/sysctl.d/k8s.conf /etc/modules-load.d/k8s.conf /etc/cron.d/sharedmount /usr/local/sbin/k2s-crio-precheck \
-  /etc/apt/apt.conf.d/90k2s-install-proxy /etc/apt/apt.conf.d/95k2s-proxy /tmp/k2s-node
+  /etc/apt/apt.conf.d/90k2s-install-proxy /etc/apt/apt.conf.d/95k2s-proxy /tmp/k2s-node \
+  /etc/apt/apt.conf.d/90k2s-proxy /etc/apt/apt.conf.d/10sandbox-for-k2s \
+  /etc/apt/sources.list.d/kubernetes.list /etc/apt/sources.list.d/cri-o.list \
+  /usr/share/keyrings/kubernetes-apt-keyring.gpg /usr/share/keyrings/cri-o-apt-keyring.gpg
 sysctl --system >/dev/null
 DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y
 systemctl daemon-reload

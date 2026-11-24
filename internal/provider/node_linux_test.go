@@ -31,10 +31,18 @@ var _ = Describe("linuxNodeProvider", Label("unit"), func() {
 			Expect(p.Add(NodeAddConfig{IpAddress: "10.10.0.20", NodePackagePath: "/tmp/node.zip"})).To(MatchError(ContainSubstring("--username")))
 		})
 
-		It("requires a node package", func() {
-			p := &linuxNodeProvider{installDir: GinkgoT().TempDir()}
+		It("runs Add.sh online when no node package is given", func() {
+			installDir := installFakeNodeScript("Add.sh", 0)
+			argsFile := filepath.Join(GinkgoT().TempDir(), "args")
+			script := filepath.Join(installDir, "lib", "scripts", "linux", "debian", "worker", "bare-metal", "Add.sh")
+			Expect(os.WriteFile(script, []byte(`printf '%s ' "$@" > "`+argsFile+`"`), 0o600)).To(Succeed())
+			p := &linuxNodeProvider{installDir: installDir, configDir: "/var/lib/k2s"}
 
-			Expect(p.Add(NodeAddConfig{IpAddress: "10.10.0.20", UserName: "debian"})).To(MatchError(ContainSubstring("--node-package")))
+			Expect(p.Add(NodeAddConfig{IpAddress: "10.10.0.20", UserName: "debian"})).To(Succeed())
+
+			args, err := os.ReadFile(argsFile)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(strings.TrimSpace(string(args))).To(Equal("--ip-address 10.10.0.20 --user debian --install-dir " + installDir + " --config-dir /var/lib/k2s"))
 		})
 
 		It("fails when Add.sh is missing", func() {
@@ -142,6 +150,30 @@ k2s_node_configure admin 10.10.0.21 key && k2s_node_config_add "$1/cluster.json"
 		Expect(cluster.Nodes[0].Name).To(Equal("worker2"))
 	})
 
+	It("writes the install proxy to proxy.conf and reads it back", func() {
+		snippet := `source "$K2S_INSTALL_DIR/lib/modules/linux/infra/proxy.sh"
+K2S_CONFIG_DIR="$1" K2S_PROXY='http://user:secret@proxy.example:3128' K2S_NO_PROXY='localhost,.svc' k2s_proxy_config_write
+stat -c %a "$1/proxy.conf"
+k2s_proxy_config_http "$1"
+k2s_proxy_config_http "$1/missing"`
+
+		out, err := runNodeModuleFunction(nil, snippet, configDir)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(out).To(Equal("600\nhttp://user:secret@proxy.example:3128"))
+		content, err := os.ReadFile(filepath.Join(configDir, "proxy.conf"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(content)).To(Equal("http_proxy=http://user:secret@proxy.example:3128\nhttps_proxy=http://user:secret@proxy.example:3128\nno_proxy=localhost,.svc\n"))
+	})
+
+	It("masks the credentials of a proxy URL in the output", func() {
+		out, err := runNodeModuleFunction(nil, `printf '%s\n' "proxy: $1" "other line" | k2s_node_mask_proxy "$1"; printf '%s\n' "plain: $2" | k2s_node_mask_proxy "$2"`,
+			"http://user:secret@proxy.example:3128", "http://proxy.example:3128")
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(out).To(Equal("proxy: http://***@proxy.example:3128\nother line\nplain: http://proxy.example:3128"))
+	})
+
 	DescribeTable("rejects nodes that are known to the cluster or the configuration",
 		func(node string, wantExitCode int) {
 			Expect(os.WriteFile(filepath.Join(configDir, "cluster.json"), []byte(`{"nodes":[{"Name":"configured"}]}`), 0o600)).To(Succeed())
@@ -173,6 +205,18 @@ k2s_node_configure admin 10.10.0.21 key && k2s_node_config_add "$1/cluster.json"
 
 			Expect(err).To(MatchError(ContainSubstring("layer-2")))
 		})
+	})
+
+	It("labels an added node as worker", func() {
+		calls := filepath.Join(GinkgoT().TempDir(), "calls")
+		stubs := map[string]string{"kubectl": `printf '%s\n' "$*" >> "` + calls + `"`}
+
+		_, err := runNodeModuleFunction(stubs, `k2s_node_label_worker worker1`)
+
+		Expect(err).ToNot(HaveOccurred())
+		commands, err := os.ReadFile(calls)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(strings.TrimSpace(string(commands))).To(Equal("label node worker1 kubernetes.io/role=worker --overwrite"))
 	})
 
 	DescribeTable("k2s_node_remove_from_cluster",

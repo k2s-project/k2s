@@ -41,9 +41,8 @@ func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
 	return NotSupportedError("node rename", "worker identity repair is currently available only from a Windows K2s host")
 }
 
-// Add joins a Debian 13 worker node (amd64 or arm64) to the cluster that runs on this host. The
-// work is done by lib/scripts/linux/debian/worker/bare-metal/Add.sh, the Linux counterpart of the
-// Windows bare-metal Add.ps1. Only offline node packages are supported on this path.
+// Add joins a Debian 13 worker node (amd64 or arm64) to the cluster that runs on this host via
+// lib/scripts/linux/debian/worker/bare-metal/Add.sh; without a node package the node downloads its packages itself.
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	if cfg.IpAddress == "" {
 		return errors.New("--ip-addr is required to add a node")
@@ -51,16 +50,15 @@ func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	if cfg.UserName == "" {
 		return errors.New("--username is required to add a node")
 	}
-	if cfg.NodePackagePath == "" {
-		return NotSupportedError("node add without --node-package", "the Linux host adds nodes from an offline node package; build one with 'k2s system package --node-package'")
-	}
-
 	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "package", cfg.NodePackagePath)
-	return p.runNodeScript("Add.sh", "adding node "+cfg.IpAddress, cfg.ShowOutput,
+	args := []string{
 		"--ip-address", cfg.IpAddress,
 		"--user", cfg.UserName,
-		"--node-package", cfg.NodePackagePath,
-	)
+	}
+	if cfg.NodePackagePath != "" {
+		args = append(args, "--node-package", cfg.NodePackagePath)
+	}
+	return p.runNodeScript("Add.sh", "adding node "+cfg.IpAddress, cfg.ShowOutput, args...)
 }
 
 func (p *linuxNodeProvider) Remove(cfg NodeRemoveConfig) error {

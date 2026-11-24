@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/internal/core/config"
@@ -120,6 +121,74 @@ func DetectProxyUsage(ctx context.Context, suite *framework.K2sTestSuite) (inUse
 	inUse = len(reasons) > 0
 	GinkgoWriter.Printf("[AirGap] Proxy in use on this machine: %v %v\n", inUse, reasons)
 	return inUse, reasons
+}
+
+var k2sProxyOverrideRegex = regexp.MustCompile(`(?m)^\s*-\s+(\S+)\s*$`)
+
+type k2sProxySettings struct {
+	proxy     string
+	overrides []string
+}
+
+// readK2sProxySettings returns the upstream proxy and the overrides configured in K2s (k2s system proxy show).
+func readK2sProxySettings(ctx context.Context, suite *framework.K2sTestSuite) k2sProxySettings {
+	output := suite.K2sCli().NoStdOut().MustExec(ctx, "system", "proxy", "show")
+
+	settings := k2sProxySettings{}
+	if match := k2sProxyRegex.FindStringSubmatch(output); match != nil && !strings.HasPrefix(match[1], "<") {
+		settings.proxy = match[1]
+	}
+	if _, overridesPart, found := strings.Cut(output, "Proxy Overrides:"); found {
+		for _, match := range k2sProxyOverrideRegex.FindAllStringSubmatch(overridesPart, -1) {
+			settings.overrides = append(settings.overrides, match[1])
+		}
+	}
+	return settings
+}
+
+// ResetK2sProxyForAirGap removes the upstream proxy from K2s (k2s system proxy reset), because otherwise the K2s HTTP
+// proxy on the host (used by the VMs and by the addon scripts) still forwards to the internet. The returned function
+// sets the proxy and the overrides again; it is idempotent and also registered with DeferCleanup so that tests that run
+// afterwards are not affected, even if the preparation fails half way.
+// Without a configured K2s proxy nothing is changed and the returned function does nothing.
+func ResetK2sProxyForAirGap(ctx context.Context, suite *framework.K2sTestSuite) func() {
+	GinkgoWriter.Println("=== RESET K2S PROXY START ===")
+
+	settings := readK2sProxySettings(ctx, suite)
+	if settings.proxy == "" {
+		GinkgoWriter.Println("[AirGap] No K2s upstream proxy configured, nothing to reset")
+		GinkgoWriter.Println("=== RESET K2S PROXY END ===")
+		return func() {}
+	}
+	GinkgoWriter.Printf("[AirGap] K2s proxy '%s' with overrides %v will be reset and restored after the air-gapped phase\n", settings.proxy, settings.overrides)
+
+	var once sync.Once
+	restore := func() {
+		once.Do(func() {
+			GinkgoWriter.Printf("[AirGap] Restoring the K2s proxy '%s' and overrides %v\n", settings.proxy, settings.overrides)
+			restoreCtx := context.Background()
+			suite.K2sCli().MustExec(restoreCtx, "system", "proxy", "set", settings.proxy)
+			if len(settings.overrides) > 0 {
+				suite.K2sCli().MustExec(restoreCtx, append([]string{"system", "proxy", "override", "add"}, settings.overrides...)...)
+			}
+
+			restored := readK2sProxySettings(restoreCtx, suite)
+			GinkgoWriter.Printf("[AirGap] K2s proxy after restore: '%s' overrides %v\n", restored.proxy, restored.overrides)
+			Expect(restored.proxy).To(Equal(settings.proxy), "the K2s proxy must be restored for the tests that run afterwards")
+			Expect(restored.overrides).To(ConsistOf(settings.overrides), "the K2s proxy overrides must be restored")
+		})
+	}
+	// registered before the reset so that a failing reset is restored as well
+	DeferCleanup(restore)
+
+	suite.K2sCli().MustExec(ctx, "system", "proxy", "reset")
+
+	afterReset := readK2sProxySettings(ctx, suite)
+	GinkgoWriter.Printf("[AirGap] K2s proxy after reset: '%s' overrides %v\n", afterReset.proxy, afterReset.overrides)
+	Expect(afterReset.proxy).To(BeEmpty(), "the K2s proxy must be removed for the air-gapped phase")
+
+	GinkgoWriter.Println("=== RESET K2S PROXY END ===")
+	return restore
 }
 
 // VerifyNoInternetConnectivity checks that no connectivity probe succeeds.

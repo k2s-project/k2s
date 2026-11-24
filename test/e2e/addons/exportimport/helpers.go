@@ -99,13 +99,15 @@ func ConfigJsonMirrorRegistries(suite *framework.K2sTestSuite) []MirrorRegistry 
 
 // PrepareAirGappedAddonImport brings the system into a state in which an addon import can only succeed
 // if the OCI artifact is self-contained, and verifies (with logs) that every precondition is met:
-//  1. no internet connectivity (host and control plane, direct and via the K2s proxy) - verified, not enforced
+//  1. no internet connectivity (host and control plane, direct and via the K2s proxy): the K2s proxy is reset first,
+//     then connectivity is verified (a failure on proxy-based machines, a warning on machines without proxy)
 //  2. no non-core images in the container runtimes of any node (and none of the addon's images)
 //  3. the addon folder and the Windows curl packages of the addon are removed from the K2s directory
 //     (moved to a backup and restored automatically at the end of the enclosing container)
 //  4. staged packages on the control plane, proxy environment variables and registry mirrors are removed
 //
-// The returned function restores the proxy environment variables.
+// The K2s proxy is reset for the air-gapped phase (if configured). The returned function restores it and the proxy
+// environment variables; the K2s proxy is additionally restored at the end of the enclosing container (DeferCleanup).
 func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, addon *addons.Addon, impl *addons.Implementation, controlPlaneIP string) func() {
 	GinkgoWriter.Println("=== PREPARE AIR-GAPPED ADDON IMPORT START ===")
 	Expect(addon).NotTo(BeNil(), "addon must be set")
@@ -127,10 +129,16 @@ func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSu
 	PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIP)
 	StageAddonRemovedFromHost(suite.RootDir(), addon, impl)
 
+	// the K2s HTTP proxy would still forward to the internet: remove the K2s proxy, it is restored by the returned function
+	restoreK2sProxy := ResetK2sProxyForAirGap(ctx, suite)
+
 	VerifyNoInternetConnectivity(ctx, suite, controlPlaneIP, proxyInUse)
 
 	GinkgoWriter.Println("=== PREPARE AIR-GAPPED ADDON IMPORT END ===")
-	return restoreProxyEnvironment
+	return func() {
+		restoreK2sProxy()
+		restoreProxyEnvironment()
+	}
 }
 
 var proxyEnvironmentKeys = []string{"SYSTEM_TEST_PROXY", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"}

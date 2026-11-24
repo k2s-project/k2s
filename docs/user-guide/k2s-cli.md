@@ -578,7 +578,7 @@ k2s system package [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--target-dir` | `-d` | **Required.** Target directory |
-| `--name` | `-n` | **Required.** Package zip file name |
+| `--name` | `-n` | **Required.** Package zip file name; must end with `.zip` |
 | `--for-offline-installation` | | Create offline package |
 | `--delta-package` | | Create a delta package |
 | `--package-version-from` | | Base full-package zip (required with `--delta-package`) |

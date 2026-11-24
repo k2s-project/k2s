@@ -87,6 +87,9 @@ const (
 	ZipPackageFileNameFlagName  = "name"
 	ZipPackageFileNameFlagUsage = "The name of the zip package (it must have the extension .zip)"
 
+	zipExtension              = ".zip"
+	invalidPackageNameErrCode = "invalid-package-name"
+
 	ForOfflineInstallationFlagName  = "for-offline-installation"
 	ForOfflineInstallationFlagUsage = "Creates a zip package that can be used for offline installation"
 
@@ -139,6 +142,11 @@ func init() {
 	// NOTE: We do not mark the version flags as required here because they are only
 	// required when --delta-package is set. Validation is handled in PreRunE below.
 	PackageCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		zipName, _ := cmd.Flags().GetString(ZipPackageFileNameFlagName)
+		if err := validateZipPackageFileName(zipName); err != nil {
+			return err
+		}
+
 		// Node package is a fully separate mode — skip all other validations.
 		if nodepackage.IsSet(cmd.Flags()) {
 			supportedOS, err := config.ReadSupportedWorkerOS(utils.InstallDir())
@@ -244,6 +252,21 @@ func systemPackage(cmd *cobra.Command, args []string) error {
 	cmdSession.Finish()
 
 	return nil
+}
+
+// validateZipPackageFileName rejects package names without a .zip extension. Package consumers
+// (e.g. node upgrade) rely on the extension, so the name is validated instead of silently normalized.
+// An empty name is left to the mode-specific "required flag" checks.
+func validateZipPackageFileName(name string) error {
+	if name == "" || strings.EqualFold(filepath.Ext(name), zipExtension) {
+		return nil
+	}
+	return &common.CmdFailure{
+		Severity: common.SeverityWarning,
+		Code:     invalidPackageNameErrCode,
+		Message: fmt.Sprintf("--%s must end with '%s' (got '%s'); hint: use e.g. '%s%s'",
+			ZipPackageFileNameFlagName, zipExtension, name, name, zipExtension),
+	}
 }
 
 func buildNodePackageConfig(flags *pflag.FlagSet) (provider.SystemPackageConfig, error) {

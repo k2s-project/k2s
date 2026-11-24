@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,7 +62,20 @@ var _ = AfterSuite(func(ctx context.Context) {
 		exportimport.CleanupExportedFiles(exportPath, exportedOciFile)
 	}
 	suite.K2sCli().Exec(ctx, "addons", "disable", "storage", "ceph", "--force", "-o")
-	os.RemoveAll(exportPath)
+	prebuiltSource := os.Getenv(exportimport.PrebuiltAddonOciFileEnv)
+	if prebuiltSource == "" {
+		os.RemoveAll(exportPath)
+	} else {
+		sourceAbs, err := filepath.Abs(prebuiltSource)
+		Expect(err).ToNot(HaveOccurred())
+		exportAbs, err := filepath.Abs(exportPath)
+		Expect(err).ToNot(HaveOccurred())
+		rel, err := filepath.Rel(exportAbs, sourceAbs)
+		Expect(err).ToNot(HaveOccurred())
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			os.RemoveAll(exportPath)
+		}
+	}
 	suite.TearDown(ctx)
 })
 
@@ -117,7 +131,8 @@ var _ = Describe("storage ceph addon export and import", Ordered, func() {
 		var restoreProxyEnvironment func()
 
 		BeforeAll(func(ctx context.Context) {
-			restoreProxyEnvironment = exportimport.PrepareAirGappedAddonImport(ctx, suite, controlPlaneIpAddress)
+			restoreProxyEnvironment = exportimport.PrepareAirGappedAddonImport(ctx, suite, k2s, addon, impl, controlPlaneIpAddress)
+			exportimport.LogAirGapState(ctx, suite, k2s, addon, impl, controlPlaneIpAddress)
 			exportimport.ImportAddon(ctx, suite, exportedOciFile)
 		})
 
@@ -130,7 +145,7 @@ var _ = Describe("storage ceph addon export and import", Ordered, func() {
 		})
 
 		It("has debian packages available after import", func(ctx context.Context) {
-			exportimport.VerifyImportedDebPackages(ctx, suite, impl, controlPlaneIpAddress, "storage")
+			exportimport.VerifyImportedDebPackages(ctx, suite, impl, controlPlaneIpAddress)
 		})
 
 		It("has linux curl packages available after import", func(ctx context.Context) {

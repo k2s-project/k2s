@@ -150,7 +150,10 @@ function Update-RolloutServiceMesh {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [string] $Namespace = 'rollout'
+        [string] $Namespace = 'rollout',
+
+        [Parameter(Mandatory = $false)]
+        [switch] $ForceRestart
     )
 
     $enhancedSecurityEnabled = Test-LinkerdServiceAvailability
@@ -174,8 +177,39 @@ function Update-RolloutServiceMesh {
         }
     }
 
-    $needsRestart = -not $annotationsInspected
+    $needsRestart = $ForceRestart.IsPresent -or -not $annotationsInspected
     $argoServerPatched = $false
+
+    # Inspect the actual pods so that a restart missed by a previous partially failed run is still performed.
+    $podsMatchMeshState = $false
+    $podsResult = Invoke-Kubectl -Params 'get', 'pods', '-n', $Namespace, '-o', 'json'
+    if ($podsResult.Success -and -not [string]::IsNullOrWhiteSpace(($podsResult.Output -join "`n"))) {
+        try {
+            $podsObj = ($podsResult.Output -join "`n") | ConvertFrom-Json
+            $podsMatchMeshState = $true
+            foreach ($pod in @($podsObj.items)) {
+                $podMeta = Get-SafeJsonProperty -Object $pod -PropertyName 'metadata'
+                if ($null -ne $podMeta.deletionTimestamp) { continue }
+                $podStatus = Get-SafeJsonProperty -Object $pod -PropertyName 'status'
+                if ($podStatus.phase -ne 'Running' -and $podStatus.phase -ne 'Pending') { continue }
+                $podAnnots = Get-SafeJsonProperty -Object $podMeta -PropertyName 'annotations'
+                if ((Get-SafeJsonProperty -Object $podAnnots -PropertyName 'linkerd.io/inject') -eq 'disabled') { continue }
+                $podSpec = Get-SafeJsonProperty -Object $pod -PropertyName 'spec'
+                $hasProxy = $null -ne (@($podSpec.containers) | Where-Object { $_.name -eq 'linkerd-proxy' } | Select-Object -First 1)
+                if ($hasProxy -ne $enhancedSecurityEnabled) {
+                    $podsMatchMeshState = $false
+                    break
+                }
+            }
+        }
+        catch {
+            Write-Log "[Rollout] Failed to parse pods JSON in namespace '$Namespace': $($_.Exception.Message)"
+            $podsMatchMeshState = $false
+        }
+    }
+    if (-not $podsMatchMeshState) {
+        $needsRestart = $true
+    }
 
     if ($enhancedSecurityEnabled) {
         if (-not $annotationsInspected -or $currentInject -ne 'enabled' -or $currentSkipOutbound -ne '8181') {
@@ -243,27 +277,34 @@ function Update-RolloutServiceMesh {
         }
 
         $serverResult = Invoke-Kubectl -Params 'get', 'deployment', 'argocd-server', '-n', $Namespace, '-o', 'json'
-        if ($serverResult.Success -and -not [string]::IsNullOrWhiteSpace(($serverResult.Output -join "`n"))) {
-            try {
-                $serverObj = ($serverResult.Output -join "`n") | ConvertFrom-Json
-                $spec = Get-SafeJsonProperty -Object $serverObj -PropertyName 'spec'
-                $template = Get-SafeJsonProperty -Object $spec -PropertyName 'template'
-                $templateMeta = Get-SafeJsonProperty -Object $template -PropertyName 'metadata'
-                $podAnnotations = Get-SafeJsonProperty -Object $templateMeta -PropertyName 'annotations'
-                $serverInject = Get-SafeJsonProperty -Object $podAnnotations -PropertyName 'linkerd.io/inject'
-                $serverSkipInbound = Get-SafeJsonProperty -Object $podAnnotations -PropertyName 'config.linkerd.io/skip-inbound-ports'
-                if ($null -ne $serverInject -or $null -ne $serverSkipInbound) {
-                    Write-Log '[Rollout] Removing Linkerd pod annotations from deployment argocd-server'
-                    $clearAnnotations = '{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"linkerd.io/inject\":null,\"config.linkerd.io/skip-inbound-ports\":null}}}}}'
-                    $patchRes = Invoke-Kubectl -Params 'patch', 'deployment', 'argocd-server', '-n', $Namespace, '-p', $clearAnnotations
-                    $patchRes.Output | Write-Log
-                    if (-not $patchRes.Success) { Write-Log "[Rollout] Warning: failed to remove Linkerd annotations from deployment 'argocd-server'" }
-                    $argoServerPatched = $true
-                }
-            }
-            catch {
-                Write-Log "[Rollout] Failed to parse deployment 'argocd-server' JSON: $($_.Exception.Message)"
-            }
+        if (-not $serverResult.Success -or [string]::IsNullOrWhiteSpace(($serverResult.Output -join "`n"))) {
+            throw "Failed to read deployment 'argocd-server' in namespace '$Namespace' to remove Linkerd annotations"
+        }
+        try {
+            $serverObj = ($serverResult.Output -join "`n") | ConvertFrom-Json
+            $spec = Get-SafeJsonProperty -Object $serverObj -PropertyName 'spec'
+            $template = Get-SafeJsonProperty -Object $spec -PropertyName 'template'
+            $templateMeta = Get-SafeJsonProperty -Object $template -PropertyName 'metadata'
+            $podAnnotations = Get-SafeJsonProperty -Object $templateMeta -PropertyName 'annotations'
+            $serverInject = Get-SafeJsonProperty -Object $podAnnotations -PropertyName 'linkerd.io/inject'
+            $serverSkipInbound = Get-SafeJsonProperty -Object $podAnnotations -PropertyName 'config.linkerd.io/skip-inbound-ports'
+        }
+        catch {
+            throw "Failed to parse deployment 'argocd-server' JSON: $($_.Exception.Message)"
+        }
+
+        # an explicit 'disabled' value is an operator opt-out and must be preserved
+        $removeInject = ($null -ne $serverInject) -and ($serverInject -ne 'disabled')
+        if ($removeInject -or $null -ne $serverSkipInbound) {
+            Write-Log '[Rollout] Removing Linkerd pod annotations from deployment argocd-server'
+            $annotationPatch = @()
+            if ($removeInject) { $annotationPatch += '\"linkerd.io/inject\":null' }
+            if ($null -ne $serverSkipInbound) { $annotationPatch += '\"config.linkerd.io/skip-inbound-ports\":null' }
+            $clearAnnotations = '{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{' + ($annotationPatch -join ',') + '}}}}}'
+            $patchRes = Invoke-Kubectl -Params 'patch', 'deployment', 'argocd-server', '-n', $Namespace, '-p', $clearAnnotations
+            $patchRes.Output | Write-Log
+            if (-not $patchRes.Success) { throw "Failed to remove Linkerd annotations from deployment 'argocd-server'" }
+            $argoServerPatched = $true
         }
     }
 

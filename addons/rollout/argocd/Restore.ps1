@@ -307,7 +307,7 @@ try {
     # Ensure ingress + linkerd integration is consistent with current cluster setup.
     if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Update.ps1')) {
         Write-Log "[AddonRestore] Running argocd Update.ps1" -Console
-        &"$PSScriptRoot\Update.ps1"
+        &"$PSScriptRoot\Update.ps1" -RestartWorkloads
     }
 }
 catch {

@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +44,26 @@ type MirrorRegistry struct {
 	Registry string `json:"registry"`
 	Server   string `json:"server"`
 	Mirror   string `json:"mirror"`
+}
+
+var addonSelectionsByOciPath sync.Map
+
+func registerAddonSelection(ociPath, addonName, implName string) {
+	selection := []string{addonName}
+	if implName != "" && implName != addonName {
+		selection = append(selection, implName)
+	}
+	absolutePath, err := filepath.Abs(ociPath)
+	Expect(err).ToNot(HaveOccurred(), "OCI archive path should resolve")
+	addonSelectionsByOciPath.Store(filepath.Clean(absolutePath), selection)
+}
+
+func addonSelectionForOciPath(ociPath string) []string {
+	absolutePath, err := filepath.Abs(ociPath)
+	Expect(err).ToNot(HaveOccurred(), "OCI archive path should resolve")
+	selection, ok := addonSelectionsByOciPath.Load(filepath.Clean(absolutePath))
+	Expect(ok).To(BeTrue(), "the requested addon implementation must be recorded before importing %s", ociPath)
+	return selection.([]string)
 }
 
 // GetAddonByName returns the addon with the given name from the list of all addons.
@@ -117,6 +138,7 @@ func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSu
 	proxyInUse, _ := DetectProxyUsage(ctx, suite)
 
 	restoreProxyEnvironment := RemoveProxyEnvironment()
+	DeferCleanup(restoreProxyEnvironment)
 	mirrors := ConfigJsonMirrorRegistries(suite)
 
 	RemoveAirGappedMirrorRuntimeFiles(ctx, suite, mirrors, controlPlaneIP)
@@ -149,6 +171,7 @@ func RemoveProxyEnvironment() func() {
 
 	keys := proxyEnvironmentKeys
 	originalValues := map[string]*string{}
+	var restoreOnce sync.Once
 
 	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {
@@ -163,16 +186,18 @@ func RemoveProxyEnvironment() func() {
 	}
 
 	return func() {
-		GinkgoWriter.Println("[AirGap] Restoring proxy environment variables")
-		for _, key := range keys {
-			value := originalValues[key]
-			if value == nil {
-				Expect(os.Unsetenv(key)).To(Succeed(), "should keep %s unset", key)
-				continue
-			}
+		restoreOnce.Do(func() {
+			GinkgoWriter.Println("[AirGap] Restoring proxy environment variables")
+			for _, key := range keys {
+				value := originalValues[key]
+				if value == nil {
+					Expect(os.Unsetenv(key)).To(Succeed(), "should keep %s unset", key)
+					continue
+				}
 
-			Expect(os.Setenv(key, *value)).To(Succeed(), "should restore %s", key)
-		}
+				Expect(os.Setenv(key, *value)).To(Succeed(), "should restore %s", key)
+			}
+		})
 	}
 }
 
@@ -270,6 +295,7 @@ func runtimeRegistryConfigName(registry string) string {
 // Returns the path to the exported OCI tar file.
 func ExportAddon(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, outputDir string) string {
 	if prebuilt, ok := usePrebuiltAddonOci(outputDir); ok {
+		registerAddonSelection(prebuilt, addonName, implName)
 		return prebuilt
 	}
 
@@ -317,6 +343,7 @@ func ExportAddon(ctx context.Context, suite *framework.K2sTestSuite, addonName s
 	}
 	GinkgoWriter.Println("=== EXPORT ADDON END ===")
 
+	registerAddonSelection(ociTarPath, addonName, implName)
 	return ociTarPath
 }
 
@@ -598,19 +625,20 @@ func VerifyResourcesCleanedUp(ctx context.Context, suite *framework.K2sTestSuite
 	GinkgoWriter.Println("=== VERIFY RESOURCES CLEANED UP END ===")
 }
 
-// ImportAddon imports all addons contained in an OCI tar file.
+// ImportAddon imports the addon or implementation requested by the matching export call.
 func ImportAddon(ctx context.Context, suite *framework.K2sTestSuite, ociTarPath string) {
-	ImportAddonsWithOmit(ctx, suite, ociTarPath, nil, nil)
+	ImportAddonsWithOmit(ctx, suite, ociTarPath, addonSelectionForOciPath(ociTarPath), nil)
 }
 
 // ImportAddonsWithOmit imports addons from an OCI tar file.
 //
 // addonArgs selects the addons/implementations to import as positional tokens exactly like on the
-// CLI (e.g. []string{"ingress", "nginx", "security"}); an empty slice imports everything.
+// CLI (e.g. []string{"ingress", "nginx", "security"}).
 // omitFlags are passed as repeated '--omit' options and make the importer skip the container images
 // of the omitted functionality. An image is only skipped when none of the SELECTED implementations
 // still requires it; the OCI artifact itself is never modified.
 func ImportAddonsWithOmit(ctx context.Context, suite *framework.K2sTestSuite, ociTarPath string, addonArgs []string, omitFlags []string) {
+	Expect(addonArgs).ToNot(BeEmpty(), "an addon or implementation must be selected for import")
 	GinkgoWriter.Println("=== IMPORT ADDON START ===")
 	GinkgoWriter.Printf("[Import] OCI tar file: %s\n", ociTarPath)
 	GinkgoWriter.Printf("[Import] Selected addons: %v\n", addonArgs)
@@ -630,6 +658,7 @@ func ImportAddonsWithOmit(ctx context.Context, suite *framework.K2sTestSuite, oc
 
 	GinkgoWriter.Printf("[Import] Executing 'k2s %s'\n", strings.Join(args, " "))
 	suite.K2sCli().MustExec(ctx, args...)
+	verifyStagedAddonFileInventory(suite.RootDir(), addonArgs)
 	GinkgoWriter.Println("[Import] Import command completed successfully")
 	GinkgoWriter.Println("=== IMPORT ADDON END ===")
 }
@@ -953,6 +982,7 @@ func AssertWindowsCurlContains(impl *addons.Implementation, destination string) 
 func ExportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, workingDir string, relativeOutputDir string) string {
 	if absOutputDir, err := filepath.Abs(filepath.Join(workingDir, relativeOutputDir)); err == nil {
 		if prebuilt, ok := usePrebuiltAddonOci(absOutputDir); ok {
+			registerAddonSelection(prebuilt, addonName, implName)
 			return prebuilt
 		}
 	}
@@ -995,6 +1025,7 @@ func ExportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite,
 		GinkgoWriter.Printf("[ExportRel] OCI tar file: %s (%d bytes)\n", ociTarPath, info.Size())
 	}
 	GinkgoWriter.Println("=== EXPORT ADDON (RELATIVE PATH) END ===")
+	registerAddonSelection(ociTarPath, addonName, implName)
 	return ociTarPath
 }
 
@@ -1004,7 +1035,13 @@ func ImportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite,
 	GinkgoWriter.Printf("[ImportRel] Working directory: %s\n", workingDir)
 	GinkgoWriter.Printf("[ImportRel] Relative file path: %s\n", relativeFilePath)
 
-	suite.K2sCli().WorkingDir(workingDir).MustExec(ctx, "addons", "import", "-f", relativeFilePath, "-o")
+	ociPath, err := filepath.Abs(filepath.Join(workingDir, relativeFilePath))
+	Expect(err).ToNot(HaveOccurred(), "[ImportRel] Failed to resolve OCI archive path")
+	addonArgs := addonSelectionForOciPath(ociPath)
+	args := append([]string{"addons", "import"}, addonArgs...)
+	args = append(args, "-f", relativeFilePath, "-o")
+	suite.K2sCli().WorkingDir(workingDir).MustExec(ctx, args...)
+	verifyStagedAddonFileInventory(suite.RootDir(), addonArgs)
 	GinkgoWriter.Println("[ImportRel] Import command completed successfully")
 	GinkgoWriter.Println("=== IMPORT ADDON (RELATIVE PATH) END ===")
 }

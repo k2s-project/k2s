@@ -20,6 +20,7 @@ import (
 	"github.com/k2s-project/k2s/test/e2e/addons/exportimport"
 	"github.com/k2s-project/k2s/test/framework"
 	"github.com/k2s-project/k2s/test/framework/dsl"
+	frameworkos "github.com/k2s-project/k2s/test/framework/os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -50,6 +51,10 @@ func TestMonitoringOfflineNodeImport(t *testing.T) {
 }
 
 var _ = BeforeSuite(func(ctx context.Context) {
+	rootDir, err := frameworkos.RootDir()
+	Expect(err).NotTo(HaveOccurred(), "repository root should be discoverable")
+	framework.RecoverStaleAddonBackups(rootDir)
+
 	suite = framework.Setup(ctx, framework.SystemMustBeRunning, framework.EnsureAddonsAreDisabled, framework.ClusterTestStepTimeout(offlineNodeImportTimeout))
 	k2s = dsl.NewK2s(suite)
 	controlPlaneIpAddress = suite.SetupInfo().Config.ControlPlane().IpAddress()
@@ -129,10 +134,13 @@ var _ = It("imports monitoring images onto added Linux workers and enables their
 
 	exportimport.CleanAddonResources(ctx, suite, k2s, monitoringImpl, controlPlaneIpAddress)
 	exportimport.VerifyResourcesCleanedUp(ctx, suite, k2s, monitoringImpl, controlPlaneIpAddress)
+	suite.K2sCli().MustExec(ctx, "image", "clean", "--nodes", strings.Join(nodeNames(linuxWorkers), ","), "-o")
+	expectMonitoringImageAbsentOnLinuxWorkers(ctx)
 	restoreProxy = exportimport.PrepareAirGappedAddonImport(ctx, suite, k2s, monitoringAddon, monitoringImpl, controlPlaneIpAddress)
 	exportimport.LogAirGapState(ctx, suite, k2s, monitoringAddon, monitoringImpl, controlPlaneIpAddress)
 
-	suite.K2sCli().MustExec(ctx, "addons", "import", "-f", exportedOciFile, "--nodes", strings.Join(importTargetNodeNames, ","))
+	suite.K2sCli().MustExec(ctx, "addons", "import", "monitoring", "-f", exportedOciFile, "--nodes", strings.Join(importTargetNodeNames, ","))
+	exportimport.VerifyStagedAddonFileInventory(suite.RootDir(), "monitoring", "monitoring")
 	expectMonitoringImageOnLinuxWorkers(ctx)
 
 	monitoringEnableTried = true
@@ -155,23 +163,40 @@ var _ = It("imports monitoring images onto added Linux workers and enables their
 })
 
 func expectMonitoringImageOnLinuxWorkers(ctx context.Context) {
-	images, err := suite.AddonsAdditionalInfo().GetImagesForAddonImplementation(*monitoringImpl)
-	Expect(err).NotTo(HaveOccurred(), "monitoring images should be collected from its implementation")
-
-	var nodeExporterImage string
-	for _, image := range images {
-		if strings.Contains(image, "prometheus/node-exporter") {
-			nodeExporterImage = image
-			break
-		}
-	}
-	Expect(nodeExporterImage).NotTo(BeEmpty(), "monitoring implementation should declare the Linux node-exporter image")
+	nodeExporterImage := monitoringNodeExporterImage()
 
 	for _, worker := range linuxWorkers {
 		command := fmt.Sprintf("sudo crictl images --output json | grep -Fq -- '%s'", strings.ReplaceAll(nodeExporterImage, "'", "'\\''"))
 		GinkgoWriter.Printf("Checking CRI-O image %q on Linux worker %q (%s)\n", nodeExporterImage, worker.Name, internalIP(worker))
 		suite.K2sCli().MustExec(ctx, "node", "exec", "-i", internalIP(worker), "-u", linuxWorkerUsername(worker), "-c", command, "-o")
 	}
+}
+
+func expectMonitoringImageAbsentOnLinuxWorkers(ctx context.Context) {
+	images, err := suite.AddonsAdditionalInfo().GetImagesForAddonImplementation(*monitoringImpl)
+	Expect(err).NotTo(HaveOccurred(), "monitoring images should be collected from its implementation")
+	Expect(images).NotTo(BeEmpty(), "monitoring implementation should declare images")
+
+	for _, worker := range linuxWorkers {
+		for _, image := range images {
+			command := fmt.Sprintf("! sudo crictl images --output json | grep -Fq -- '%s'", strings.ReplaceAll(image, "'", "'\\''"))
+			GinkgoWriter.Printf("Checking monitoring image %q is absent on Linux worker %q (%s)\n", image, worker.Name, internalIP(worker))
+			suite.K2sCli().MustExec(ctx, "node", "exec", "-i", internalIP(worker), "-u", linuxWorkerUsername(worker), "-c", command, "-o")
+		}
+	}
+}
+
+func monitoringNodeExporterImage() string {
+	images, err := suite.AddonsAdditionalInfo().GetImagesForAddonImplementation(*monitoringImpl)
+	Expect(err).NotTo(HaveOccurred(), "monitoring images should be collected from its implementation")
+
+	for _, image := range images {
+		if strings.Contains(image, "prometheus/node-exporter") {
+			return image
+		}
+	}
+	Fail("monitoring implementation should declare the Linux node-exporter image")
+	return ""
 }
 
 func linuxWorkerUsername(worker corev1.Node) string {

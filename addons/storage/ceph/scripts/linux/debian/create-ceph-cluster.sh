@@ -261,8 +261,8 @@ if [ -n "$PROXY" ]; then
 fi
 
 OFFLINE_PKG_DIR="$HOME/.storage"
-# Also check addon-specific storage folder (.storage-ceph) as fallback
-OFFLINE_PKG_DIR_ALT="$HOME/.storage-ceph"
+# Windows-host 'k2s addons import' stages the debian packages into ~/.<addon>_<implementation>
+OFFLINE_PKG_DIR_ALT="$HOME/.storage_ceph"
 
 # Collect .deb packages from both locations (primary first, then fallback)
 offline_debs=""
@@ -278,7 +278,7 @@ if [ -d "$OFFLINE_PKG_DIR_ALT" ]; then
             offline_debs="$offline_debs"$'\n'"$alt_debs"
         else
             offline_debs="$alt_debs"
-            log_info "Using addon-specific offline packages from $OFFLINE_PKG_DIR_ALT (primary $OFFLINE_PKG_DIR not found)"
+            log_info "Using addon-specific offline packages from $OFFLINE_PKG_DIR_ALT (no packages found in $OFFLINE_PKG_DIR)"
         fi
     fi
 fi
@@ -349,10 +349,10 @@ download_cephadm() {
 
 # Obtain the cephadm bootstrap binary. Prefer the binary staged offline into
 # ~/.storage/cephadm during 'k2s addons import' so air-gapped installs never depend on
-# download.ceph.com. Also check ~/.storage-ceph as fallback. Only fall back to downloading
+# download.ceph.com. Also check ~/.storage_ceph as fallback. Only fall back to downloading
 # when no valid offline copy is present.
 OFFLINE_CEPHADM="$HOME/.storage/cephadm"
-OFFLINE_CEPHADM_ALT="$HOME/.storage-ceph/cephadm"
+OFFLINE_CEPHADM_ALT="$HOME/.storage_ceph/cephadm"
 if [ -f "$OFFLINE_CEPHADM" ] && is_valid_cephadm "$OFFLINE_CEPHADM"; then
     log_info "Using offline cephadm bootstrap binary staged at $OFFLINE_CEPHADM"
     cp "$OFFLINE_CEPHADM" ./cephadm

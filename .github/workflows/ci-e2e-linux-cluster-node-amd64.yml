@@ -1,19 +1,19 @@
 # SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Linux-host cluster with an amd64 worker node added online and offline, on one GitHub-hosted runner.
+# Linux-host cluster with an amd64 worker node added offline and online, on one GitHub-hosted runner.
 #
 # - Job 'amd64-node-package' builds the amd64 node package (ci-amd64-node-package-build.yml).
 # Two Debian 13 amd64 guests (KVM) share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24:
 #   control plane: 4 GB RAM, K2s installed with --linux-only (same setup as ci-e2e-linux-cluster-node-arm64.yml).
-#   worker:        2 GB RAM, no K2s; 'k2s node add' without --node-package joins it, so the worker downloads its
-#                  packages and pulls its images itself (the runner NATs the guests to the internet).
+#   worker:        2 GB RAM, no K2s; 'k2s node add --node-package' joins it from the node package.
 # Checked: the node is Ready with the worker role and a cluster.json entry, flannel and kube-proxy run on it, a workload
 # runs there, 'k2s stop/start --node' work, and 'k2s node remove' removes it from the cluster, cluster.json and the worker.
-# Then the worker is added again offline from the node package (--node-package) and removed once more.
+# Then the worker is added again online (without --node-package: it downloads its packages and pulls its images itself,
+# the runner NATs the guests to the internet) and removed once more. Offline runs first because it fails faster.
 # Steps shared with ci-e2e-linux-cluster-node-arm64.yml are composite actions in .github/actions/.
 
-name: CI - E2E Linux Cluster with amd64 Node (online and offline)
+name: CI - E2E Linux Cluster with amd64 Node (offline and online)
 
 on:
   workflow_dispatch:
@@ -108,7 +108,18 @@ jobs:
         with:
           env-script: ${{ env.ENV_SCRIPT }}
 
-      - name: Add the amd64 worker online with k2s node add
+      - name: Copy the amd64 node package to the control plane
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          zip_path="$(find "$RUNNER_TEMP/node-package" -maxdepth 1 -name 'k2s-*-node-debian13-amd64.zip' | head -n 1)"
+          test -n "$zip_path" || { echo '::error::amd64 node package not found in the artifact'; exit 1; }
+          echo "Node package: $(basename "$zip_path") ($(du -h "$zip_path" | cut -f1))"
+          cp_vm push "$zip_path" node-package.zip
+
+      - name: Add the amd64 worker offline from the node package
         id: add
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 60
@@ -120,7 +131,7 @@ jobs:
             cat <<'EOF'
           set -euo pipefail
           cd ~/k2s
-          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --output
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip --output
           EOF
           } | cp_vm exec
 
@@ -150,7 +161,7 @@ jobs:
           done
           test "$running" -ge 2 || { echo "::error::expected flannel and kube-proxy running on $node, found $running running pods"; kube get pods -A -o wide; exit 1; }
 
-          # The node pulled its images online: a workload must run there.
+          # The node imported its images from the package: a workload must run there.
           kube run amd64-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
             --overrides="{\"spec\":{\"nodeSelector\":{\"kubernetes.io/hostname\":\"$node\"}}}" -- sh -c 'uname -m; sleep 5'
           kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/amd64-smoke --timeout=600s
@@ -183,25 +194,14 @@ jobs:
           EOF
           } | cp_vm exec
 
-      - name: Remove the online-added amd64 worker
+      - name: Remove the offline-added amd64 worker
         if: ${{ steps.kvm.outputs.available == 'true' }}
         uses: ./.github/actions/linux-cluster-node-remove
         timeout-minutes: 30
         with:
           env-script: ${{ env.ENV_SCRIPT }}
 
-      - name: Copy the amd64 node package to the control plane
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 30
-        run: |
-          set -euo pipefail
-          source "$ENV_SCRIPT"
-          zip_path="$(find "$RUNNER_TEMP/node-package" -maxdepth 1 -name 'k2s-*-node-debian13-amd64.zip' | head -n 1)"
-          test -n "$zip_path" || { echo '::error::amd64 node package not found in the artifact'; exit 1; }
-          echo "Node package: $(basename "$zip_path") ($(du -h "$zip_path" | cut -f1))"
-          cp_vm push "$zip_path" node-package.zip
-
-      - name: Re-add the amd64 worker offline from the node package
+      - name: Re-add the amd64 worker online
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 60
         run: |
@@ -212,19 +212,19 @@ jobs:
             cat <<'EOF'
           set -euo pipefail
           cd ~/k2s
-          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip --output
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --output
           kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
           kube wait --for=condition=Ready "node/$node" --timeout=600s
           test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
-            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the offline add"; exit 1; }
-          kube run amd64-offline-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
+            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the online add"; exit 1; }
+          kube run amd64-online-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
             --overrides="{\"spec\":{\"nodeSelector\":{\"kubernetes.io/hostname\":\"$node\"}}}" -- sh -c 'uname -m; sleep 5'
-          kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/amd64-offline-smoke --timeout=600s
-          kube delete pod amd64-offline-smoke --wait=true
+          kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/amd64-online-smoke --timeout=600s
+          kube delete pod amd64-online-smoke --wait=true
           EOF
           } | cp_vm exec
 
-      - name: Remove the offline-added amd64 worker
+      - name: Remove the online-added amd64 worker
         if: ${{ steps.kvm.outputs.available == 'true' }}
         uses: ./.github/actions/linux-cluster-node-remove
         timeout-minutes: 30

@@ -6,12 +6,13 @@
 # - Job 'arm64-node-package' builds the arm64 node package (ci-arm64-node-package-build.yml, native arm64).
 # - Job 'install-add-and-check' (ubuntu-24.04, amd64) runs two Debian 13 guests on the runner:
 #     control plane: amd64, KVM, 4 GB RAM. K2s is installed with --linux-only (same setup as ci-e2e-linux-cluster.yml).
-#     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add' joins it.
+#     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add --node-package' joins it.
 #   Both guests share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24.
 # - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64 and the worker role, flannel and
 #   kube-proxy run on it, and an arm64 workload runs there.
-# - 'k2s node remove' removes it (cluster, cluster.json, Kubernetes packages on the worker), and the worker is added
-#   again from the same package.
+# - 'k2s node remove' removes it (cluster, cluster.json, Kubernetes packages on the worker). Then the worker is added
+#   again online (without --node-package: it downloads its packages and pulls its images itself, the runner NATs the
+#   guests to the internet) and removed once more. Offline runs first because it fails faster.
 #
 # The arm64 package is built without GPU packages: the worker has no GPU and the test does not need them.
 # Steps shared with ci-e2e-linux-cluster-node-amd64.yml are composite actions in .github/actions/.
@@ -19,7 +20,7 @@
 # Why the arm64 worker is emulated: both nodes must share a network, so they run as guests on one runner, and the
 # GitHub-hosted arm64 runners offer no KVM. The amd64 runner runs the control plane with KVM and the worker under TCG.
 
-name: CI - E2E Linux Cluster with arm64 Node
+name: CI - E2E Linux Cluster with arm64 Node (offline and online)
 
 on:
   workflow_dispatch:
@@ -126,7 +127,7 @@ jobs:
           echo "Node package: $(basename "$zip_path") ($(du -h "$zip_path" | cut -f1))"
           cp_vm push "$zip_path" node-package.zip
 
-      - name: Add the arm64 worker with k2s node add
+      - name: Add the arm64 worker offline from the node package
         id: add
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 120
@@ -180,14 +181,14 @@ jobs:
           kube delete pod arm64-smoke --wait=true
           EOF
 
-      - name: Remove the arm64 worker
+      - name: Remove the offline-added arm64 worker
         if: ${{ steps.kvm.outputs.available == 'true' }}
         uses: ./.github/actions/linux-cluster-node-remove
         timeout-minutes: 30
         with:
           env-script: ${{ env.ENV_SCRIPT }}
 
-      - name: Re-add the arm64 worker from the same node package
+      - name: Re-add the arm64 worker online
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 120
         run: |
@@ -198,13 +199,25 @@ jobs:
             cat <<'EOF'
           set -euo pipefail
           cd ~/k2s
-          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip --output
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --output
           kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
           kube wait --for=condition=Ready "node/$node" --timeout=900s
           test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
-            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the re-add"; exit 1; }
+            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the online add"; exit 1; }
+          kube run arm64-online-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
+            --overrides="{\"spec\":{\"nodeSelector\":{\"kubernetes.io/hostname\":\"$node\"}}}" -- sh -c 'uname -m; sleep 5'
+          kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/arm64-online-smoke --timeout=900s
+          kube logs arm64-online-smoke | grep -qx aarch64 || { echo '::error::workload did not report aarch64'; exit 1; }
+          kube delete pod arm64-online-smoke --wait=true
           EOF
           } | cp_vm exec
+
+      - name: Remove the online-added arm64 worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-node-remove
+        timeout-minutes: 30
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
 
       - name: Collect diagnostics, stop guests, upload
         if: ${{ always() && steps.kvm.outputs.available == 'true' }}

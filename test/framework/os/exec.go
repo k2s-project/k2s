@@ -13,8 +13,8 @@ import (
 	"time"
 
 	//lint:ignore ST1001 test framework code
-	. "github.com/onsi/ginkgo/v2"
 	"github.com/k2s-project/k2s/internal/cli"
+	. "github.com/onsi/ginkgo/v2"
 
 	//lint:ignore ST1001 test framework code
 	. "github.com/onsi/gomega"
@@ -31,6 +31,7 @@ type CliExecutor struct {
 	dir              string
 	noStdOut         bool
 	useProxy         bool
+	hideArgs         bool
 }
 
 func NewCli(cliPath string, proxy string, timeout time.Duration, pollInterval time.Duration) *CliExecutor {
@@ -59,6 +60,11 @@ func (c *CliExecutor) NoStdOut() *CliExecutor {
 
 func (c *CliExecutor) UseProxy() *CliExecutor {
 	c.useProxy = true
+	return c
+}
+
+func (c *CliExecutor) HideArgs() *CliExecutor {
+	c.hideArgs = true
 	return c
 }
 
@@ -91,7 +97,12 @@ func (c *CliExecutor) Exec(ctx context.Context, cliArgs ...string) (string, int)
 		exitCodeMatcher = gexec.Exit(*c.expectedExitCode)
 	}
 
-	GinkgoWriter.Printf(">>> EXEC: %s %s\n", c.cliPath, strings.Join(cliArgs, " "))
+	loggedArgs := cliArgs
+	if c.hideArgs {
+		loggedArgs = []string{"[REDACTED]"}
+	}
+	commandDescription := c.cliPath + " " + strings.Join(loggedArgs, " ")
+	GinkgoWriter.Printf(">>> EXEC: %s\n", commandDescription)
 	GinkgoWriter.Printf(">>> EXEC: timeout=%v, pollInterval=%v, ctx=%v\n", c.timeout, c.pollInterval, ctx)
 	if deadline, ok := ctx.Deadline(); ok {
 		GinkgoWriter.Printf(">>> EXEC: context has deadline: %v (remaining: %v)\n", deadline, time.Until(deadline))
@@ -102,7 +113,7 @@ func (c *CliExecutor) Exec(ctx context.Context, cliArgs ...string) (string, int)
 	Eventually(session,
 		c.timeout,
 		c.pollInterval,
-		ctx).Should(exitCodeMatcher, "Command '%v' exited with code '%d'", session.Command, session.ExitCode())
+		ctx).Should(exitCodeMatcher, "Command '%s' exited with code '%d'", commandDescription, session.ExitCode())
 
 	return string(session.Out.Contents()), session.ExitCode()
 }

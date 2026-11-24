@@ -102,20 +102,31 @@ foreach ($url in @(%[2]s)) {
 }
 
 var k2sProxyRegex = regexp.MustCompile(`(?m)^\s*Proxy:\s*(\S+)`)
+var proxyCredentialsRegex = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
+
+func redactProxyCredentials(proxy string) string {
+	redacted := proxyCredentialsRegex.ReplaceAllString(proxy, "$1***@")
+	if !strings.Contains(redacted, "://") {
+		if at := strings.LastIndex(redacted, "@"); at > 0 {
+			return "***" + redacted[at:]
+		}
+	}
+	return redacted
+}
 
 // DetectProxyUsage determines whether the machine is behind a proxy. This is the case when a K2s upstream proxy is
 // configured (k2s system proxy show) or a proxy was handed to the test process via environment variables.
 // Call it BEFORE RemoveProxyEnvironment, which unsets those variables.
 func DetectProxyUsage(ctx context.Context, suite *framework.K2sTestSuite) (inUse bool, reasons []string) {
 	for _, key := range proxyEnvironmentKeys {
-		if value := os.Getenv(key); value != "" {
-			reasons = append(reasons, fmt.Sprintf("environment variable %s=%s", key, value))
+		if os.Getenv(key) != "" {
+			reasons = append(reasons, fmt.Sprintf("environment variable %s is set", key))
 		}
 	}
 
 	output := suite.K2sCli().NoStdOut().MustExec(ctx, "system", "proxy", "show")
 	if match := k2sProxyRegex.FindStringSubmatch(output); match != nil && !strings.HasPrefix(match[1], "<") {
-		reasons = append(reasons, "K2s upstream proxy configured: "+match[1])
+		reasons = append(reasons, "K2s upstream proxy configured: "+redactProxyCredentials(match[1]))
 	}
 
 	inUse = len(reasons) > 0
@@ -160,21 +171,21 @@ func ResetK2sProxyForAirGap(ctx context.Context, suite *framework.K2sTestSuite) 
 		GinkgoWriter.Println("=== RESET K2S PROXY END ===")
 		return func() {}
 	}
-	GinkgoWriter.Printf("[AirGap] K2s proxy '%s' with overrides %v will be reset and restored after the air-gapped phase\n", settings.proxy, settings.overrides)
+	GinkgoWriter.Printf("[AirGap] K2s proxy '%s' with overrides %v will be reset and restored after the air-gapped phase\n", redactProxyCredentials(settings.proxy), settings.overrides)
 
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
-			GinkgoWriter.Printf("[AirGap] Restoring the K2s proxy '%s' and overrides %v\n", settings.proxy, settings.overrides)
+			GinkgoWriter.Printf("[AirGap] Restoring the K2s proxy '%s' and overrides %v\n", redactProxyCredentials(settings.proxy), settings.overrides)
 			restoreCtx := context.Background()
-			suite.K2sCli().MustExec(restoreCtx, "system", "proxy", "set", settings.proxy)
+			suite.K2sCli().HideArgs().NoStdOut().MustExec(restoreCtx, "system", "proxy", "set", settings.proxy)
 			if len(settings.overrides) > 0 {
-				suite.K2sCli().MustExec(restoreCtx, append([]string{"system", "proxy", "override", "add"}, settings.overrides...)...)
+				suite.K2sCli().HideArgs().NoStdOut().MustExec(restoreCtx, append([]string{"system", "proxy", "override", "add"}, settings.overrides...)...)
 			}
 
 			restored := readK2sProxySettings(restoreCtx, suite)
-			GinkgoWriter.Printf("[AirGap] K2s proxy after restore: '%s' overrides %v\n", restored.proxy, restored.overrides)
-			Expect(restored.proxy).To(Equal(settings.proxy), "the K2s proxy must be restored for the tests that run afterwards")
+			GinkgoWriter.Printf("[AirGap] K2s proxy after restore: '%s' overrides %v\n", redactProxyCredentials(restored.proxy), restored.overrides)
+			Expect(restored.proxy == settings.proxy).To(BeTrue(), "the K2s proxy must be restored for the tests that run afterwards")
 			Expect(restored.overrides).To(ConsistOf(settings.overrides), "the K2s proxy overrides must be restored")
 		})
 	}

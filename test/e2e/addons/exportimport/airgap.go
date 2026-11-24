@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/k2s-project/k2s/internal/core/addons"
 	"github.com/k2s-project/k2s/test/framework"
@@ -49,6 +51,71 @@ const (
 	backupManifestName = "manifest.json"
 )
 
+var stagedAddonFileInventories sync.Map
+
+func addonInventoryKey(addonName, implName string) string {
+	return addonName + "/" + implName
+}
+
+func captureAddonFileInventory(addonDir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(addonDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(addonDir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	sort.Strings(files)
+	return files, err
+}
+
+func verifyStagedAddonFileInventory(rootDir string, addonArgs []string) {
+	stagedAddonFileInventories.Range(func(key, value any) bool {
+		addonName, implName, ok := strings.Cut(key.(string), "/")
+		if !ok {
+			return true
+		}
+		selected := false
+		for i, arg := range addonArgs {
+			if arg != addonName {
+				continue
+			}
+			if implName == addonName || i+1 < len(addonArgs) && addonArgs[i+1] == implName {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			return true
+		}
+
+		expected := value.([]string)
+		addonDir := filepath.Join(rootDir, "addons", addonName)
+		actual, err := captureAddonFileInventory(addonDir)
+		Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to capture imported addon files for %s", addonName)
+		Expect(actual).To(Equal(expected), "[AirGap] imported addon file inventory for %s/%s must match the original", addonName, implName)
+		stagedAddonFileInventories.Delete(key)
+		return true
+	})
+}
+
+// VerifyStagedAddonFileInventory checks that importing restored every original addon file.
+func VerifyStagedAddonFileInventory(rootDir, addonName, implName string) {
+	addonArgs := []string{addonName}
+	if implName != addonName {
+		addonArgs = append(addonArgs, implName)
+	}
+	verifyStagedAddonFileInventory(rootDir, addonArgs)
+}
+
 func newHostBackup(rootDir string) (*hostBackup, error) {
 	tmpParent := filepath.Join(rootDir, "tmp")
 	if err := os.MkdirAll(tmpParent, 0o755); err != nil {
@@ -70,29 +137,6 @@ func (b *hostBackup) writeManifest() error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(b.dir, backupManifestName), content, 0o644)
-}
-
-// recoverStaleBackups restores originals from backups of earlier runs that never got restored.
-// Originals that exist again are never overwritten; such a backup is kept and reported.
-func recoverStaleBackups(rootDir string) {
-	staleDirs, _ := filepath.Glob(filepath.Join(rootDir, "tmp", backupDirPrefix+"*"))
-	for _, dir := range staleDirs {
-		content, err := os.ReadFile(filepath.Join(dir, backupManifestName))
-		if err != nil {
-			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s has no readable manifest, leaving it untouched: %v\n", dir, err)
-			continue
-		}
-		var items []backupItem
-		if err := json.Unmarshal(content, &items); err != nil {
-			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s has an invalid manifest, leaving it untouched: %v\n", dir, err)
-			continue
-		}
-		GinkgoWriter.Printf("[AirGap] Found stale backup %s of an earlier, aborted run, restoring %d item(s)\n", dir, len(items))
-		stale := &hostBackup{dir: dir, items: items}
-		if err := stale.restore(false); err != nil {
-			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s could not be fully restored: %v\n", dir, err)
-		}
-	}
 }
 
 // move moves path (file or folder) into the backup directory. A non-existing path is only logged.
@@ -198,13 +242,30 @@ func StageAddonRemovedFromHost(rootDir string, addon *addons.Addon, impl *addons
 	if rel, err := filepath.Rel(addonsRoot, addonFolder); err != nil || rel == "." || strings.HasPrefix(rel, "..") || rel == "common" {
 		Fail(fmt.Sprintf("[AirGap] refusing to delete unexpected addon folder '%s'", addonFolder))
 	}
-	toRemove := append([]string{addonFolder}, windowsCurlPackagePaths(rootDir, impl)...)
+	toRemove := []string{addonFolder}
+	if addonFolder != filepath.Join(addonsRoot, addon.Metadata.Name) {
+		addonRoot := filepath.Join(addonsRoot, addon.Metadata.Name)
+		rootEntries, err := os.ReadDir(addonRoot)
+		Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to list addon root %s", addonRoot)
+		for _, entry := range rootEntries {
+			if !entry.IsDir() {
+				toRemove = append(toRemove, filepath.Join(addonRoot, entry.Name()))
+			}
+		}
+	}
+	toRemove = append(toRemove, windowsCurlPackagePaths(rootDir, impl)...)
 
-	recoverStaleBackups(rootDir)
+	framework.RecoverStaleAddonBackups(rootDir)
+
+	inventory, err := captureAddonFileInventory(filepath.Join(addonsRoot, addon.Metadata.Name))
+	Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to capture original addon file inventory")
 
 	backup, err := newHostBackup(rootDir)
 	Expect(err).ToNot(HaveOccurred())
+	inventoryKey := addonInventoryKey(addon.Metadata.Name, impl.Name)
+	stagedAddonFileInventories.Store(inventoryKey, inventory)
 	DeferCleanup(func() {
+		defer stagedAddonFileInventories.Delete(inventoryKey)
 		Expect(backup.restore(true)).To(Succeed(), "original addon files must be restored to avoid a modified K2s directory")
 	})
 
@@ -398,4 +459,3 @@ func VerifyNoNonCoreImagesInContainerRuntimes(ctx context.Context, suite *framew
 	GinkgoWriter.Println("[AirGap] VERIFIED: only core Kubernetes images are in the container runtimes")
 	GinkgoWriter.Println("=== VERIFY NO ADDON IMAGES IN CONTAINER RUNTIMES END ===")
 }
-

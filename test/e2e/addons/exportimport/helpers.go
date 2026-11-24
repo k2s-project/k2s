@@ -261,6 +261,10 @@ func runtimeRegistryConfigName(registry string) string {
 // ExportAddon exports a single addon (or implementation) to an OCI tar file.
 // Returns the path to the exported OCI tar file.
 func ExportAddon(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, outputDir string) string {
+	if prebuilt, ok := usePrebuiltAddonOci(outputDir); ok {
+		return prebuilt
+	}
+
 	GinkgoWriter.Println("=== EXPORT ADDON START ===")
 	GinkgoWriter.Printf("[Export] Addon: %s\n", addonName)
 	if implName != "" && implName != addonName {
@@ -939,6 +943,12 @@ func AssertWindowsCurlContains(impl *addons.Implementation, destination string) 
 
 // exports a single addon using a relative directory path.
 func ExportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, workingDir string, relativeOutputDir string) string {
+	if absOutputDir, err := filepath.Abs(filepath.Join(workingDir, relativeOutputDir)); err == nil {
+		if prebuilt, ok := usePrebuiltAddonOci(absOutputDir); ok {
+			return prebuilt
+		}
+	}
+
 	GinkgoWriter.Println("=== EXPORT ADDON (RELATIVE PATH) START ===")
 	GinkgoWriter.Printf("[ExportRel] Addon: %s\n", addonName)
 	if implName != "" && implName != addonName {

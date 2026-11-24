@@ -114,7 +114,13 @@ func verifyStagedAddonFileInventory(rootDir string, addonArgs []string) {
 	})
 }
 
+// intentionalExportFile reports files that the export adds on purpose and that therefore do not exist in the original
+// addon folder. path is relative to addons/<addonName>; for addons with several implementations (e.g. storage) it
+// starts with the implementation folder (smb/manifests/gitops-sync/...), which is stripped before matching.
 func intentionalExportFile(addonName, implName, path string) bool {
+	if implName != addonName {
+		path = strings.TrimPrefix(path, implName+"/")
+	}
 	return strings.HasPrefix(path, "manifests/gitops-sync/") ||
 		(addonName == "storage" && implName == "ceph" && strings.HasPrefix(path, "manifests/smb-shared/"))
 }

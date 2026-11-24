@@ -121,7 +121,7 @@ func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSu
 	VerifyAirGappedMirrorsRemoved(ctx, suite, mirrors, controlPlaneIP)
 
 	RemoveAllAddonImages(ctx, suite, k2sDsl)
-	VerifyNoNonCoreImagesInContainerRuntimes(ctx, suite, k2sDsl, impl)
+	VerifyNoNonCoreImagesInContainerRuntimes(ctx, suite, k2sDsl, addon, impl)
 
 	RemoveAddonPackagesFromControlPlane(ctx, suite, k2sDsl, impl, controlPlaneIP)
 	StageAddonRemovedFromHost(suite.RootDir(), addon, impl)

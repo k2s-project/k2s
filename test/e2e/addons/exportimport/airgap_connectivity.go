@@ -198,8 +198,9 @@ func LogAirGapState(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *
 	for i, image := range images {
 		GinkgoWriter.Printf("[AirGapState]   [%d] %s\n", i, image)
 	}
-	if addonImages, err := suite.AddonsAdditionalInfo().GetImagesForAddonImplementation(*impl); err == nil {
-		for _, image := range k2sDsl.FilterOutK8sImages(addonImages) {
+	// Must not read the addon folder when it is absent: that terminates the test process.
+	if addonImages, known := addonNonCoreImages(suite, k2sDsl, addon, impl); known {
+		for _, image := range addonImages {
 			present := false
 			for _, onNode := range images {
 				if strings.Contains(onNode, image) {
@@ -210,7 +211,7 @@ func LogAirGapState(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *
 			GinkgoWriter.Printf("[AirGapState] addon image %s -> present=%v\n", image, present)
 		}
 	} else {
-		GinkgoWriter.Printf("[AirGapState] WARNING: cannot determine addon images: %v\n", err)
+		GinkgoWriter.Println("[AirGapState] addon images not listed: addon folder is absent and its images were not determined earlier")
 	}
 
 	GinkgoWriter.Println("[AirGapState] --- registry mirror configuration (cfg/config.json, CRI-O drop-ins) ---")

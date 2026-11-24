@@ -6,6 +6,7 @@ package exportimport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -38,20 +39,59 @@ type hostBackup struct {
 }
 
 type backupItem struct {
-	original string
-	backup   string
+	Original string `json:"original"`
+	Backup   string `json:"backup"`
 }
+
+const (
+	backupDirPrefix    = "airgap-backup-"
+	backupManifestName = "manifest.json"
+)
 
 func newHostBackup(rootDir string) (*hostBackup, error) {
 	tmpParent := filepath.Join(rootDir, "tmp")
 	if err := os.MkdirAll(tmpParent, 0o755); err != nil {
 		return nil, fmt.Errorf("[AirGap] failed to create tmp directory %s: %w", tmpParent, err)
 	}
-	dir, err := os.MkdirTemp(tmpParent, "airgap-backup-")
+	dir, err := os.MkdirTemp(tmpParent, backupDirPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("[AirGap] failed to create backup directory under %s: %w", tmpParent, err)
 	}
-	return &hostBackup{dir: dir}, nil
+	b := &hostBackup{dir: dir}
+	return b, b.writeManifest()
+}
+
+// writeManifest persists what was moved, so that a later run can restore the originals even if this process
+// terminated abruptly (e.g. a log.Fatal in a helper) and could not run its cleanup.
+func (b *hostBackup) writeManifest() error {
+	content, err := json.MarshalIndent(b.items, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(b.dir, backupManifestName), content, 0o644)
+}
+
+// recoverStaleBackups restores originals from backups of earlier runs that never got restored.
+// Originals that exist again are never overwritten; such a backup is kept and reported.
+func recoverStaleBackups(rootDir string) {
+	staleDirs, _ := filepath.Glob(filepath.Join(rootDir, "tmp", backupDirPrefix+"*"))
+	for _, dir := range staleDirs {
+		content, err := os.ReadFile(filepath.Join(dir, backupManifestName))
+		if err != nil {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s has no readable manifest, leaving it untouched: %v\n", dir, err)
+			continue
+		}
+		var items []backupItem
+		if err := json.Unmarshal(content, &items); err != nil {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s has an invalid manifest, leaving it untouched: %v\n", dir, err)
+			continue
+		}
+		GinkgoWriter.Printf("[AirGap] Found stale backup %s of an earlier, aborted run, restoring %d item(s)\n", dir, len(items))
+		stale := &hostBackup{dir: dir, items: items}
+		if err := stale.restore(false); err != nil {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s could not be fully restored: %v\n", dir, err)
+		}
+	}
 }
 
 // move moves path (file or folder) into the backup directory. A non-existing path is only logged.
@@ -68,40 +108,51 @@ func (b *hostBackup) move(path string) error {
 	if err := renameWithRetry(path, backupPath); err != nil {
 		return fmt.Errorf("[AirGap] failed to move %s to backup: %w", path, err)
 	}
-	b.items = append(b.items, backupItem{original: path, backup: backupPath})
+	b.items = append(b.items, backupItem{Original: path, Backup: backupPath})
+	if err := b.writeManifest(); err != nil {
+		return fmt.Errorf("[AirGap] failed to write backup manifest: %w", err)
+	}
 	return nil
 }
 
-// restore puts the original files back (replacing whatever the import created) and removes the backup directory.
+// restore puts the original files back and removes the backup directory.
+// With replaceExisting, whatever exists at the original location (e.g. created by the import) is replaced;
+// otherwise an existing original is kept and its backup is preserved.
 // The backup directory is preserved when restoring is incomplete so nothing gets lost.
-func (b *hostBackup) restore() error {
+func (b *hostBackup) restore(replaceExisting bool) error {
 	GinkgoWriter.Printf("[AirGap] Restoring %d original item(s) from %s\n", len(b.items), b.dir)
 
 	var errs []error
 	remaining := b.items[:0:0]
 	for i := len(b.items) - 1; i >= 0; i-- {
 		item := b.items[i]
-		if _, err := os.Stat(item.original); err == nil {
-			GinkgoWriter.Printf("[AirGap]   removing imported %s before restoring the original\n", item.original)
-			if rmErr := removeDirWithRetry(item.original); rmErr != nil {
-				errs = append(errs, fmt.Errorf("failed to remove %s: %w", item.original, rmErr))
+		if _, err := os.Stat(item.Original); err == nil {
+			if !replaceExisting {
+				errs = append(errs, fmt.Errorf("%s exists again, its backup %s is kept", item.Original, item.Backup))
+				remaining = append(remaining, item)
+				continue
+			}
+			GinkgoWriter.Printf("[AirGap]   removing imported %s before restoring the original\n", item.Original)
+			if rmErr := removeDirWithRetry(item.Original); rmErr != nil {
+				errs = append(errs, fmt.Errorf("failed to remove %s: %w", item.Original, rmErr))
 				remaining = append(remaining, item)
 				continue
 			}
 		}
-		if err := os.MkdirAll(filepath.Dir(item.original), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(item.Original), 0o755); err != nil {
 			errs = append(errs, err)
 			remaining = append(remaining, item)
 			continue
 		}
-		if err := renameWithRetry(item.backup, item.original); err != nil {
-			errs = append(errs, fmt.Errorf("failed to restore %s: %w", item.original, err))
+		if err := renameWithRetry(item.Backup, item.Original); err != nil {
+			errs = append(errs, fmt.Errorf("failed to restore %s: %w", item.Original, err))
 			remaining = append(remaining, item)
 			continue
 		}
-		GinkgoWriter.Printf("[AirGap]   restored %s\n", item.original)
+		GinkgoWriter.Printf("[AirGap]   restored %s\n", item.Original)
 	}
 	b.items = remaining
+	_ = b.writeManifest()
 
 	if len(errs) > 0 {
 		GinkgoWriter.Printf("[AirGap] Restore incomplete, backup preserved in %s\n", b.dir)
@@ -148,10 +199,12 @@ func StageAddonRemovedFromHost(rootDir string, addon *addons.Addon, impl *addons
 	}
 	toRemove := append([]string{addonFolder}, windowsCurlPackagePaths(rootDir, impl)...)
 
+	recoverStaleBackups(rootDir)
+
 	backup, err := newHostBackup(rootDir)
 	Expect(err).ToNot(HaveOccurred())
 	DeferCleanup(func() {
-		Expect(backup.restore()).To(Succeed(), "original addon files must be restored to avoid a modified K2s directory")
+		Expect(backup.restore(true)).To(Succeed(), "original addon files must be restored to avoid a modified K2s directory")
 	})
 
 	_, statErr := os.Stat(addonFolder)
@@ -187,9 +240,30 @@ func RemoveAddonPackagesFromControlPlane(ctx context.Context, suite *framework.K
 	GinkgoWriter.Printf("[AirGap] VERIFIED absent before import: control plane folder .%s\n", impl.ExportDirectoryName)
 }
 
+var addonImageCache = map[string][]string{}
+
+// addonNonCoreImages returns the non-core images declared by the addon implementation. Determining them reads files
+// of the addon folder and terminates the whole test process (log.Fatal) when that folder is absent, so the result is
+// cached while the folder still exists (PrepareAirGappedAddonImport runs this before the folder is removed).
+// known is false when the images cannot be determined because the folder is absent and nothing was cached.
+func addonNonCoreImages(suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, addon *addons.Addon, impl *addons.Implementation) (images []string, known bool) {
+	key := addon.Metadata.Name + "/" + impl.Name
+	if cached, ok := addonImageCache[key]; ok {
+		return cached, true
+	}
+	if _, err := os.Stat(AddonFolderPath(suite.RootDir(), addon, impl)); err != nil {
+		return nil, false
+	}
+
+	allImages, err := suite.AddonsAdditionalInfo().GetImagesForAddonImplementation(*impl)
+	Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to determine images of implementation %s", impl.Name)
+	addonImageCache[key] = k2sDsl.FilterOutK8sImages(allImages)
+	return addonImageCache[key], true
+}
+
 // VerifyNoNonCoreImagesInContainerRuntimes asserts that the container runtimes of all nodes only contain core Kubernetes images,
 // and that none of the addon's own images is present.
-func VerifyNoNonCoreImagesInContainerRuntimes(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, impl *addons.Implementation) {
+func VerifyNoNonCoreImagesInContainerRuntimes(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, addon *addons.Addon, impl *addons.Implementation) {
 	GinkgoWriter.Println("=== VERIFY NO ADDON IMAGES IN CONTAINER RUNTIMES START ===")
 
 	nonCoreImages := k2sDsl.GetNonK8sImagesFromNodes(ctx)
@@ -199,12 +273,13 @@ func VerifyNoNonCoreImagesInContainerRuntimes(ctx context.Context, suite *framew
 	}
 	Expect(nonCoreImages).To(BeEmpty(), "only core Kubernetes images may be present in the container runtimes before an air-gapped import")
 
-	allAddonImages, err := suite.AddonsAdditionalInfo().GetImagesForAddonImplementation(*impl)
-	Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to determine images of implementation %s", impl.Name)
-	addonImages := k2sDsl.FilterOutK8sImages(allAddonImages)
-	if len(addonImages) == 0 {
+	addonImages, known := addonNonCoreImages(suite, k2sDsl, addon, impl)
+	switch {
+	case !known:
+		GinkgoWriter.Printf("[AirGap] Images of '%s' cannot be determined because its addon folder is absent, relying on the non-core image check above\n", impl.Name)
+	case len(addonImages) == 0:
 		GinkgoWriter.Printf("[AirGap] Implementation '%s' declares no non-core images\n", impl.Name)
-	} else {
+	default:
 		VerifyImagesAbsentFromNodes(ctx, k2sDsl, addonImages, "air-gapped precondition before import")
 	}
 

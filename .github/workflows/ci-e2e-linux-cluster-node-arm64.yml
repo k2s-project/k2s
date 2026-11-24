@@ -136,7 +136,7 @@ jobs:
           cp_vm exec <<EOF
           set -euo pipefail
           cd ~/k2s
-          sudo ./k2s node add --ip-addr $WK_IP --username debian --node-package /home/debian/node-package.zip
+          sudo ./k2s node add --ip-addr $WK_IP --username debian --node-package /home/debian/node-package.zip --output
           EOF
 
       - name: Check the arm64 node joined and runs workloads
@@ -198,7 +198,7 @@ jobs:
             cat <<'EOF'
           set -euo pipefail
           cd ~/k2s
-          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip --output
           kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
           kube wait --for=condition=Ready "node/$node" --timeout=900s
           test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \

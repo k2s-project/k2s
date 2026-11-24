@@ -162,6 +162,7 @@ function Update-RolloutServiceMesh {
     $currentSkipOutbound = $null
     $annotationsInspected = $false
 
+    $nsAnnotations = $null
     $nsResult = Invoke-Kubectl -Params 'get', 'namespace', $Namespace, '-o', 'json'
     if ($nsResult.Success -and -not [string]::IsNullOrWhiteSpace(($nsResult.Output -join "`n"))) {
         try {
@@ -177,7 +178,11 @@ function Update-RolloutServiceMesh {
         }
     }
 
-    $needsRestart = $ForceRestart.IsPresent -or -not $annotationsInspected
+    # marker persisted on the namespace until all workload restarts succeeded, so a partially failed run is retried
+    $restartPendingAnnotation = 'k2s.io/rollout-restart-pending'
+    $restartPending = $null -ne (Get-SafeJsonProperty -Object $nsAnnotations -PropertyName $restartPendingAnnotation)
+
+    $needsRestart = $ForceRestart.IsPresent -or -not $annotationsInspected -or $restartPending
     $argoServerPatched = $false
 
     # Inspect the actual pods so that a restart missed by a previous partially failed run is still performed.
@@ -189,14 +194,21 @@ function Update-RolloutServiceMesh {
             $podsMatchMeshState = $true
             foreach ($pod in @($podsObj.items)) {
                 $podMeta = Get-SafeJsonProperty -Object $pod -PropertyName 'metadata'
-                if ($null -ne $podMeta.deletionTimestamp) { continue }
+                if ($null -ne (Get-SafeJsonProperty -Object $podMeta -PropertyName 'deletionTimestamp')) { continue }
+
+                # only pods of Deployments/StatefulSets are restarted below, so other pods (e.g. Jobs) are not compared
+                $ownerKinds = @(@(Get-SafeJsonProperty -Object $podMeta -PropertyName 'ownerReferences') | Where-Object { $null -ne $_ } | ForEach-Object { Get-SafeJsonProperty -Object $_ -PropertyName 'kind' })
+                if ($ownerKinds -notcontains 'ReplicaSet' -and $ownerKinds -notcontains 'StatefulSet') { continue }
+
                 $podStatus = Get-SafeJsonProperty -Object $pod -PropertyName 'status'
-                if ($podStatus.phase -ne 'Running' -and $podStatus.phase -ne 'Pending') { continue }
+                $podPhase = Get-SafeJsonProperty -Object $podStatus -PropertyName 'phase'
+                if ($podPhase -ne 'Running' -and $podPhase -ne 'Pending') { continue }
                 $podAnnots = Get-SafeJsonProperty -Object $podMeta -PropertyName 'annotations'
                 if ((Get-SafeJsonProperty -Object $podAnnots -PropertyName 'linkerd.io/inject') -eq 'disabled') { continue }
                 $podSpec = Get-SafeJsonProperty -Object $pod -PropertyName 'spec'
                 # linkerd-proxy runs in initContainers when native sidecar mode is enabled
-                $hasProxy = $null -ne (@($podSpec.containers) + @($podSpec.initContainers) | Where-Object { $_.name -eq 'linkerd-proxy' } | Select-Object -First 1)
+                $podContainers = @(@(Get-SafeJsonProperty -Object $podSpec -PropertyName 'containers') + @(Get-SafeJsonProperty -Object $podSpec -PropertyName 'initContainers')) | Where-Object { $null -ne $_ }
+                $hasProxy = $null -ne ($podContainers | Where-Object { (Get-SafeJsonProperty -Object $_ -PropertyName 'name') -eq 'linkerd-proxy' } | Select-Object -First 1)
                 if ($hasProxy -ne $enhancedSecurityEnabled) {
                     $podsMatchMeshState = $false
                     break
@@ -310,13 +322,33 @@ function Update-RolloutServiceMesh {
     }
 
     if ($needsRestart) {
+        $markerSet = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, "$restartPendingAnnotation=true", '--overwrite'
+        if (-not $markerSet.Success) { Write-Log "[Rollout] Warning: failed to set restart-pending marker on namespace '$Namespace'" }
+
+        $restartFailed = $false
         $rd = Invoke-Kubectl -Params 'rollout', 'restart', 'deployment', '-n', $Namespace
         $rd.Output | Write-Log
-        if (-not $rd.Success) { Write-Log "[Rollout] Warning: failed to restart deployments in namespace '$Namespace'" }
+        if (-not $rd.Success) {
+            $restartFailed = $true
+            Write-Log "[Rollout] Warning: failed to restart deployments in namespace '$Namespace'"
+        }
 
         $rs = Invoke-Kubectl -Params 'rollout', 'restart', 'statefulset', '-n', $Namespace
         $rs.Output | Write-Log
-        if (-not $rs.Success) { Write-Log "[Rollout] Warning: failed to restart statefulsets in namespace '$Namespace'" }
+        if (-not $rs.Success) {
+            $restartFailed = $true
+            Write-Log "[Rollout] Warning: failed to restart statefulsets in namespace '$Namespace'"
+        }
+
+        if ($restartFailed) {
+            if ($ForceRestart.IsPresent) {
+                throw "Failed to restart workloads in namespace '$Namespace'"
+            }
+        }
+        else {
+            $markerCleared = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, "$restartPendingAnnotation-"
+            if (-not $markerCleared.Success) { Write-Log "[Rollout] Warning: failed to remove restart-pending marker from namespace '$Namespace'" }
+        }
 
         (Invoke-Kubectl -Params 'rollout', 'status', 'deployment', '-n', $Namespace, '--timeout', '60s').Output | Write-Log
         (Invoke-Kubectl -Params 'rollout', 'status', 'statefulset', '-n', $Namespace, '--timeout', '60s').Output | Write-Log

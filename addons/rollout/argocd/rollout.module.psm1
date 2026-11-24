@@ -195,7 +195,8 @@ function Update-RolloutServiceMesh {
                 $podAnnots = Get-SafeJsonProperty -Object $podMeta -PropertyName 'annotations'
                 if ((Get-SafeJsonProperty -Object $podAnnots -PropertyName 'linkerd.io/inject') -eq 'disabled') { continue }
                 $podSpec = Get-SafeJsonProperty -Object $pod -PropertyName 'spec'
-                $hasProxy = $null -ne (@($podSpec.containers) | Where-Object { $_.name -eq 'linkerd-proxy' } | Select-Object -First 1)
+                # linkerd-proxy runs in initContainers when native sidecar mode is enabled
+                $hasProxy = $null -ne (@($podSpec.containers) + @($podSpec.initContainers) | Where-Object { $_.name -eq 'linkerd-proxy' } | Select-Object -First 1)
                 if ($hasProxy -ne $enhancedSecurityEnabled) {
                     $podsMatchMeshState = $false
                     break

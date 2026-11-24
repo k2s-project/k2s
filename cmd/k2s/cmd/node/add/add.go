@@ -31,7 +31,7 @@ const (
 	MachineRoleFlagUsage      = "Role of the node (currently only 'worker' is supported)"
 	supportedRole             = "worker"
 	NodePackagePath           = "node-package"
-	NodePackagePathFlagUsage  = "Path to a node package zip (offline installation). When provided, packages and images from the zip are used instead of downloading from the internet. If the package was created with --include-gpu and an NVIDIA GPU is detected on the target node, GPU support is automatically configured (NVIDIA Container Toolkit installed, CRI-O configured, node labeled)."
+	NodePackagePathFlagUsage  = "Path to a node package zip (offline installation). When provided, packages and images from the zip are used instead of downloading from the internet. On a Windows host, if the package was created with --include-gpu and an NVIDIA GPU is detected on the target node, GPU support is configured automatically."
 	systemStatusMaxAttempts   = 5
 	systemStatusRetryDelay    = 10 * time.Second
 )
@@ -42,16 +42,17 @@ func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add a node to the cluster",
-		Long:  "Adds a node to an existing K2s cluster. Currently, the supported onboarding workflow covers Linux worker nodes on physical machines or existing VMs. Support for Windows worker nodes will follow.",
+		Long: `Adds a Linux worker node to an existing K2s cluster over SSH. The node's OS and CPU architecture are detected
+automatically; its lowercased hostname becomes the node name.
+
+Prerequisites on the node: a supported Debian release, the K2s public key authorized for the given user, and
+passwordless sudo for that user. Without --node-package the node downloads its packages through the proxy
+configured at 'k2s install'.`,
 		Example: `  # Add a Linux worker node (online installation)
   k2s node add --ip-addr 192.168.1.50 --username admin
 
   # Add a Linux worker node offline using a node package
-  k2s node add --ip-addr 192.168.1.50 --username admin --node-package C:\packages\debian13-node.zip
-
-  # GPU support is automatically configured when an NVIDIA GPU is detected on the node.
-  # For offline installations with GPU, use a package created with --include-gpu:
-  k2s node add --ip-addr 192.168.1.50 --username admin --node-package C:\packages\debian13-node-gpu.zip`,
+  k2s node add --ip-addr 192.168.1.50 --username admin --node-package debian13-node.zip`,
 		PreRunE: func(cmd *cobra.Command, args []string) error {
 			role, err := cmd.Flags().GetString(MachineRole)
 			if err != nil {

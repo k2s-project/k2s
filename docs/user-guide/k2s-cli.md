@@ -793,7 +793,7 @@ Currently, `node` commands document and support additional Linux worker nodes on
 
 ### node add
 
-Add a node to the cluster. Currently, this is documented for Linux worker nodes.
+Add a Linux worker node to the cluster over SSH. The node's OS and CPU architecture are detected automatically; an unsupported OS or architecture prints a warning and no node is added. The lowercased hostname of the node becomes its Kubernetes node name.
 
 ```console
 k2s node add [flags]

@@ -40,6 +40,16 @@ func usePrebuiltAddonOci(outputDir string) (string, bool) {
 
 	Expect(os.MkdirAll(outputDir, 0o755)).To(Succeed(), "should create output directory '%s'", outputDir)
 	target := filepath.Join(outputDir, filepath.Base(source))
+	sourceAbs, err := filepath.Abs(source)
+	Expect(err).ToNot(HaveOccurred())
+	targetAbs, err := filepath.Abs(target)
+	Expect(err).ToNot(HaveOccurred())
+	if filepath.Clean(sourceAbs) == filepath.Clean(targetAbs) {
+		Fail(fmt.Sprintf("pre-built addon OCI source and destination must differ: %s", source))
+	}
+	if targetInfo, statErr := os.Stat(target); statErr == nil {
+		Expect(os.SameFile(sourceInfo, targetInfo)).To(BeFalse(), "pre-built addon OCI source and destination must not be the same file")
+	}
 
 	in, err := os.Open(source)
 	Expect(err).ToNot(HaveOccurred())

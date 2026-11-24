@@ -601,7 +601,7 @@ func CleanAddonResources(ctx context.Context, suite *framework.K2sTestSuite, k2s
 	suite.K2sCli().Exec(ctx, "image", "clean", "-o")
 	GinkgoWriter.Println("[Clean] Image clean completed")
 
-	rmCmd := fmt.Sprintf("sudo rm -rf .%s", impl.ExportDirectoryName)
+	rmCmd := fmt.Sprintf("sudo rm -rf .%s .%s", impl.ExportDirectoryName, debianPackageDirectoryName(impl))
 	GinkgoWriter.Printf("[Clean] Removing debian packages with command: %s\n", rmCmd)
 	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", rmCmd)
 	GinkgoWriter.Println("[Clean] Debian packages removed")
@@ -617,7 +617,7 @@ func VerifyResourcesCleanedUp(ctx context.Context, suite *framework.K2sTestSuite
 	GinkgoWriter.Printf("[Verify] Control plane IP: %s\n", controlPlaneIP)
 
 	// Verify debian packages are removed
-	checkCmd := fmt.Sprintf("[ -d .%s ]", impl.ExportDirectoryName)
+	checkCmd := fmt.Sprintf("[ -d .%s ] || [ -d .%s ]", impl.ExportDirectoryName, debianPackageDirectoryName(impl))
 	GinkgoWriter.Printf("[Verify] Checking directory does not exist with command: %s\n", checkCmd)
 	GinkgoWriter.Println("[Verify] Expecting exit code 1 (directory should not exist)...")
 	suite.K2sCli().ExpectedExitCode(1).Exec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", checkCmd)
@@ -784,22 +784,30 @@ func VerifyImportedImages(ctx context.Context, suite *framework.K2sTestSuite, k2
 }
 
 func VerifyImportedDebPackages(ctx context.Context, suite *framework.K2sTestSuite, impl *addons.Implementation, controlPlaneIP string, folderName ...string) {
-	if len(folderName) > 0 && folderName[0] != "" {
-		impl.ExportDirectoryName = folderName[0]
-	}
 	GinkgoWriter.Println("=== VERIFY IMPORTED DEB PACKAGES START ===")
 	GinkgoWriter.Printf("[ImportedDeb] Implementation: %s\n", impl.Name)
-	GinkgoWriter.Printf("[ImportedDeb] Export directory name: %s\n", impl.ExportDirectoryName)
+	debDirName := debianPackageDirectoryName(impl)
+	if len(folderName) > 0 && folderName[0] != "" {
+		debDirName = folderName[0]
+	}
+	GinkgoWriter.Printf("[ImportedDeb] Export directory name: %s\n", debDirName)
 	GinkgoWriter.Printf("[ImportedDeb] Control plane IP: %s\n", controlPlaneIP)
 	GinkgoWriter.Printf("[ImportedDeb] Expected packages: %d\n", len(impl.OfflineUsage.LinuxResources.DebPackages))
 
 	for i, pkg := range impl.OfflineUsage.LinuxResources.DebPackages {
-		checkCmd := fmt.Sprintf("[ -d .%s/%s ]", impl.ExportDirectoryName, pkg)
+		checkCmd := fmt.Sprintf("[ -d .%s/%s ]", debDirName, pkg)
 		GinkgoWriter.Printf("[ImportedDeb]   [%d] Checking: %s\n", i, pkg)
 		suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", checkCmd)
 		GinkgoWriter.Printf("[ImportedDeb]   [%d] OK: %s exists\n", i, pkg)
 	}
 	GinkgoWriter.Println("=== VERIFY IMPORTED DEB PACKAGES END ===")
+}
+
+func debianPackageDirectoryName(impl *addons.Implementation) string {
+	if impl.Name != impl.ExportDirectoryName {
+		return impl.ExportDirectoryName + "_" + impl.Name
+	}
+	return impl.ExportDirectoryName
 }
 
 func VerifyImportedLinuxCurlPackages(ctx context.Context, suite *framework.K2sTestSuite, impl *addons.Implementation, controlPlaneIP string, folderName ...string) {

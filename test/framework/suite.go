@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -354,6 +355,15 @@ func RecoverStaleAddonBackups(rootDir string) {
 				remaining = append(remaining, items[:i+1]...)
 				break
 			}
+			if _, err := stdos.Stat(item.Backup); errors.Is(err, fs.ErrNotExist) {
+				if _, originalErr := stdos.Stat(item.Original); originalErr == nil {
+					GinkgoWriter.Printf("[AirGap] Move was not completed for stale backup %s; keeping original %s\n", dir, item.Original)
+					continue
+				}
+				GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s is missing %s\n", dir, item.Backup)
+				remaining = append(remaining, item)
+				continue
+			}
 			if _, err := stdos.Stat(item.Original); err == nil {
 				GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s original %s already exists, leaving its backup untouched\n", dir, item.Original)
 				remaining = append(remaining, item)
@@ -376,11 +386,18 @@ func RecoverStaleAddonBackups(rootDir string) {
 			GinkgoWriter.Printf("[AirGap] Restored stale addon backup %s\n", item.Original)
 		}
 
-		if len(remaining) == 0 {
+		entries, readErr := stdos.ReadDir(dir)
+		unlisted := readErr == nil && slices.ContainsFunc(entries, func(entry stdos.DirEntry) bool {
+			return entry.Name() != "manifest.json"
+		})
+		if len(remaining) == 0 && !unlisted {
 			if err := stdos.RemoveAll(dir); err != nil {
 				GinkgoWriter.Printf("[AirGap] WARNING: cannot remove stale backup %s: %v\n", dir, err)
 			}
 			continue
+		}
+		if unlisted {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s contains unlisted files; preserving it\n", dir)
 		}
 		updated, err := json.MarshalIndent(remaining, "", "  ")
 		if err == nil {

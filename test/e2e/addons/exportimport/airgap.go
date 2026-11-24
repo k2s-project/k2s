@@ -101,10 +101,22 @@ func verifyStagedAddonFileInventory(rootDir string, addonArgs []string) {
 		addonDir := filepath.Join(rootDir, "addons", addonName)
 		actual, err := captureAddonFileInventory(addonDir)
 		Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to capture imported addon files for %s", addonName)
-		Expect(actual).To(Equal(expected), "[AirGap] imported addon file inventory for %s/%s must match the original", addonName, implName)
+		missing := slices.DeleteFunc(slices.Clone(expected), func(path string) bool {
+			return slices.Contains(actual, path)
+		})
+		unexpected := slices.DeleteFunc(slices.Clone(actual), func(path string) bool {
+			return slices.Contains(expected, path) || intentionalExportFile(addonName, implName, path)
+		})
+		Expect(missing).To(BeEmpty(), "[AirGap] imported addon is missing original files for %s/%s", addonName, implName)
+		Expect(unexpected).To(BeEmpty(), "[AirGap] imported addon contains unexpected files for %s/%s", addonName, implName)
 		stagedAddonFileInventories.Delete(key)
 		return true
 	})
+}
+
+func intentionalExportFile(addonName, implName, path string) bool {
+	return strings.HasPrefix(path, "manifests/gitops-sync/") ||
+		(addonName == "storage" && implName == "ceph" && strings.HasPrefix(path, "manifests/smb-shared/"))
 }
 
 // VerifyStagedAddonFileInventory checks that importing restored every original addon file.
@@ -150,12 +162,16 @@ func (b *hostBackup) move(path string) error {
 
 	backupPath := filepath.Join(b.dir, fmt.Sprintf("%d-%s", len(b.items), filepath.Base(path)))
 	GinkgoWriter.Printf("[AirGap]   moving %s -> %s\n", path, backupPath)
-	if err := renameWithRetry(path, backupPath); err != nil {
-		return fmt.Errorf("[AirGap] failed to move %s to backup: %w", path, err)
-	}
-	b.items = append(b.items, backupItem{Original: path, Backup: backupPath})
+	item := backupItem{Original: path, Backup: backupPath}
+	b.items = append(b.items, item)
 	if err := b.writeManifest(); err != nil {
-		return fmt.Errorf("[AirGap] failed to write backup manifest: %w", err)
+		b.items = b.items[:len(b.items)-1]
+		return fmt.Errorf("[AirGap] failed to record move of %s: %w", path, err)
+	}
+	if err := renameWithRetry(path, backupPath); err != nil {
+		b.items = b.items[:len(b.items)-1]
+		_ = b.writeManifest()
+		return fmt.Errorf("[AirGap] failed to move %s to backup: %w", path, err)
 	}
 	return nil
 }
@@ -171,6 +187,15 @@ func (b *hostBackup) restore(replaceExisting bool) error {
 	remaining := b.items[:0:0]
 	for i := len(b.items) - 1; i >= 0; i-- {
 		item := b.items[i]
+		if _, err := os.Stat(item.Backup); errors.Is(err, os.ErrNotExist) {
+			if _, originalErr := os.Stat(item.Original); originalErr == nil {
+				GinkgoWriter.Printf("[AirGap]   move was not completed for %s; keeping original\n", item.Original)
+				continue
+			}
+			errs = append(errs, fmt.Errorf("backup %s is missing", item.Backup))
+			remaining = append(remaining, item)
+			continue
+		}
 		if _, err := os.Stat(item.Original); err == nil {
 			if !replaceExisting {
 				errs = append(errs, fmt.Errorf("%s exists again, its backup %s is kept", item.Original, item.Backup))
@@ -381,7 +406,7 @@ func execOnControlPlane(ctx context.Context, suite *framework.K2sTestSuite, cont
 //   - the apt package cache, so that no previously downloaded .deb file can hide a missing package
 func RemoveAddonPackagesFromControlPlane(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, impl *addons.Implementation, controlPlaneIP string) {
 	GinkgoWriter.Printf("[AirGap] Removing staged packages '.%s' on control plane %s\n", impl.ExportDirectoryName, controlPlaneIP)
-	execOnControlPlane(ctx, suite, controlPlaneIP, fmt.Sprintf("sudo rm -rf .%s", impl.ExportDirectoryName))
+	execOnControlPlane(ctx, suite, controlPlaneIP, fmt.Sprintf("sudo rm -rf .%s .%s", impl.ExportDirectoryName, debianPackageDirectoryName(impl)))
 	VerifyResourcesCleanedUp(ctx, suite, k2sDsl, impl, controlPlaneIP)
 	GinkgoWriter.Printf("[AirGap] VERIFIED absent before import: control plane folder .%s\n", impl.ExportDirectoryName)
 

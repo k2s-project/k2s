@@ -242,7 +242,7 @@ addon_export_config_files() {
     [[ ${parent,,} == "${base_name,,}" ]] || continue
     grep -Eqi '"apiVersion"[[:space:]]*:[[:space:]]*"' "$file" && continue
     cp "$file" "$destination/" || return 1
-  done < <(find "$implementation_path" -type f -iname '*.json' -print0)
+  done < <(find "$implementation_path" -maxdepth 1 -type f -iname '*.json' -print0)
 }
 
 # Prints the images referenced by 'image:' lines of the YAML files as '<linux|windows>\t<image>'; files
@@ -583,7 +583,7 @@ addon_export_addon() {
   addon_export_copy_matching "$dir_path" "$scripts_stage" -iname '*.ps1' -o -iname '*.psm1' -o -iname '*.sh' || return 1
   addon_export_copy_matching "$dir_path" "$scripts_stage" \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' \
     -o -iname '*.svg' -o -iname '*.drawio' -o -iname '*.md' -o -iname '*.ndjson' -o -iname '*.json' -o -iname '*.license' \
-    -o -iname 'Dockerfile*' \) ! -iname 'README.md' || return 1
+    -o -iname '*.tar.gz' -o -iname 'Dockerfile*' \) ! -path "$dir_path/README.md" || return 1
 
   addon_export_config_files "$base_dir/$ADDON_EXPORT_MANIFEST" "$base_name" "$implementation" "$dir_path" "$config_stage" "$single_export" || return 1
 

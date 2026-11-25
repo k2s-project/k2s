@@ -102,7 +102,7 @@ func verifyStagedAddonFileInventory(rootDir string, addonArgs []string) {
 		actual, err := captureAddonFileInventory(addonDir)
 		Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to capture imported addon files for %s", addonName)
 		missing := slices.DeleteFunc(slices.Clone(expected), func(path string) bool {
-			return slices.Contains(actual, path)
+			return slices.Contains(actual, path) || runtimeGeneratedFile(addonName, path)
 		})
 		unexpected := slices.DeleteFunc(slices.Clone(actual), func(path string) bool {
 			return slices.Contains(expected, path) || intentionalExportFile(addonName, implName, path)
@@ -112,6 +112,12 @@ func verifyStagedAddonFileInventory(rootDir string, addonArgs []string) {
 		stagedAddonFileInventories.Delete(key)
 		return true
 	})
+}
+
+// runtimeGeneratedFile reports files that enabling an addon creates inside its folder; they are no part of the addon
+// package, so export neither ships nor import restores them. path is relative to addons/<addonName>.
+func runtimeGeneratedFile(addonName, path string) bool {
+	return addonName == "security" && strings.HasPrefix(path, "data/")
 }
 
 // intentionalExportFile reports files that the export adds on purpose and that therefore do not exist in the original

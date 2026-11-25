@@ -285,22 +285,12 @@ function Set-Registry {
         $Server
     )
 
-    if ($Https) {
-        $protocol = 'https'
-    }
-    else {
-        $protocol = 'http'
+    if (!$Https -or $LocalRegistry) {
         $SkipVerify = $true
     }
 
-    #################
-    # Linux (cri-o) #
-    #################
+    # Control-plane CRI-O, reached via SSH from the Windows host
     $fileName = $Name -replace ':', ''
-
-    if ($LocalRegistry) {
-        $SkipVerify = $true
-    }
 
     (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute 'mkdir -p /etc/containers/registries.conf.d').Output | Write-Log
     (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "echo -e `'[[registry]]\nlocation=\""$Name\""\ninsecure=$($SkipVerify.ToString().ToLower())`' | sudo tee /etc/containers/registries.conf.d/$fileName.conf").Output | Write-Log
@@ -312,9 +302,45 @@ function Set-Registry {
     (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute 'sudo systemctl daemon-reload').Output | Write-Log
     (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute 'sudo systemctl restart crio').Output | Write-Log
 
-    ########################
-    # Windows (containerd) #
-    ########################
+    Set-ContainerdRegistry -Name $Name -Https:$Https -SkipVerify:$SkipVerify -LocalRegistry:$LocalRegistry -Mirror $Mirror -Server $Server
+}
+
+<#
+.DESCRIPTION
+Configures the registry for the containerd of the local Windows node only.
+#>
+function Set-ContainerdRegistry {
+    param(
+        [Parameter()]
+        [String]
+        $Name,
+        [Parameter()]
+        [switch]
+        $Https,
+        [Parameter()]
+        [switch] $SkipVerify,
+        [Parameter()]
+        [switch] $LocalRegistry,
+        [Parameter(Mandatory = $false)]
+        [String]
+        $Mirror,
+        [Parameter(Mandatory = $false)]
+        [String]
+        $Server
+    )
+
+    if ($Https) {
+        $protocol = 'https'
+    }
+    else {
+        $protocol = 'http'
+        $SkipVerify = $true
+    }
+
+    if ($LocalRegistry) {
+        $SkipVerify = $true
+    }
+
     $folderName = $Name -replace ':', ''
 
     New-Item -Path "$(Get-SystemDriveLetter):\etc\containerd\certs.d\$folderName" -ItemType Directory -Force | Out-Null
@@ -385,4 +411,5 @@ Connect-Nerdctl,
 Disconnect-Nerdctl,
 Get-ConfiguredRegistryFromImageName,
 Set-Registry,
+Set-ContainerdRegistry,
 Remove-Registry

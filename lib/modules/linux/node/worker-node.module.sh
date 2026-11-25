@@ -260,12 +260,12 @@ k2s_node_harden() {
 # Same drop-ins as Add-LinuxWorkerNodeRegistryMirrors on a Windows host.
 k2s_node_configure_registry_mirrors() {
   local mirrors registry mirror
-  mirrors=$(jq -r '.smallsetup.mirrorRegistries // [] | .[] | "\(.registry) \(.mirror)"' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
+  mirrors=$(k2s_crio_mirror_registries) || return 1
   [[ -n $mirrors ]] || return 0
   k2s_log INFO "Configuring CRI-O registry mirrors on $K2S_NODE_IP."
   k2s_node_ssh 'sudo mkdir -p /etc/containers/registries.conf.d' || return 1
   while read -r registry mirror; do
-    printf '[[registry]]\nlocation="%s"\ninsecure=true\n\n[[registry.mirror]]\nlocation="%s"\ninsecure=true\n' "$registry" "$mirror" \
+    k2s_crio_mirror_dropin "$registry" "$mirror" \
       | k2s_node_ssh "sudo tee $(printf %q "/etc/containers/registries.conf.d/${registry//:/}.conf") >/dev/null" || return 1
   done <<< "$mirrors"
   k2s_node_ssh 'sudo systemctl restart crio' || { k2s_log ERROR "Could not restart CRI-O on $K2S_NODE_IP."; return 1; }

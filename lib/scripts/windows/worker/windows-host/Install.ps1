@@ -57,6 +57,10 @@ $workerNodeParams = @{
 }
 Add-WindowsWorkerNodeOnWindowsHost @workerNodeParams
 
+# Only the Windows host reaches the control plane via SSH to inventory its images.
+Write-Log "Collecting kubernetes images and storing them to $(Get-KubernetesImagesFilePath)."
+Write-KubernetesImagesIntoJson
+
 Write-Log 'Adding mirror registries'
 $mirrorRegistries = Get-MirrorRegistries
 foreach ($registry in $mirrorRegistries) {

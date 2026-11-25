@@ -99,7 +99,7 @@ runs:
           echo "=== $deb ==="
           dpkg --info "$deb" | grep -E 'Package|Architecture'
         done
-        find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | grep -q . || {
+        [ -n "$(find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' -print -quit)" ] || {
           echo "::error::no .deb packages found in the built zip"
           exit 1
         }

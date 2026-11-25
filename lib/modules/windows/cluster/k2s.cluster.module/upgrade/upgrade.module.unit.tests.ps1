@@ -5,6 +5,28 @@
 BeforeAll {
 	[Diagnostics.CodeAnalysis.SuppressMessageAttribute('UseDeclaredVarsMoreThanAssignments', '', Justification = 'Pester Test')]
 	$moduleName = (Import-Module "$PSScriptRoot\upgrade.module.psm1" -PassThru -Force).Name
+
+	# builds a Backup-AllPersistentVolumes report; every PV in Results, Excluded and Unsupported is also discovered
+	function New-PVBackupReport {
+		param(
+			[System.Collections.IDictionary] $Results = @{},
+			[string[]] $Excluded = @(),
+			[System.Collections.IDictionary] $Unsupported = @{},
+			[System.Collections.IDictionary] $Types = @{},
+			[string[]] $NotReported = @()
+		)
+		$discovered = @()
+		foreach ($name in @(@($Results.Keys) + $Excluded + $NotReported)) {
+			$type = if ($Types.Contains($name)) { $Types[$name] } else { 'local' }
+			$discovered += [pscustomobject]@{ Name = $name; Type = $type }
+		}
+		$unsupportedEntries = @()
+		foreach ($name in $Unsupported.Keys) {
+			$discovered += [pscustomobject]@{ Name = $name; Type = $Unsupported[$name] }
+			$unsupportedEntries += [pscustomobject]@{ Name = $name; Type = $Unsupported[$name] }
+		}
+		return [pscustomobject]@{ Discovered = $discovered; Excluded = @($Excluded); Unsupported = $unsupportedEntries; Results = $Results }
+	}
 }
 
 Import-Module "$PSScriptRoot\..\..\k2s.cluster.module"
@@ -980,7 +1002,7 @@ Describe "PrepareClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 		Mock -ModuleName $moduleName Export-ClusterResources
 		Mock -ModuleName $moduleName Invoke-UpgradeBackupRestoreHooks
 		Mock -ModuleName $moduleName Backup-LogFile
-		Mock -ModuleName $moduleName Backup-AllPersistentVolumes -MockWith { return $null }
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes -MockWith { return (New-PVBackupReport) }
 		Mock -ModuleName $moduleName Write-Log
 		Mock -ModuleName $moduleName Write-Progress
 	}
@@ -1080,6 +1102,626 @@ Describe "PrepareClusterUpgrade" -Tag 'unit', 'ci', 'upgrade' {
 			# Assert that the mocked functions were called
 			Should -Invoke Write-Log -Times 1 -Scope It
 		}
+	}
+}
+
+Describe 'Get-PVOperationSummary' -Tag 'unit', 'ci', 'upgrade' {
+	It 'classifies boolean PV results' {
+		InModuleScope $moduleName {
+			$summary = Get-PVOperationSummary -Result @{ 'pv-b' = $true; 'pv-a' = $true; 'pv-c' = $false }
+
+			$summary.IsValid | Should -BeTrue
+			$summary.Succeeded | Should -Be @('pv-a', 'pv-b')
+			$summary.Failed | Should -Be @('pv-c')
+		}
+	}
+
+	It 'treats an empty hashtable as a valid result without PVs' {
+		InModuleScope $moduleName {
+			$summary = Get-PVOperationSummary -Result @{}
+
+			$summary.IsValid | Should -BeTrue
+			$summary.Succeeded.Count | Should -Be 0
+			$summary.Failed.Count | Should -Be 0
+		}
+	}
+
+	It 'treats non-boolean PV results as failed' {
+		InModuleScope $moduleName {
+			$summary = Get-PVOperationSummary -Result @{ 'pv-null' = $null; 'pv-string' = 'True'; 'pv-array' = @($true, $true); 'pv-ok' = $true }
+
+			$summary.IsValid | Should -BeTrue
+			$summary.Succeeded | Should -Be @('pv-ok')
+			$summary.Failed | Should -Be @('pv-array', 'pv-null', 'pv-string')
+		}
+	}
+
+	It 'reports <Name> as invalid result' -TestCases @(
+		@{ Name = 'null'; Value = $null },
+		@{ Name = 'boolean true'; Value = $true },
+		@{ Name = 'string'; Value = 'pv-a' },
+		@{ Name = 'array'; Value = @('pv-a', 'pv-b') }
+	) {
+		param($Value)
+		InModuleScope $moduleName -Parameters @{ Value = $Value } {
+			param($Value)
+			$summary = Get-PVOperationSummary -Result $Value
+
+			$summary.IsValid | Should -BeFalse
+		}
+	}
+}
+
+Describe 'PrepareClusterUpgrade PV backup validation' -Tag 'unit', 'ci', 'upgrade' {
+	BeforeAll {
+		if (-not (Get-Command Get-EnabledAddons -ErrorAction SilentlyContinue)) {
+			function global:Get-EnabledAddons { return [System.Collections.ArrayList]@() }
+		}
+
+		Mock -ModuleName $moduleName Get-SetupInfo -MockWith { return @{ Name = 'k2s' } }
+		Mock -ModuleName $moduleName Get-LinuxVMCores -MockWith { return 4 }
+		Mock -ModuleName $moduleName Get-LinuxVMMemory -MockWith { return @{ Startup = '4GB'; DynamicMemoryEnabled = $false } }
+		Mock -ModuleName $moduleName Get-LinuxVMStorageSize -MockWith { return 100 }
+		Mock -ModuleName $moduleName Assert-UpgradeOperation -MockWith { return $true }
+		Mock -ModuleName $moduleName Enable-ClusterIsRunning
+		Mock -ModuleName $moduleName Get-EnabledAddons -MockWith { return [System.Collections.ArrayList]@() }
+		Mock -ModuleName $moduleName Assert-YamlTools
+		Mock -ModuleName $moduleName Get-ClusterInstalledFolder -MockWith { return 'C:\Cluster' }
+		Mock -ModuleName $moduleName Export-ClusterResources
+		Mock -ModuleName $moduleName Invoke-UpgradeBackupRestoreHooks
+		Mock -ModuleName $moduleName Backup-LogFile
+		Mock -ModuleName $moduleName Write-Log
+		Mock -ModuleName $moduleName Write-Progress
+
+		function Invoke-PrepareClusterUpgradeForPVTest {
+			param(
+				[string] $BackupDir,
+				[ref] $PVBackupPath
+			)
+			PrepareClusterUpgrade -SkipResources -SkipImages -BackupDir $BackupDir -coresVM ([ref]0) -memoryVM ([ref]0) -storageVM ([ref]0) -enabledAddonsList ([ref]$null) -hooksBackupPath ([ref]'') -logFilePathBeforeUninstall ([ref]'') -imagesBackupPath ([ref]'') -pvBackupPath $PVBackupPath
+		}
+	}
+
+	BeforeEach {
+		$backupDir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+		New-Item -Path $backupDir -ItemType Directory | Out-Null
+		$pvBackupPath = [ref]''
+	}
+
+	It 'continues when PV discovery succeeds and the cluster has no PVs' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport) }
+
+		$result = Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath
+
+		$result | Should -BeTrue
+		$pvBackupPath.Value | Should -BeNullOrEmpty
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 1 -Scope It
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found to backup' }
+	}
+
+	It 'continues without a PV backup when every discovered PV is excluded' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Excluded @('pv-addon-a', 'pv-addon-b')) }
+
+		$result = Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath
+
+		$result | Should -BeTrue
+		$pvBackupPath.Value | Should -BeNullOrEmpty
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'all 2 discovered PV\(s\) are excluded' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'intentionally excluded from backup: pv-addon-a, pv-addon-b' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found to backup' }
+	}
+
+	It 'continues when every discovered PV is either excluded or backed up' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true } -Excluded @('pv-addon')) }
+
+		$result = Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath
+
+		$result | Should -BeTrue
+		$pvBackupPath.Value | Should -Be (Join-Path $backupDir 'pv')
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PV backup completed: 1 PV\(s\) backed up successfully' }
+	}
+
+	It 'continues when every discovered PV was backed up' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $true }) }
+
+		$result = Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath
+
+		$result | Should -BeTrue
+		$pvBackupPath.Value | Should -Be (Join-Path $backupDir 'pv')
+		Should -Invoke -ModuleName $moduleName Backup-AllPersistentVolumes -Exactly 1 -Scope It -ParameterFilter { $ExportPath -eq (Join-Path $backupDir 'pv') }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PV backup completed: 2 PV\(s\) backed up successfully' }
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 1 -Scope It
+	}
+
+	It 'aborts and logs PV names and types when a discovered PV has an unsupported volume type' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Unsupported @{ 'pv-nfs' = 'nfs' }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw "*1 of 1 discovered persistent volume(s) are neither excluded nor backed up*Unsupported volume type for 1 persistent volume(s): pv-nfs (nfs)*Upgrade aborted before uninstalling the current cluster*"
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\[PVBackup\] ERROR: Persistent volume 'pv-nfs' \(type 'nfs'\) is not backed up: unsupported volume type" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found' }
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 0 -Scope It
+	}
+
+	It 'aborts when an unsupported PV exists next to successfully backed-up and excluded PVs' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes {
+			return (New-PVBackupReport -Results @{ 'pv-a' = $true } -Excluded @('pv-addon') -Unsupported @{ 'pv-smb' = 'csi (smb.csi.k8s.io)'; 'pv-nfs' = 'nfs' })
+		}
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw "*2 of 4 discovered persistent volume(s) are neither excluded nor backed up*Unsupported volume type for 2 persistent volume(s): pv-nfs (nfs), pv-smb (csi (smb.csi.k8s.io))*"
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Persistent volume 'pv-smb' \(type 'csi \(smb\.csi\.k8s\.io\)'\) is not backed up" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'PV backup completed' }
+	}
+
+	It 'aborts when a discovered PV is neither excluded nor reported as backed up' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true } -NotReported @('pv-b') -Types @{ 'pv-b' = 'hostPath' }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*1 of 2 discovered persistent volume(s) are neither excluded nor backed up*No backup result for 1 persistent volume(s): pv-b (hostPath)*'
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Persistent volume 'pv-b' \(type 'hostPath'\) was neither excluded nor backed up" }
+	}
+
+	It 'aborts when PV discovery fails' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { throw 'Failed to query PersistentVolumes: The connection to the server was refused' }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*PV backup failed*connection to the server was refused*Upgrade aborted before uninstalling the current cluster*'
+
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 0 -Scope It
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'Continuing with upgrade' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found' }
+	}
+
+	It 'aborts when Backup-AllPersistentVolumes throws an exception' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { throw 'unexpected backup error' }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw "*PV backup failed: unexpected backup error*backup data is kept in '$backupDir'*"
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match '\[PVBackup\] ERROR: PV backup failed: unexpected backup error' }
+	}
+
+	It 'aborts when the backup of a single PV fails' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $false }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*PV backup failed for 1 of 1 persistent volume(s): pv-a (local).*'
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Backup of persistent volume 'pv-a' \(type 'local'\) failed" }
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 0 -Scope It
+	}
+
+	It 'aborts when one of multiple PV backups fails' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $false; 'pv-c' = $true } -Types @{ 'pv-b' = 'hostPath' }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*PV backup failed for 1 of 3 persistent volume(s): pv-b (hostPath).*'
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Backup of persistent volume 'pv-b' \(type 'hostPath'\) failed" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'PV backup completed' }
+	}
+
+	It 'aborts and reports every PV when several PV backups fail' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $false; 'pv-b' = $true; 'pv-c' = $false }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*PV backup failed for 2 of 3 persistent volume(s): pv-a (local), pv-c (local).*'
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Backup of persistent volume 'pv-a' \(type 'local'\) failed" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "Backup of persistent volume 'pv-c' \(type 'local'\) failed" }
+	}
+
+	It 'aborts and reports unsupported and failed PVs together' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $false } -Unsupported @{ 'pv-nfs' = 'nfs' }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*2 of 3 discovered persistent volume(s) are neither excluded nor backed up. Unsupported volume type for 1 persistent volume(s): pv-nfs (nfs). PV backup failed for 1 of 2 persistent volume(s): pv-b (local).*'
+
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 0 -Scope It
+	}
+
+	It 'aborts when a PV backup result is not a boolean' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $null }) }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*PV backup failed for 1 of 2 persistent volume(s): pv-b (local).*'
+	}
+
+	It 'aborts instead of assuming success or no PVs when the backup returns <Name>' -TestCases @(
+		@{ Name = 'null'; Value = $null },
+		@{ Name = 'boolean true'; Value = $true },
+		@{ Name = 'a string'; Value = 'done' },
+		@{ Name = 'a plain result hashtable'; Value = @{ 'pv-a' = $true } },
+		@{ Name = 'an empty hashtable'; Value = @{} }
+	) {
+		param($Value)
+		$script:pvBackupMockResult = $Value
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return $script:pvBackupMockResult }
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*PV backup returned an unexpected result*Upgrade aborted before uninstalling*'
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found' }
+		Should -Invoke -ModuleName $moduleName Backup-LogFile -Exactly 0 -Scope It
+	}
+
+	It 'keeps partially created PV backup data after a backup failure' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes {
+			New-Item -Path $ExportPath -ItemType Directory -Force | Out-Null
+			Set-Content -Path (Join-Path $ExportPath 'pv-a-backup.tar.gz') -Value 'pv-a data'
+			Set-Content -Path (Join-Path $ExportPath 'pv-a-backup-metadata.json') -Value '{ "pvName": "pv-a" }'
+			return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $false })
+		}
+
+		{ Invoke-PrepareClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvBackupPath } | Should -Throw '*pv-b*'
+
+		Join-Path $backupDir 'pv\pv-a-backup.tar.gz' | Should -Exist
+		Join-Path $backupDir 'pv\pv-a-backup-metadata.json' | Should -Exist
+		$pvBackupPath.Value | Should -Be (Join-Path $backupDir 'pv')
+	}
+}
+
+Describe 'Invoke-PVBackup' -Tag 'unit', 'ci', 'upgrade' {
+	BeforeAll {
+		Mock -ModuleName $moduleName Write-Log
+		$script:originalRootConfig = InModuleScope $moduleName { $script:rootConfig }
+	}
+
+	AfterAll {
+		InModuleScope $moduleName -Parameters @{ Original = $script:originalRootConfig } { $script:rootConfig = $Original }
+	}
+
+	BeforeEach {
+		InModuleScope $moduleName { $script:rootConfig = [pscustomobject]@{ backup = [pscustomobject]@{ excludedAddonPersistentVolumes = '' } } }
+		$backupDir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+	}
+
+	It 'succeeds when every supported PV was backed up' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $true } -Types @{ 'pv-b' = 'hostPath' }) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeTrue
+		$result.BackedUpCount | Should -Be 2
+		@($result.Details.Keys | Sort-Object) | Should -Be @('pv-a', 'pv-b')
+		$result.ContainsKey('Message') | Should -BeFalse
+		Should -Invoke -ModuleName $moduleName Backup-AllPersistentVolumes -Exactly 1 -Scope It -ParameterFilter { $ExportPath -eq $backupDir }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PV backup completed: 2 PV\(s\) backed up successfully' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'ERROR' }
+	}
+
+	It 'fails when an unsupported PV exists next to successfully backed-up PVs' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true } -Unsupported @{ 'pv-nfs' = 'nfs' }) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeFalse
+		$result.BackedUpCount | Should -Be 1
+		$result.Details['pv-a'] | Should -BeTrue
+		$result.Message | Should -BeLike '1 of 2 discovered persistent volume(s) are neither excluded nor backed up. Unsupported volume type for 1 persistent volume(s): pv-nfs (nfs)'
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\[PVBackup\] ERROR: Persistent volume 'pv-nfs' \(type 'nfs'\) is not backed up: unsupported volume type" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'PV backup completed|No persistent volumes' }
+	}
+
+	It 'fails when only unsupported PVs are discovered' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Unsupported @{ 'pv-smb' = 'csi (smb.csi.k8s.io)' }) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeFalse
+		$result.BackedUpCount | Should -Be 0
+		$result.Message | Should -BeLike '*pv-smb (csi (smb.csi.k8s.io))*'
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found' }
+	}
+
+	It 'fails and reports the PV when its backup failed' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = $false; 'pv-c' = $true } -Types @{ 'pv-b' = 'hostPath' }) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeFalse
+		$result.BackedUpCount | Should -Be 2
+		$result.Details['pv-b'] | Should -BeFalse
+		$result.Message | Should -BeLike '1 of 3 discovered persistent volume(s) are neither excluded nor backed up. PV backup failed for 1 of 3 persistent volume(s): pv-b (hostPath)'
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\[PVBackup\] ERROR: Backup of persistent volume 'pv-b' \(type 'hostPath'\) failed" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'PV backup completed' }
+	}
+
+	It 'fails when a PV backup result is not a boolean' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true; 'pv-b' = 'done' }) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeFalse
+		$result.BackedUpCount | Should -Be 1
+		$result.Message | Should -BeLike '*PV backup failed for 1 of 2 persistent volume(s): pv-b (local)*'
+	}
+
+	It 'rethrows when Backup-AllPersistentVolumes throws' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { throw 'Failed to query PersistentVolumes: connection refused' }
+
+		{ Invoke-PVBackup -BackupDirectory $backupDir } | Should -Throw '*connection refused*'
+
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'Error during PV backup: .*connection refused' }
+	}
+
+	It 'fails when a discovered PV is missing from the backup results' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true } -NotReported @('pv-b') -Types @{ 'pv-b' = 'hostPath' }) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeFalse
+		$result.BackedUpCount | Should -Be 1
+		$result.Message | Should -BeLike '1 of 2 discovered persistent volume(s) are neither excluded nor backed up. No backup result for 1 persistent volume(s): pv-b (hostPath)'
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\[PVBackup\] ERROR: Persistent volume 'pv-b' \(type 'hostPath'\) was neither excluded nor backed up" }
+	}
+
+	It 'fails instead of assuming success when the backup returns <Name>' -TestCases @(
+		@{ Name = 'null'; Value = $null },
+		@{ Name = 'a plain result hashtable'; Value = @{ 'pv-a' = $true } },
+		@{ Name = 'an empty hashtable'; Value = @{} }
+	) {
+		param($Value)
+		$script:pvBackupMockResult = $Value
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return $script:pvBackupMockResult }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeFalse
+		$result.BackedUpCount | Should -Be 0
+		$result.Message | Should -BeLike '*unexpected result*'
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found' }
+	}
+
+	It 'succeeds without a backup when no PVs are discovered' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeTrue
+		$result.BackedUpCount | Should -Be 0
+		$result.Details.Count | Should -Be 0
+		$result.Message | Should -Be 'No PVs to backup'
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'No persistent volumes found to backup' }
+	}
+
+	It 'succeeds without a backup when every discovered PV is excluded by configuration' {
+		InModuleScope $moduleName { $script:rootConfig = [pscustomobject]@{ backup = [pscustomobject]@{ excludedAddonPersistentVolumes = 'pv-addon-a,pv-addon-b' } } }
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Excluded @('pv-addon-a', 'pv-addon-b')) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeTrue
+		$result.BackedUpCount | Should -Be 0
+		$result.Details.Count | Should -Be 0
+		$result.Message | Should -Be 'No PVs to backup'
+		Should -Invoke -ModuleName $moduleName Backup-AllPersistentVolumes -Exactly 1 -Scope It -ParameterFilter { (@($ExcludeNames) -join ',') -eq 'pv-addon-a,pv-addon-b' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'all 2 discovered PV\(s\) are excluded' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'ERROR' }
+	}
+
+	It 'succeeds when every discovered PV is either excluded or backed up' {
+		Mock -ModuleName $moduleName Backup-AllPersistentVolumes { return (New-PVBackupReport -Results @{ 'pv-a' = $true } -Excluded @('pv-addon')) }
+
+		$result = Invoke-PVBackup -BackupDirectory $backupDir
+
+		$result.Success | Should -BeTrue
+		$result.BackedUpCount | Should -Be 1
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'intentionally excluded from backup: pv-addon' }
+	}
+}
+
+Describe 'PerformClusterUpgrade PV restore error handling' -Tag 'unit', 'ci', 'upgrade' {
+	BeforeAll {
+		Mock -ModuleName $moduleName Get-LogFilePath -MockWith { return 'TestDrive:\logfile.log' }
+		Mock -ModuleName $moduleName Get-Content -MockWith { return 'log content' }
+		Mock -ModuleName $moduleName Remove-SetupConfigIfExisting
+		Mock -ModuleName $moduleName Start-Sleep
+		Mock -ModuleName $moduleName Invoke-ClusterUninstall
+		Mock -ModuleName $moduleName Invoke-ClusterInstall
+		Mock -ModuleName $moduleName Invoke-UpgradeBackupRestoreHooks
+		Mock -ModuleName $moduleName Import-NotNamespacedResources
+		Mock -ModuleName $moduleName Import-NamespacedResources
+		Mock -ModuleName $moduleName Restore-LogFile
+		Mock -ModuleName $moduleName Write-Log
+		Mock -ModuleName $moduleName Write-Progress
+		Mock -ModuleName $moduleName Get-ProductVersion -MockWith { return '1.0.0' }
+		Mock -ModuleName $moduleName Get-KubePath -MockWith { return 'C:\KubePath' }
+		Mock -ModuleName $moduleName Write-RefreshEnvVariablesGivenKubePath
+		Mock -ModuleName $moduleName Enable-ClusterIsRunning
+		Mock -ModuleName $moduleName Wait-ForAPIServerInGivenKubePath
+		Mock -ModuleName $moduleName Get-KubeBinPathGivenKubePath -MockWith { return 'C:\KubeBinPath' }
+		Mock -ModuleName $moduleName Restore-DeferredClusterIssuers { return @() }
+
+		function Invoke-PerformClusterUpgradeForPVTest {
+			param(
+				[string] $BackupDir,
+				[string] $PVBackupPath,
+				[ref] $RestoreErrors
+			)
+			PerformClusterUpgrade -ExecuteHooks -K2sPathToInstallFrom 'C:\K2sPath' -Config 'config.yaml' -BackupDir $BackupDir -memoryVM @{ Startup = '4GB'; DynamicMemoryEnabled = $false } -coresVM '2' -storageVM '100GB' -enabledAddonsList ([System.Collections.ArrayList]@()) -hooksBackupPath (Join-Path $BackupDir 'hooks') -logFilePathBeforeUninstall (Join-Path $BackupDir 'k2s-before-uninstall.log') -pvBackupPath $PVBackupPath -resourceRestoreErrors $RestoreErrors
+		}
+	}
+
+	BeforeEach {
+		$backupDir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+		$pvDir = Join-Path $backupDir 'pv'
+		New-Item -Path $pvDir -ItemType Directory -Force | Out-Null
+		foreach ($pvName in @('pv-a', 'pv-b', 'pv-c')) {
+			Set-Content -Path (Join-Path $pvDir "$pvName-backup.tar.gz") -Value "$pvName data"
+			Set-Content -Path (Join-Path $pvDir "$pvName-backup-metadata.json") -Value "{ `"pvName`": `"$pvName`" }"
+		}
+		$restoreErrors = [ref]@()
+	}
+
+	It 'records no error when all PV restores succeed' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-b' = $true; 'pv-c' = $true } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 1 -Scope It -ParameterFilter { $BackupPath -eq $pvDir -and $Force }
+		@($restoreErrors.Value).Count | Should -Be 0
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'PERSISTENT VOLUME RESTORE ERRORS' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'Upgraded successfully' }
+	}
+
+	It 'records a failed restore of a single PV' {
+		Remove-Item -Path (Join-Path $pvDir 'pv-b-*'), (Join-Path $pvDir 'pv-c-*')
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $false } }
+
+		{ Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors } | Should -Not -Throw
+
+		$restoreErrors.Value | Should -Be @("Persistent volume 'pv-a' could not be restored")
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PERSISTENT VOLUME RESTORE ERRORS' -and $Console }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\[PVRestore\] ERROR: Persistent volume 'pv-a' could not be restored" }
+	}
+
+	It 'records only the failed PV when one of multiple PV restores fails' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-b' = $false; 'pv-c' = $true } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		$restoreErrors.Value | Should -Be @("Persistent volume 'pv-b' could not be restored")
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PV restore completed: 2 persistent volume\(s\) restored, 1 failed' }
+	}
+
+	It 'records every failed PV when several PV restores fail' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $false; 'pv-b' = $true; 'pv-c' = $false } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		$restoreErrors.Value | Should -Be @("Persistent volume 'pv-a' could not be restored", "Persistent volume 'pv-c' could not be restored")
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\*\*   - Persistent volume 'pv-a' could not be restored" }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match "\*\*   - Persistent volume 'pv-c' could not be restored" }
+	}
+
+	It 'records the original exception when Restore-AllPersistentVolumes throws, without failing the upgrade' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { throw 'scp transfer to the VM failed' }
+
+		{ Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors } | Should -Not -Throw
+
+		$restoreErrors.Value | Should -Be @('PV restore failed: scp transfer to the VM failed')
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match '\[PVRestore\] ERROR: PV restore failed: scp transfer to the VM failed' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'Continuing with upgrade' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'Upgraded successfully' }
+	}
+
+	It 'records an error when the PV restore returns <Name>' -TestCases @(
+		@{ Name = 'null'; Value = $null },
+		@{ Name = 'boolean true'; Value = $true },
+		@{ Name = 'a string'; Value = 'done' }
+	) {
+		param($Value)
+		$script:pvRestoreMockResult = $Value
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return $script:pvRestoreMockResult }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		@($restoreErrors.Value).Count | Should -Be 1
+		$restoreErrors.Value[0] | Should -Match 'PV restore returned an unexpected result'
+	}
+
+	It 'records an error when backup archives were not restored' {
+		# e.g. archives skipped by Restore-AllPersistentVolumes because their metadata is missing
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		@($restoreErrors.Value).Count | Should -Be 1
+		$restoreErrors.Value[0] | Should -Match "Only 1 of 3 PV backup archive\(s\) in '.*' were restored, not restored: pv-b, pv-c"
+	}
+
+	It 'calls the restore with RequireBackups so that missing archives are not reported as success' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-b' = $true; 'pv-c' = $true } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 1 -Scope It -ParameterFilter { $RequireBackups }
+	}
+
+	It 'records a restore failure when the expected PV backup directory does not exist' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{} }
+		Remove-Item -Path $pvDir -Recurse -Force
+
+		{ Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors } | Should -Not -Throw
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 0 -Scope It
+		@($restoreErrors.Value).Count | Should -Be 1
+		$restoreErrors.Value[0] | Should -Match "PV backup directory '.*' not found"
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match '\[PVRestore\] ERROR: PV backup directory' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PERSISTENT VOLUME RESTORE ERRORS' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 0 -Scope It -ParameterFilter { $Messages -match 'skipping PV restore' }
+	}
+
+	It 'records a restore failure when the PV backup directory contains <Name>' -TestCases @(
+		@{ Name = 'no files'; Files = @() },
+		@{ Name = 'no backup archives'; Files = @('notes.txt') }
+	) {
+		param($Files)
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{} }
+		Get-ChildItem -Path $pvDir -File | Remove-Item -Force
+		foreach ($file in $Files) { Set-Content -Path (Join-Path $pvDir $file) -Value 'x' }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 0 -Scope It
+		@($restoreErrors.Value).Count | Should -Be 1
+		$restoreErrors.Value[0] | Should -Match "No PV backup archives found in '.*'"
+		$pvDir | Should -Exist
+	}
+
+	It 'records a restore failure for every PV whose backup archive is missing' {
+		Remove-Item -Path (Join-Path $pvDir 'pv-b-backup.tar.gz')
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-c' = $true } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 1 -Scope It
+		@($restoreErrors.Value).Count | Should -Be 1
+		$restoreErrors.Value[0] | Should -Match "Backup archive 'pv-b-backup\.tar\.gz' of persistent volume 'pv-b' is missing"
+	}
+
+	It 'records a restore failure when only metadata files are left in the PV backup directory' {
+		Get-ChildItem -Path $pvDir -Filter '*.tar.gz' -File | Remove-Item -Force
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{} }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 0 -Scope It
+		@($restoreErrors.Value).Count | Should -Be 4
+		@($restoreErrors.Value | Where-Object { $_ -match 'Backup archive .* is missing' }).Count | Should -Be 3
+		$restoreErrors.Value | Should -Contain "No PV backup archives found in '$pvDir', the backed-up persistent volumes could not be restored"
+	}
+
+	It 'keeps PV restore errors together with ClusterIssuer restore errors' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-b' = $false; 'pv-c' = $true } }
+		Mock -ModuleName $moduleName Restore-DeferredClusterIssuers { return @('Backed-up ClusterIssuers were not restored') }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		$restoreErrors.Value | Should -Be @("Persistent volume 'pv-b' could not be restored", 'Backed-up ClusterIssuers were not restored')
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'RESOURCE RESTORE ERRORS' }
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'PERSISTENT VOLUME RESTORE ERRORS' }
+	}
+
+	It 'keeps the recorded PV restore errors when a later upgrade step fails' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-b' = $false; 'pv-c' = $true } }
+		Mock -ModuleName $moduleName Import-NamespacedResources { throw 'import failed' }
+
+		{ Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors } | Should -Throw '*import failed*'
+
+		$restoreErrors.Value | Should -Be @("Persistent volume 'pv-b' could not be restored")
+	}
+
+	It 'does not touch the PV backup files' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{ 'pv-a' = $true; 'pv-b' = $false; 'pv-c' = $true } }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath $pvDir -RestoreErrors $restoreErrors
+
+		@(Get-ChildItem -Path $pvDir -File).Count | Should -Be 6
+	}
+
+	It 'skips the PV restore when no PV backup was created' {
+		Mock -ModuleName $moduleName Restore-AllPersistentVolumes { return @{} }
+
+		Invoke-PerformClusterUpgradeForPVTest -BackupDir $backupDir -PVBackupPath '' -RestoreErrors $restoreErrors
+
+		Should -Invoke -ModuleName $moduleName Restore-AllPersistentVolumes -Exactly 0 -Scope It
+		@($restoreErrors.Value).Count | Should -Be 0
+		Should -Invoke -ModuleName $moduleName Write-Log -Exactly 1 -Scope It -ParameterFilter { $Messages -match 'skipping PV restore' }
 	}
 }
 

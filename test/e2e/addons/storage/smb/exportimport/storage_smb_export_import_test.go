@@ -35,7 +35,7 @@ var (
 
 func TestStorageSmbExportImport(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "storage smb Addon Export/Import Tests", Label("addon", "addon-ilities", "acceptance", "internet-required", "setup-required", "invasive", "storage-smb", "export-import", "air-gapped", "system-running"))
+	RunSpecs(t, "storage smb Addon Export/Import Tests", Label("addon", "addon-ilities", "acceptance", "internet-required", "setup-required", "invasive", "storage", "smb", "storage-smb", "export-import", "air-gapped", "system-running"))
 }
 
 var _ = BeforeSuite(func(ctx context.Context) {

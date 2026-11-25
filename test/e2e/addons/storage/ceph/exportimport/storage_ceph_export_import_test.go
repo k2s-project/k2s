@@ -91,6 +91,8 @@ var _ = Describe("storage ceph addon export and import", Ordered, func() {
 	Describe("export storage ceph addon", func() {
 		BeforeAll(func(ctx context.Context) {
 			exportimport.CleanupExportedFiles(exportPath, "")
+			// Earlier suites may have installed the packages; apt then no longer downloads them for the export.
+			exportimport.PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIpAddress)
 		})
 
 		It("exports storage ceph addon to versioned OCI tar file", func(ctx context.Context) {

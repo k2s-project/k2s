@@ -144,7 +144,8 @@ var _ = Describe("rollout argocd addon export and import", Ordered, func() {
 		var restoreProxyEnvironment func()
 
 		BeforeAll(func(ctx context.Context) {
-			restoreProxyEnvironment = exportimport.PrepareAirGappedAddonImport(ctx, suite, controlPlaneIpAddress)
+			restoreProxyEnvironment = exportimport.PrepareAirGappedAddonImport(ctx, suite, k2s, addon, impl, controlPlaneIpAddress)
+			exportimport.LogAirGapState(ctx, suite, k2s, addon, impl, controlPlaneIpAddress)
 			exportimport.ImportAddon(ctx, suite, exportedOciFile)
 		})
 

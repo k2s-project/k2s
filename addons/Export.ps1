@@ -783,7 +783,7 @@ try {
                 }
             }
             
-            if (@(Get-ChildItem -LiteralPath $sharedScriptsStaging -File -ErrorAction Stop).Count -gt 0) {
+            if (@(Get-ChildItem -LiteralPath $sharedScriptsStaging -File -Force -ErrorAction Stop).Count -gt 0) {
                 $sharedScriptsTarPath = Join-Path $artifactPath 'shared-scripts.tar.gz'
                 if (-not (New-TarGzArchive -SourcePath $sharedScriptsStaging -DestinationPath $sharedScriptsTarPath -ArchiveContents)) {
                     throw "Failed to archive shared scripts for addon '$addonName'."

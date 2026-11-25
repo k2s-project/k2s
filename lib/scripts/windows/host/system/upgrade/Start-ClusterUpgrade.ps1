@@ -128,6 +128,7 @@ function Start-ClusterUpgrade {
 	$imagesBackupPath = [ref]''
 	$pvBackupPath = [ref]''
 	$resourceRestoreErrors = [ref]@()
+	$keepBackupReasons = [System.Collections.ArrayList]@()
 
 	if ($BackupDir -eq '') {
 		$BackupDir = Get-TempPath
@@ -146,8 +147,10 @@ function Start-ClusterUpgrade {
 		Write-Log $_.ScriptStackTrace -Console
 		Write-Log $_ -Console
 		$errUpgrade = $_
+		Write-Log "Keeping backup directory '$BackupDir' because the preliminary steps failed; the current cluster was not uninstalled" -Console
 		Write-Error 'Unfortunately preliminary steps to export resources of current cluster failed, please check the logs for more information !'
-		return $false
+		# rethrow so that the upgrade command fails instead of reporting success
+		throw $errUpgrade
 	}
 
 	$previousInstallConfig = Backup-EffectiveInstallConfig -BackupDir $BackupDir
@@ -158,6 +161,7 @@ function Start-ClusterUpgrade {
 	}
 	catch {
 		Write-Log 'System upgrade failed, will rollback to previous state !'
+		$keepBackupReasons.Add("the upgrade failed: $_") | Out-Null
 		try {
 			 # backup log file since it will be deleted during uninstall
 			$logFilePathBeforeUninstall.Value = Join-Path $BackupDir 'k2s-before-uninstall.log'
@@ -170,6 +174,7 @@ function Start-ClusterUpgrade {
 			Write-Log 'An ERROR occurred:' -Console
 			Write-Log $_.ScriptStackTrace -Console
 			Write-Log $_ -Console
+			$keepBackupReasons.Add("the rollback failed: $_") | Out-Null
 			Write-Error 'System upgrade failed, please check the logs for more information !'
 			return $false
 		}
@@ -181,6 +186,9 @@ function Start-ClusterUpgrade {
 		if (-not $errUpgrade) {
 			if (@($resourceRestoreErrors.Value).Count -gt 0) {
 				Write-Log "Keeping backup directory '$BackupDir' because some backed-up resources could not be restored" -Console
+			}
+			elseif ($keepBackupReasons.Count -gt 0) {
+				Write-Log "Keeping backup directory '$BackupDir' because $($keepBackupReasons -join '; ')" -Console
 			}
 			else {
 				# remove temp cluster resources

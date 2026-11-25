@@ -167,24 +167,19 @@ addon_export_copy_matching() {
   done < <(find "$source" -type f \( "$@" \) -print0)
 }
 
-# Copies the shared module and documentation of the storage addon root into the shared scripts layer,
-# like Copy-AddonSharedScripts of addons/export.module.psm1. Other addons have no shared scripts.
+# Copies the files at the root of a multi-implementation addon (README, shared modules) into the shared scripts
+# layer, like Copy-AddonSharedScripts of addons/export.module.psm1. The manifest is merged through the config layer.
 addon_export_shared_scripts() {
-  local addon_path="$1" implementation_path="$2" destination="$3" module optional
-  if [[ $addon_path == "$implementation_path" || $(basename "$addon_path") != storage ]]; then
+  local addon_path="$1" implementation_path="$2" destination="$3" file
+  if [[ $addon_path == "$implementation_path" ]]; then
     return 0
   fi
-  module="$addon_path/storage-validation.module.psm1"
-  if [[ ! -f $module ]]; then
-    addon_export_error "Cannot export storage addon: shared module '$module' is missing."
-    return 1
-  fi
-  cp "$module" "$destination/" || return 1
-  for optional in storage-validation.module.psm1.license README.md README.md.license; do
-    if [[ -f "$addon_path/$optional" ]]; then
-      cp "$addon_path/$optional" "$destination/" || return 1
-    fi
-  done
+  while IFS= read -r -d '' file; do
+    case $(basename "$file") in
+      addon.manifest.yaml | addon.manifest.yaml.license) continue ;;
+    esac
+    cp "$file" "$destination/" || return 1
+  done < <(find "$addon_path" -maxdepth 1 -type f -print0)
 }
 
 # Adds the gitops-sync Job template to the manifests layer for GitOps delivery.

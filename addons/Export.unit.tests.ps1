@@ -103,18 +103,12 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
         }
     }
 
-    It 'fails export explicitly when the required storage validation module is missing' {
-        Remove-Item -LiteralPath (Join-Path $addonPath 'storage-validation.module.psm1')
-        { Copy-AddonSharedScripts -AddonPath $addonPath -ImplementationPath (Join-Path $addonPath 'smb') -DestinationPath $sharedScriptsStaging } |
-            Should -Throw '*shared module*is missing*'
-    }
-
     It 'does not duplicate scripts for a single-implementation addon' {
         Copy-AddonSharedScripts -AddonPath $addonPath -ImplementationPath $addonPath -DestinationPath $sharedScriptsStaging
         @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 0
     }
 
-    It 'does not create a shared layer for other multi-implementation addons' -TestCases @(
+    It 'ships the addon-root files of other multi-implementation addons without the manifest' -TestCases @(
         @{ Addon = 'ingress'; Implementation = 'nginx-gw' }
         @{ Addon = 'rollout'; Implementation = 'argocd' }
     ) {
@@ -122,23 +116,27 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
 
         $otherAddon = Join-Path $caseRoot $Addon
         New-Item -ItemType Directory -Path $otherAddon -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $otherAddon 'common.module.psm1') -Value 'unrelated helper'
-        Set-Content -LiteralPath (Join-Path $otherAddon 'README.md') -Value 'unrelated documentation'
+        Set-Content -LiteralPath (Join-Path $otherAddon 'common.module.psm1') -Value 'shared helper'
+        Set-Content -LiteralPath (Join-Path $otherAddon 'README.md') -Value 'shared documentation'
+        Set-Content -LiteralPath (Join-Path $otherAddon 'addon.manifest.yaml') -Value 'manifest'
         Copy-AddonSharedScripts -AddonPath $otherAddon -ImplementationPath (Join-Path $otherAddon $Implementation) -DestinationPath $sharedScriptsStaging
 
-        @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 0
+        @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Name | Sort-Object | Should -Be @('common.module.psm1', 'README.md')
         $ociLayerDescriptors = @()
+        $addonName = "$Addon $Implementation"
+        $blobsDir = $artifactPath
         . $script:exportSharedLayer
-        $ociLayerDescriptors.Count | Should -Be 0
-        Should -Invoke Add-ContentToBlobs -Times 0 -Exactly
+        $ociLayerDescriptors.Count | Should -Be 1
     }
 
-    It 'does not include unrelated storage-root scripts' {
-        Set-Content -LiteralPath (Join-Path $addonPath 'unrelated.ps1') -Value 'unrelated script'
+    It 'includes all storage-root files except the manifest' {
+        Set-Content -LiteralPath (Join-Path $addonPath 'extra.ps1') -Value 'extra script'
+        Set-Content -LiteralPath (Join-Path $addonPath 'addon.manifest.yaml') -Value 'manifest'
         Copy-AddonSharedScripts -AddonPath $addonPath -ImplementationPath (Join-Path $addonPath 'smb') -DestinationPath $sharedScriptsStaging
 
-        @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 4
-        Test-Path (Join-Path $sharedScriptsStaging 'unrelated.ps1') | Should -BeFalse
+        @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 5
+        Test-Path (Join-Path $sharedScriptsStaging 'extra.ps1') | Should -BeTrue
+        Test-Path (Join-Path $sharedScriptsStaging 'addon.manifest.yaml') | Should -BeFalse
     }
 
     It 'keeps unscoped script layers in the implementation directory' {

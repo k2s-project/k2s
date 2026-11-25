@@ -874,11 +874,14 @@ func VerifyImportedDebPackages(ctx context.Context, suite *framework.K2sTestSuit
 	GinkgoWriter.Println("=== VERIFY IMPORTED DEB PACKAGES END ===")
 }
 
+// debianPackageDirectoryName mirrors Install-DebianPackages/Import.ps1: ~/.<addon>[_<implementation>] on the control plane.
+// ExportDirectoryName of a multi-implementation addon is '<addon>-<implementation>', so the addon name is derived from it.
 func debianPackageDirectoryName(impl *addons.Implementation) string {
-	if impl.Name != impl.ExportDirectoryName {
-		return impl.ExportDirectoryName + "_" + impl.Name
+	addonName := strings.TrimSuffix(impl.ExportDirectoryName, "-"+impl.Name)
+	if impl.Name != addonName {
+		return addonName + "_" + impl.Name
 	}
-	return impl.ExportDirectoryName
+	return addonName
 }
 
 func VerifyImportedLinuxCurlPackages(ctx context.Context, suite *framework.K2sTestSuite, impl *addons.Implementation, controlPlaneIP string, folderName ...string) {

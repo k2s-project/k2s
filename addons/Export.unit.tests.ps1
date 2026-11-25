@@ -108,6 +108,10 @@ Describe 'Shared addon scripts export and import' -Tag 'unit', 'ci', 'addon' {
         @(Get-ChildItem -LiteralPath $sharedScriptsStaging).Count | Should -Be 0
     }
 
+    It 'includes hidden files when checking shared-layer eligibility' {
+        $script:exportSharedLayer.ToString() | Should -Match 'Get-ChildItem -LiteralPath \$sharedScriptsStaging -File -Force'
+    }
+
     It 'ships the addon-root files of other multi-implementation addons without the manifest' -TestCases @(
         @{ Addon = 'ingress'; Implementation = 'nginx-gw' }
         @{ Addon = 'rollout'; Implementation = 'argocd' }

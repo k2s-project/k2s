@@ -449,6 +449,15 @@ k2s addons status <addon> [flags]
 
 Export an addon and its container images as an OCI artifact.
 
+Storage exports include the shared validation module and, when present, the
+storage-root `README.md` and companion license files in a `shared-scripts`
+layer, independently of image and package omission options. Other addons do
+not produce this layer. Both `storage smb` and `storage ceph` exports include
+`storage-validation.module.psm1`. Import restores these shared files to the
+`storage` addon root without replacing implementation-specific READMEs.
+
+importer when importing archives containing this layer.
+
 ```console
 k2s addons export <addon> [flags]
 ```
@@ -458,6 +467,12 @@ k2s addons export <addon> [flags]
 | `--directory` | `-d` | Target directory for the exported artifact |
 | `--omit-images` | | Omit container images from export |
 | `--omit-packages` | | Omit packages (debian, linux, windows) from export |
+
+!!! note "Linux host (experimental)"
+    On a Linux host the export is done by the Bash script `lib/scripts/linux/debian/host/addon/Export-Addon.sh`; no PowerShell is involved. It writes the same OCI layout, layers, annotations and file name (`K2s-<version>-addons-<names>.oci.tar`) as on Windows, so the artifact can be imported on Windows and Linux hosts. Linux images are pulled with `buildah` and exported in the same `oci-archive` format. Windows images (`#windows_image` and `offline_usage.windows`) cannot be pulled on a Linux host and are skipped; the export reports how many were skipped. Offline packages are downloaded like on Windows, but on the host itself: the `repos` commands of the addon manifest run on the host and may add apt sources, Debian packages are downloaded with `apt-get --download-only` (and kept in `~/.<addon>` for later exports), and Linux `curl` packages are downloaded through the K2s HTTP proxy (`<kubeSwitch>:8181`); Windows packages are skipped, they are only used on Windows hosts. Use `--omit-packages` to leave the host unchanged. So that an artifact never lacks content it needs offline, the export fails when a requested addon implementation does not exist, a Helm chart cannot be rendered, or a Debian package cannot be downloaded. The export needs `tar`, `sha256sum`, `jq` and [yq](https://github.com/mikefarah/yq){target="_blank"}, plus `buildah` unless `--omit-images` is given and `helm` for Helm-based addons.
+
+!!! note "Linux-only installation on a Windows host"
+    A Linux-only installation has no Windows node, so `Export.ps1` skips the Windows images and the Windows `curl` packages (and reports how many) while exporting everything else as usual; image listing and export there only query the Linux control plane. Import skips the Windows images there as well.
 
 ### addons import
 
@@ -470,11 +485,19 @@ k2s addons import <addon> [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--file` | `-f` | Path to the OCI artifact tar file |
-| `--node` | | Target node name for addon image import (e.g. `worker-1`); defaults to control-plane and local Windows host when omitted |
+| `--node` | | Target node name for addon image import (e.g. `worker-1`); defaults to the nodes described below |
 | `--nodes` | | Target node names (comma-separated) for addon image import (e.g. `worker-1,worker-2`) |
 | `--omit` | | Skip the images of an omitted addon functionality, e.g. `omitCertMgr` or `ingress/nginx:omitCertMgr`. Repeatable |
 
-By default the addon images are imported onto the control-plane node and the local Windows host. Use `--node` to import them onto a specific worker node, control-plane, or local Windows host, or `--nodes` to import them onto multiple nodes. When both `--node` and `--nodes` are provided, `--nodes` takes precedence. Target nodes must exist and be in the `Ready` state; otherwise the command fails without importing anything.
+Addon import supports Windows-hosted mixed clusters, Windows-hosted `--linux-only` installations, and native Linux installations (experimental). Default image targets depend on the setup:
+
+| Setup | Default image targets |
+|-------|-----------------------|
+| Windows host with Linux and Windows nodes | Linux images on the control-plane; Windows images on the local Windows worker |
+| Windows host installed with `--linux-only` | Linux images on the control-plane; Windows images are skipped |
+| Native Linux host | Linux images on the local host; Windows images are skipped |
+
+Use `--node` to import images onto a specific worker node, control-plane, or local Windows worker, or `--nodes` to import them onto multiple nodes. Only select nodes present in your installation; native Linux import supports Linux targets only. When both `--node` and `--nodes` are provided, `--nodes` takes precedence. Target nodes must exist and be in the `Ready` state; otherwise the command fails without importing anything.
 
 ```console
 # Import an addon and distribute its images to a specific worker node
@@ -483,6 +506,13 @@ k2s addons import registry -f C:\tmp\addons.oci.tar --node worker-1
 # Import an addon and distribute its images to multiple worker nodes
 k2s addons import registry -f C:\tmp\addons.oci.tar --nodes worker-1,worker-2
 ```
+
+!!! note "Linux host"
+    On a Linux host the import is done by the Bash script `lib/scripts/linux/debian/host/addon/Import-Addon.sh`; no PowerShell is involved. It needs `tar`, `sha256sum`, `jq` and [yq](https://github.com/mikefarah/yq){target="_blank"}, which the K2s Linux host installation already provides. The addon files are staged into the `addons` directory and the Linux images are imported into the container runtime of the host. `--omit` works as described above. Without `--node`/`--nodes` the images go to the local host only. With `--node`/`--nodes` they go exactly to the selected nodes: the local host node (its node name or `linux`) is imported directly, and an additional Linux worker is reached over SSH (archive copy to disk-backed `/var/tmp`, `sudo buildah pull`, cleanup). A worker must be listed in the cluster descriptor (`cluster.json`) with IP address and user, and must be `Ready`. Explicit local targets are checked for readiness using the actual local node name. Windows nodes are rejected, and the Windows images of the artifact are not imported. The offline packages are put in place like on Windows, so that the addons can be enabled offline: the Debian packages replace `~/.<addon>`, a Linux package with an absolute destination is copied there on the host, and one with a relative destination goes to `~/.<addon>/<destination>`; when the last selected node is an additional Linux worker, the Debian packages and relatively placed Linux packages go to that worker instead. Windows packages are skipped. All explicitly selected nodes are checked before anything is imported. Remote temporary archives are removed after successful imports and failed uploads/imports; cleanup failures are reported alongside the original error.
+
+    ```console
+    k2s addons import registry -f /tmp/addons.oci.tar
+    ```
 
 ### addons backup
 

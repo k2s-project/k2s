@@ -93,18 +93,25 @@ type AddonStatusProp struct {
 	Message *string // optional display message (overrides Name: Value formatting)
 }
 
-// AddonExportConfig holds parameters for exporting addon state.
+// AddonExportConfig holds parameters for exporting addons as an OCI artifact.
 type AddonExportConfig struct {
-	OutputDir  string
-	Name       string // Empty means all enabled addons
-	ShowOutput bool
+	OutputDir    string   // Absolute directory that receives the '.oci.tar' artifact
+	Names        []string // Addons to export; empty means all addons
+	OmitImages   bool     // Do not pull and package container images
+	OmitPackages bool     // Do not download and package offline packages
+	ShowOutput   bool
 }
 
-// AddonImportConfig holds parameters for importing addon state.
+// AddonImportConfig holds parameters for importing addons from an exported OCI artifact.
 type AddonImportConfig struct {
-	InputDir   string
-	Name       string // Empty means all
-	ShowOutput bool
+	ArtifactFile string   // Absolute path of the '.oci.tar' artifact
+	Names        []string // Addons to import; empty means all addons of the artifact
+	Nodes        string   // Comma-separated target nodes for the images; empty means the default targets
+	Omit         []string // Omit options whose images are not imported
+	ShowOutput   bool
+
+	// SshPrivateKeyPath is the key used to reach additional Linux worker nodes (Linux host only).
+	SshPrivateKeyPath string
 }
 
 // AddonRunCommandConfig holds parameters for executing an arbitrary addon

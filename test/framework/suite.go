@@ -7,12 +7,16 @@ package framework
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	stdos "os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -122,6 +126,7 @@ func Setup(ctx context.Context, args ...any) *K2sTestSuite {
 	}
 
 	rootDir := determineRootDir()
+	RecoverStaleAddonBackups(rootDir)
 
 	k2sCliFunc := func() *os.CliExecutor {
 		if runtime.GOOS == "linux" {
@@ -314,6 +319,104 @@ func (s *K2sTestSuite) expectSystemState(ctx context.Context, systemState expect
 		Expect(s.SetupInfo().RuntimeConfig.ClusterConfig().EnabledAddons()).To(BeEmpty(), "All addons should be disabled to execute the tests")
 		GinkgoWriter.Println("All addons are disabled")
 	}
+}
+
+// RecoverStaleAddonBackups restores addon files left staged by an interrupted test run.
+func RecoverStaleAddonBackups(rootDir string) {
+	staleDirs, err := filepath.Glob(filepath.Join(rootDir, "tmp", "airgap-backup-*"))
+	if err != nil {
+		GinkgoWriter.Printf("[AirGap] WARNING: failed to find stale backups: %v\n", err)
+		return
+	}
+
+	type backupItem struct {
+		Original string `json:"original"`
+		Backup   string `json:"backup"`
+	}
+
+	for _, dir := range staleDirs {
+		content, err := stdos.ReadFile(filepath.Join(dir, "manifest.json"))
+		if err != nil {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s has no readable manifest: %v\n", dir, err)
+			continue
+		}
+		var items []backupItem
+		if err := json.Unmarshal(content, &items); err != nil {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s has an invalid manifest: %v\n", dir, err)
+			continue
+		}
+
+		remaining := make([]backupItem, 0, len(items))
+		for i := len(items) - 1; i >= 0; i-- {
+			item := items[i]
+			if !pathWithin(rootDir, item.Original) || !pathWithin(dir, item.Backup) ||
+				filepath.Clean(item.Backup) == filepath.Join(filepath.Clean(dir), "manifest.json") {
+				GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s contains an unsafe path, leaving it untouched\n", dir)
+				remaining = append(remaining, items[:i+1]...)
+				break
+			}
+			if _, err := stdos.Stat(item.Backup); errors.Is(err, fs.ErrNotExist) {
+				if _, originalErr := stdos.Stat(item.Original); originalErr == nil {
+					GinkgoWriter.Printf("[AirGap] Move was not completed for stale backup %s; keeping original %s\n", dir, item.Original)
+					continue
+				}
+				GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s is missing %s\n", dir, item.Backup)
+				remaining = append(remaining, item)
+				continue
+			}
+			if _, err := stdos.Stat(item.Original); err == nil {
+				GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s original %s already exists, leaving its backup untouched\n", dir, item.Original)
+				remaining = append(remaining, item)
+				continue
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				GinkgoWriter.Printf("[AirGap] WARNING: cannot inspect stale backup destination %s: %v\n", item.Original, err)
+				remaining = append(remaining, item)
+				continue
+			}
+			if err := stdos.MkdirAll(filepath.Dir(item.Original), 0o755); err != nil {
+				GinkgoWriter.Printf("[AirGap] WARNING: cannot restore stale backup %s: %v\n", item.Original, err)
+				remaining = append(remaining, item)
+				continue
+			}
+			if err := stdos.Rename(item.Backup, item.Original); err != nil {
+				GinkgoWriter.Printf("[AirGap] WARNING: cannot restore stale backup %s: %v\n", item.Original, err)
+				remaining = append(remaining, item)
+				continue
+			}
+			GinkgoWriter.Printf("[AirGap] Restored stale addon backup %s\n", item.Original)
+		}
+
+		entries, readErr := stdos.ReadDir(dir)
+		unlisted := readErr == nil && slices.ContainsFunc(entries, func(entry stdos.DirEntry) bool {
+			return entry.Name() != "manifest.json"
+		})
+		if len(remaining) == 0 && !unlisted {
+			if err := stdos.RemoveAll(dir); err != nil {
+				GinkgoWriter.Printf("[AirGap] WARNING: cannot remove stale backup %s: %v\n", dir, err)
+			}
+			continue
+		}
+		if unlisted {
+			GinkgoWriter.Printf("[AirGap] WARNING: stale backup %s contains unlisted files; preserving it\n", dir)
+		}
+		updated, err := json.MarshalIndent(remaining, "", "  ")
+		if err == nil {
+			_ = stdos.WriteFile(filepath.Join(dir, "manifest.json"), updated, 0o644)
+		}
+	}
+}
+
+func pathWithin(root, path string) bool {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func determineRootDir() string {

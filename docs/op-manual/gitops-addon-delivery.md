@@ -389,6 +389,7 @@ Key details:
     - Layer 1 (manifests): K8s YAML, kustomization files -> `manifests/` subdirectory
     - Layer 2 (charts): Helm `.tgz` packages -> `manifests/chart/` subdirectory
     - Layer 3 (scripts): `Enable.ps1`, `Disable.ps1`, etc. -> addon implementation directory
+    - Optional shared-scripts layer: common scripts such as storage validation -> addon root directory
 6. **Merge manifests** -- for multi-implementation addons (e.g., ingress with nginx and traefik), merge `addon.manifest.yaml` implementations using `yq`
 7. (Optional) **Persist digest** -- when `-CheckDigest` is set, save the current digest for next run
 

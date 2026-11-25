@@ -611,7 +611,7 @@ Function Copy-KubernetesImagesFromControlPlaneToRemoteComputer {
         Write-Log "[NodeAdd] Worker architecture '$Architecture' differs from control-plane architecture '$ControlPlaneArchitecture'; pulling compatible Kubernetes and flannel images on the worker."
         $kubernetesImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo kubeadm config images pull --cri-socket unix:///run/crio/crio.sock --kubernetes-version $kubernetesVersion" -UserName $UserName -IpAddress $IpAddress
         Assert-ProvisioningCommandResult -Result $kubernetesImageResult -RemoteUser $remoteUser
-        foreach ($image in @('docker.io/flannel/flannel-cni-plugin:v1.10.0-flannel1', 'docker.io/flannel/flannel:v0.28.10')) {
+        foreach ($image in @('docker.io/flannel/flannel-cni-plugin:v1.10.0-flannel1', 'docker.io/flannel/flannel:v0.28.11')) {
             $flannelImageResult = Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo crictl --runtime-endpoint unix:///run/crio/crio.sock pull $image" -UserName $UserName -IpAddress $IpAddress
             Assert-ProvisioningCommandResult -Result $flannelImageResult -RemoteUser $remoteUser
         }
@@ -1051,7 +1051,7 @@ function Get-FlannelImages {
     Write-Log 'Get images used by flannel'
 
     &$executeRemoteCommand 'sudo crictl pull docker.io/flannel/flannel-cni-plugin:v1.10.0-flannel1'
-    &$executeRemoteCommand 'sudo crictl pull docker.io/flannel/flannel:v0.28.10'
+    &$executeRemoteCommand 'sudo crictl pull docker.io/flannel/flannel:v0.28.11'
 }
 
 <#

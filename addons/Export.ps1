@@ -266,9 +266,9 @@ try {
                  }
              }
              
-             @('*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.drawio', '*.drawio.png', '*.md', '*.ndjson', '*.json', '*.license', 'Dockerfile*') | ForEach-Object {
+             @('*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.drawio', '*.drawio.png', '*.md', '*.ndjson', '*.json', '*.license', '*.tar.gz', 'Dockerfile*') | ForEach-Object {
                  Get-ChildItem -Path $dirPath -Filter $_ -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-                     if ($_.Name -ne 'README.md') {
+                     if ($_.FullName -ne $readmePath) {
                          $relativePath = $_.FullName.Substring($dirPath.Length + 1)
                          $targetPath = Join-Path $scriptsStaging $relativePath
                          $targetDir = Split-Path $targetPath -Parent

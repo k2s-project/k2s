@@ -9,16 +9,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-func TestPrebuiltAddonOci(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Prebuilt addon OCI selection", Label("unit", "ci"))
-}
 
 var _ = Describe("prebuilt addon OCI selection", func() {
 	It("uses the configured artifact when its contents include the requested implementation", func() {

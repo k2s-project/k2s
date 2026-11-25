@@ -9,7 +9,7 @@
 #     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add --node-package' joins it.
 #   Both guests share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24.
 # - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64 and the worker role, flannel and
-#   kube-proxy run on it, and an arm64 workload runs there.
+#   kube-proxy run on it, an arm64 workload runs there, and 'k2s stop/start --node' work.
 # - 'k2s node remove' removes it (cluster, cluster.json, Kubernetes packages on the worker). Then the worker is added
 #   again online (without --node-package: it downloads its packages and pulls its images itself, the runner NATs the
 #   guests to the internet) and removed once more. Offline runs first because it fails faster.
@@ -180,6 +180,30 @@ jobs:
             || { echo "::error::$arm_node has no HOST entry in /var/lib/k2s/cluster.json"; exit 1; }
           kube delete pod arm64-smoke --wait=true
           EOF
+
+      - name: Stop and start the arm64 worker with k2s stop/start --node
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          {
+            printf 'node=%q\n' "$WK_NAME"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          sudo ./k2s stop --node "$node" --output
+          for attempt in $(seq 1 36); do
+            ready="$(kube get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$ready" != True ]; then break; fi
+            sleep 5
+          done
+          test "$ready" != True || { echo "::error::$node is still Ready 3 minutes after k2s stop --node"; exit 1; }
+          sudo ./k2s start --node "$node" --output
+          kube wait --for=condition=Ready "node/$node" --timeout=900s
+          EOF
+          } | cp_vm exec
 
       - name: Remove the offline-added arm64 worker
         if: ${{ steps.kvm.outputs.available == 'true' }}

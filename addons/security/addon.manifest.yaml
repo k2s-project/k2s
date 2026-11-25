@@ -99,12 +99,12 @@ spec:
                 # offline_usage.linux.additionalImages above.
                 omittedImages:
                   explicit:
-                    - reg.kyverno.io/kyverno/kyverno:v1.19.0
-                    - reg.kyverno.io/kyverno/kyvernopre:v1.19.0
-                    - reg.kyverno.io/kyverno/background-controller:v1.19.0
-                    - reg.kyverno.io/kyverno/cleanup-controller:v1.19.0
-                    - reg.kyverno.io/kyverno/reports-controller:v1.19.0
-                    - reg.kyverno.io/kyverno/kyverno-cli:v1.19.0
+                    - reg.kyverno.io/kyverno/kyverno:v1.20.0
+                    - reg.kyverno.io/kyverno/kyvernopre:v1.20.0
+                    - reg.kyverno.io/kyverno/background-controller:v1.20.0
+                    - reg.kyverno.io/kyverno/cleanup-controller:v1.20.0
+                    - reg.kyverno.io/kyverno/reports-controller:v1.20.0
+                    - reg.kyverno.io/kyverno/kyverno-cli:v1.20.0
             examples:
               - cmd: k2s addons enable security
                 comment: Enable security addon with CA issuer configured

@@ -242,7 +242,7 @@ addon_export_config_files() {
     [[ ${parent,,} == "${base_name,,}" ]] || continue
     grep -Eqi '"apiVersion"[[:space:]]*:[[:space:]]*"' "$file" && continue
     cp "$file" "$destination/" || return 1
-  done < <(find "$implementation_path" -type f -iname '*.json' -print0)
+  done < <(find "$implementation_path" -maxdepth 1 -type f -iname '*.json' -print0)
 }
 
 # Prints the images referenced by 'image:' lines of the YAML files as '<linux|windows>\t<image>'; files

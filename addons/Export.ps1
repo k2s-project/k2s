@@ -346,6 +346,7 @@ try {
             $addonSpecificConfigs = Get-ChildItem -Path $dirPath -Recurse -Include '*.json' -File -ErrorAction SilentlyContinue | 
                 Where-Object { 
                     $_.Name -notmatch '^(package|tsconfig|eslint|babel)' -and
+                    $_.DirectoryName -eq $dirPath -and
                     $_.Directory.Name -eq $manifest.metadata.name -and
                     (Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -notmatch '"apiVersion"\s*:\s*"'
                 }

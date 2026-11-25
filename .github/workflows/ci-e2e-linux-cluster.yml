@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Linux-host counterpart of ci-windows-cluster.yml for the experimental Linux host variant
+# Linux-host counterpart of ci-e2e-windows-cluster.yml for the experimental Linux host variant
 # (the "reverted setup": control plane runs natively on the host, amd64, Linux-only).
 #
 # Mirrors ci/tests/40-test-linuxonly.yaml from k2s-support: install with --linux-only, then run
@@ -18,7 +18,7 @@
 # Addon tests are not available on this variant yet. The addon input is kept for parity with the
 # Windows workflow; any value other than "none" fails the run before anything is provisioned.
 
-name: CI - Linux Cluster
+name: CI - E2E Linux Cluster
 
 # Never run untrusted pull-request code on an elevated self-hosted runner.
 on:
@@ -48,6 +48,29 @@ on:
           - windows-exporter
       kvm_attempt:
         description: 'Internal: attempt number when this run was re-dispatched to find a runner with KVM. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+  # Called by ci-e2e-nightly.yml.
+  workflow_call:
+    inputs:
+      addon:
+        description: 'Not yet supported on the Linux host; any value other than "none" fails the run.'
+        type: string
+        required: false
+        default: 'none'
+      kvm_attempt:
+        description: 'Internal: attempt number. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+      nightly:
+        description: 'Nightly mode: a runner without /dev/kvm fails the run (NO_KVM) instead of re-dispatching it, so the nightly counts every repetition.'
+        type: boolean
+        required: false
+        default: false
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
         type: number
         required: false
         default: 1
@@ -92,6 +115,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
+          K2S_NIGHTLY: ${{ inputs.nightly }}
         run: |
           set -uo pipefail
           echo "KVM attempt ${KVM_ATTEMPT} of ${KVM_MAX_ATTEMPTS}"
@@ -112,13 +136,19 @@ jobs:
             exit 0
           fi
           echo "available=false" >> "$GITHUB_OUTPUT"
+          if [ "$K2S_NIGHTLY" = "true" ]; then
+            # A re-dispatch would start a separate run outside the nightly and this one would end green
+            # without testing anything. Failing keeps the nightly statistics honest (the email reports NO_KVM).
+            echo "::error::NO_KVM: no usable /dev/kvm on this runner (nightly run, not re-dispatched)."
+            exit 1
+          fi
           if [ "$KVM_ATTEMPT" -ge "$KVM_MAX_ATTEMPTS" ]; then
             echo "::error::No usable /dev/kvm after ${KVM_ATTEMPT} attempts; giving up."
             exit 1
           fi
           next=$((KVM_ATTEMPT + 1))
           echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
-          gh workflow run ci-linux-cluster.yml --ref "$GITHUB_REF_NAME" \
+          gh workflow run ci-e2e-linux-cluster.yml --ref "$GITHUB_REF_NAME" \
             -f addon="$K2S_ADDON_SELECTION" -f kvm_attempt="$next"
           echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"
 
@@ -288,7 +318,7 @@ jobs:
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: linux-cluster-${{ github.run_id }}-${{ github.run_attempt }}-test-results
+          name: linux-cluster-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}-test-results
           path: ${{ runner.temp }}/k2s-results-export/
           if-no-files-found: warn
           retention-days: 7

@@ -1,28 +1,43 @@
 # SPDX-FileCopyrightText: © 2026 The K2s Authors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Linux-host cluster with an arm64 worker node, on two GitHub-hosted runners.
+# Linux-host cluster with an arm64 worker node, on one GitHub-hosted runner.
 #
 # - Job 'arm64-node-package' builds the arm64 node package (ci-arm64-node-package-build.yml, native arm64).
-# - Job 'control-plane' (ubuntu-24.04, amd64): a Debian 13 amd64 guest with KVM, 4 GB RAM. K2s is installed
-#   with --linux-only (same setup as ci-linux-cluster.yml), then 'k2s node add' joins the worker.
-# - Job 'arm64-worker' (ubuntu-24.04-arm): a Debian 13 arm64 guest, 2 GB RAM, under QEMU TCG (no KVM).
-#
-# Both guests sit on the subnet 10.10.0.0/24. The two runners connect their bridges with a VXLAN device over
-# Tailscale (tag:k2s-ci, as in ci-arm64-node-join.yml), so the worker is in the control plane's subnet.
-# The jobs hand over artifacts: the K2s public key (control plane -> worker) and the readiness and completion
-# markers (worker <-> control plane). Each job finds the other runner on the tailnet by a hostname that
-# contains the run id and attempt.
+# - Job 'install-add-and-check' (ubuntu-24.04, amd64) runs two Debian 13 guests on the runner:
+#     control plane: amd64, KVM, 4 GB RAM. K2s is installed with --linux-only (same setup as ci-e2e-linux-cluster.yml).
+#     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add' joins it.
+#   Both guests share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24.
+# - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64, flannel and kube-proxy run on it,
+#   and an arm64 workload runs there.
 #
 # The arm64 package is built without GPU packages: the worker has no GPU and the test does not need them.
 
-name: CI - Linux Cluster with arm64 Node
+name: CI - E2E Linux Cluster with arm64 Node
 
 on:
   workflow_dispatch:
     inputs:
       kvm_attempt:
         description: 'Internal: attempt number when this run was re-dispatched to find a runner with KVM. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+  # Called by ci-e2e-nightly.yml.
+  workflow_call:
+    inputs:
+      kvm_attempt:
+        description: 'Internal: attempt number. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+      nightly:
+        description: 'Nightly mode: a runner without /dev/kvm fails the run (NO_KVM) instead of re-dispatching it, so the nightly counts every repetition.'
+        type: boolean
+        required: false
+        default: false
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
         type: number
         required: false
         default: 1
@@ -40,36 +55,29 @@ jobs:
     uses: ./.github/workflows/ci-arm64-node-package-build.yml
     with:
       include_gpu: false
+      run: ${{ inputs.run || 1 }}
 
-  control-plane:
-    name: Control plane (amd64 guest) and node add
+  install-add-and-check:
+    name: Control plane (amd64, KVM) and arm64 worker on one runner
     needs: arm64-node-package
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
       contents: read
-      actions: write
-      id-token: none
+      actions: write # re-dispatch this workflow when the runner has no usable /dev/kvm
     defaults:
       run:
         shell: bash
     env:
       KVM_MAX_ATTEMPTS: 5
-      CP_TAILSCALE_HOST: k2s-cp-${{ github.run_id }}-${{ github.run_attempt }}
-      WK_TAILSCALE_HOST: k2s-arm64-worker-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          persist-credentials: false
-
       - name: Check KVM (re-dispatch on a new runner if missing)
         id: kvm
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
+          K2S_NIGHTLY: ${{ inputs.nightly }}
         run: |
           set -uo pipefail
           echo "KVM attempt ${KVM_ATTEMPT} of ${KVM_MAX_ATTEMPTS}"
@@ -89,45 +97,29 @@ jobs:
             exit 0
           fi
           echo "available=false" >> "$GITHUB_OUTPUT"
+          if [ "$K2S_NIGHTLY" = "true" ]; then
+            # A re-dispatch would start a separate run outside the nightly and this one would end green
+            # without testing anything. Failing keeps the nightly statistics honest (the email reports NO_KVM).
+            echo "::error::NO_KVM: no usable /dev/kvm on this runner (nightly run, not re-dispatched)."
+            exit 1
+          fi
           if [ "$KVM_ATTEMPT" -ge "$KVM_MAX_ATTEMPTS" ]; then
             echo "::error::No usable /dev/kvm after ${KVM_ATTEMPT} attempts; giving up."
             exit 1
           fi
           next=$((KVM_ATTEMPT + 1))
           echo "::notice::No usable /dev/kvm on this runner. Re-dispatching attempt ${next} of ${KVM_MAX_ATTEMPTS} on a new runner."
-          gh workflow run ci-linux-cluster-node-arm64.yml --ref "$GITHUB_REF_NAME" -f kvm_attempt="$next"
+          gh workflow run ci-e2e-linux-cluster-node-arm64.yml --ref "$GITHUB_REF_NAME" -f kvm_attempt="$next"
           echo "Re-dispatched attempt ${next}. This run ends without installing K2s; see the new run." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Join Tailscale (overlay network to the worker runner)
+      - name: Checkout
         if: ${{ steps.kvm.outputs.available == 'true' }}
-        uses: tailscale/github-action@v3
+        uses: actions/checkout@v4
         timeout-minutes: 10
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:k2s-ci
-          hostname: ${{ env.CP_TAILSCALE_HOST }}
+          persist-credentials: false
 
-      - name: Find the worker runner on the tailnet
-        id: overlay
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          local_ip="$(tailscale ip -4 | head -n 1)"
-          peer_ip=""
-          for attempt in $(seq 1 60); do
-            peer_ip="$(tailscale_peer_ip "$WK_TAILSCALE_HOST")"
-            [ -n "$peer_ip" ] && break
-            sleep 10
-          done
-          test -n "$peer_ip" || { echo "::error::worker runner $WK_TAILSCALE_HOST is not on the tailnet"; exit 1; }
-          echo "VM_OVERLAY_LOCAL=$local_ip" >> "$GITHUB_ENV"
-          echo "VM_OVERLAY_PEER=$peer_ip" >> "$GITHUB_ENV"
-          echo "Overlay: this runner $local_ip, worker runner $peer_ip"
-
-      - name: Free runner disk space for the guest image
+      - name: Free runner disk space for the guest images
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 10
         run: |
@@ -159,7 +151,7 @@ jobs:
         uses: actions/download-artifact@v4
         timeout-minutes: 10
         with:
-          name: debian13-arm64-node-package
+          name: debian13-arm64-node-package-${{ inputs.run || 1 }}
           path: ${{ runner.temp }}/node-package
 
       - name: Start control-plane guest (amd64, KVM, 4 GB)
@@ -225,47 +217,37 @@ jobs:
           kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=300s
           EOF
 
-      - name: Export the K2s public key
+      - name: Start worker guest (arm64, TCG, 2 GB)
         if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 5
+        timeout-minutes: 60
         run: |
           set -euo pipefail
           source .github/scripts/linux-cluster-arm64-env.sh
-          mkdir -p "$RUNNER_TEMP/cp-pubkey"
-          cp_vm exec <<'EOF' > "$RUNNER_TEMP/cp-pubkey/k2s-node.pub"
+          wk_vm prepare
+          wk_vm start
+          wk_vm wait-ssh
+
+      - name: Authorize the K2s public key on the worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          # The K2s key pair lives on the control-plane guest and never leaves it: only the public half is copied.
+          pubkey_file="$RUNNER_TEMP/k2s-node.pub"
+          cp_vm exec <<'EOF' > "$pubkey_file"
           set -euo pipefail
           sudo test -f /root/.ssh/k2s/id_ed25519.pub
           sudo cat /root/.ssh/k2s/id_ed25519.pub
           EOF
-          grep -q '^ssh-ed25519 ' "$RUNNER_TEMP/cp-pubkey/k2s-node.pub"
-
-      - name: Hand the K2s public key to the worker runner
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        uses: actions/upload-artifact@v4
-        timeout-minutes: 5
-        with:
-          name: cp-pubkey-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/cp-pubkey
-          retention-days: 1
-
-      - name: Wait for the worker to authorize the K2s key and report ready
-        id: worker_ready
-        if: ${{ steps.kvm.outputs.available == 'true' }}
-        timeout-minutes: 240
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
+          grep -q '^ssh-ed25519 ' "$pubkey_file"
+          pubkey="$(cat "$pubkey_file")"
+          wk_vm exec <<EOF
           set -euo pipefail
-          deadline=$((SECONDS + 13800))
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            if gh run download "$GITHUB_RUN_ID" -n "worker-ready-${GITHUB_RUN_ATTEMPT}" --dir "$RUNNER_TEMP/worker-ready" >/dev/null 2>&1; then
-              echo "Worker is ready."
-              exit 0
-            fi
-            sleep 30
-          done
-          echo "::error::the worker runner did not report ready"
-          exit 1
+          install -d -m 700 ~/.ssh
+          grep -qxF '$pubkey' ~/.ssh/authorized_keys 2>/dev/null || echo '$pubkey' >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          EOF
 
       - name: Copy the node package to the control plane
         if: ${{ steps.kvm.outputs.available == 'true' }}
@@ -326,22 +308,7 @@ jobs:
           echo "arm64 workload ran on $arm_node as aarch64"
           EOF
 
-      - name: Mark the join as finished for the worker runner
-        if: ${{ always() && steps.kvm.outputs.available == 'true' }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/join-marker"
-          echo "node-add=${{ steps.add.outcome }}" > "$RUNNER_TEMP/join-marker/done"
-
-      - name: Tell the worker the join is finished
-        if: ${{ always() && steps.kvm.outputs.available == 'true' }}
-        uses: actions/upload-artifact@v4
-        timeout-minutes: 5
-        with:
-          name: join-done-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/join-marker
-          retention-days: 1
-
-      - name: Collect diagnostics
+      - name: Collect diagnostics (control plane and worker)
         if: ${{ always() && steps.kvm.outputs.available == 'true' }}
         continue-on-error: true
         timeout-minutes: 15
@@ -360,151 +327,22 @@ jobs:
           cp_vm pull '~/cluster-*.txt' "$out" || true
           cp_vm pull '~/k2s.log' "$out" || true
           cp "$CP_VM_DIR/console.log" "$out/control-plane-console.log" 2>/dev/null || true
+          cp "$WK_VM_DIR/console.log" "$out/worker-console.log" 2>/dev/null || true
 
-      - name: Stop control-plane guest
+      - name: Stop guests
         if: ${{ always() && steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 5
         run: |
           source .github/scripts/linux-cluster-arm64-env.sh
           cp_vm stop || true
+          wk_vm stop || true
 
-      - name: Upload control-plane diagnostics
+      - name: Upload diagnostics
         if: ${{ always() && steps.kvm.outputs.available == 'true' }}
         uses: actions/upload-artifact@v4
         timeout-minutes: 5
         with:
-          name: linux-cluster-node-arm64-control-plane-${{ github.run_id }}-${{ github.run_attempt }}
+          name: linux-cluster-node-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}
           path: ${{ runner.temp }}/k2s-results-export/
-          if-no-files-found: warn
-          retention-days: 7
-
-  arm64-worker:
-    name: Arm64 worker guest (no KVM)
-    needs: arm64-node-package
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
-    permissions:
-      contents: read
-      actions: read
-    defaults:
-      run:
-        shell: bash
-    env:
-      CP_TAILSCALE_HOST: k2s-cp-${{ github.run_id }}-${{ github.run_attempt }}
-      WK_TAILSCALE_HOST: k2s-arm64-worker-${{ github.run_id }}-${{ github.run_attempt }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          persist-credentials: false
-
-      - name: Join Tailscale (overlay network to the control-plane runner)
-        uses: tailscale/github-action@v3
-        timeout-minutes: 10
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:k2s-ci
-          hostname: ${{ env.WK_TAILSCALE_HOST }}
-
-      - name: Find the control-plane runner on the tailnet
-        id: overlay
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          local_ip="$(tailscale ip -4 | head -n 1)"
-          peer_ip=""
-          for attempt in $(seq 1 60); do
-            peer_ip="$(tailscale_peer_ip "$CP_TAILSCALE_HOST")"
-            [ -n "$peer_ip" ] && break
-            sleep 10
-          done
-          test -n "$peer_ip" || { echo "::error::control-plane runner $CP_TAILSCALE_HOST is not on the tailnet"; exit 1; }
-          echo "VM_OVERLAY_LOCAL=$local_ip" >> "$GITHUB_ENV"
-          echo "VM_OVERLAY_PEER=$peer_ip" >> "$GITHUB_ENV"
-          echo "Overlay: this runner $local_ip, control-plane runner $peer_ip"
-
-      - name: Start worker guest (arm64, TCG, 2 GB)
-        timeout-minutes: 60
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          wk_vm prepare
-          wk_vm start
-          wk_vm wait-ssh
-
-      - name: Authorize the K2s public key on the worker
-        timeout-minutes: 160
-        run: |
-          set -euo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          deadline=$((SECONDS + 9000))
-          key_file=""
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            if gh run download "$GITHUB_RUN_ID" -n "cp-pubkey-${GITHUB_RUN_ATTEMPT}" --dir "$RUNNER_TEMP/cp-pubkey" >/dev/null 2>&1; then
-              key_file="$RUNNER_TEMP/cp-pubkey/k2s-node.pub"
-              break
-            fi
-            sleep 30
-          done
-          test -n "$key_file" && test -s "$key_file" || { echo "::error::the control plane did not publish its K2s public key"; exit 1; }
-          pubkey="$(cat "$key_file")"
-          wk_vm exec <<EOF
-          set -euo pipefail
-          install -d -m 700 ~/.ssh
-          grep -qxF '$pubkey' ~/.ssh/authorized_keys 2>/dev/null || echo '$pubkey' >> ~/.ssh/authorized_keys
-          chmod 600 ~/.ssh/authorized_keys
-          EOF
-
-      - name: Report the worker ready
-        timeout-minutes: 5
-        run: |
-          mkdir -p "$RUNNER_TEMP/worker-marker"
-          echo "ready $(date -u +%FT%TZ)" > "$RUNNER_TEMP/worker-marker/ready"
-
-      - name: Hand the worker-ready marker to the control plane
-        uses: actions/upload-artifact@v4
-        timeout-minutes: 5
-        with:
-          name: worker-ready-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/worker-marker
-          retention-days: 1
-
-      - name: Wait for the control plane to finish the join
-        timeout-minutes: 340
-        run: |
-          set -euo pipefail
-          deadline=$((SECONDS + 19800))
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            if gh run download "$GITHUB_RUN_ID" -n "join-done-${GITHUB_RUN_ATTEMPT}" --dir "$RUNNER_TEMP/join-done" >/dev/null 2>&1; then
-              echo "The control plane finished the join."
-              exit 0
-            fi
-            sleep 60
-          done
-          echo "::error::timed out waiting for the control plane to finish the join"
-          exit 1
-
-      - name: Stop worker guest and collect its console log
-        if: ${{ always() }}
-        timeout-minutes: 10
-        run: |
-          set -uo pipefail
-          source .github/scripts/linux-cluster-arm64-env.sh
-          out="$RUNNER_TEMP/k2s-worker-export"
-          mkdir -p "$out"
-          cp "$WK_VM_DIR/console.log" "$out/worker-console.log" 2>/dev/null || true
-          wk_vm stop || true
-
-      - name: Upload worker diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        timeout-minutes: 5
-        with:
-          name: linux-cluster-node-arm64-worker-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/k2s-worker-export/
           if-no-files-found: warn
           retention-days: 7

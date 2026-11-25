@@ -31,6 +31,10 @@ var (
 	controlPlaneIpAddress   string
 	addon                   *addons.Addon
 	impl                    *addons.Implementation
+	ingressAddon            *addons.Addon
+	ingressNginxImpl        *addons.Implementation
+	ingressExportPath       string
+	ingressNginxOciFile     string
 	testFailed              = false
 )
 
@@ -69,6 +73,14 @@ var _ = BeforeSuite(func(ctx context.Context) {
 	exportimport.AssertWindowsCurlContains(impl, `bin\kyverno.exe`)
 	exportimport.AssertWindowsCurlContains(impl, `bin\linkerd.exe`)
 
+	// Security enables ingress nginx itself when no ingress controller is running. On an air-gapped system that only
+	// works if the ingress nginx package is imported as well, so this suite exports and imports it too.
+	ingressAddon = exportimport.GetAddonByName(allAddons, "ingress")
+	Expect(ingressAddon).NotTo(BeNil(), "ingress addon should exist")
+	ingressNginxImpl = exportimport.GetImplementation(ingressAddon, "nginx")
+	Expect(ingressNginxImpl).NotTo(BeNil(), "ingress nginx implementation should exist")
+	ingressExportPath = filepath.Join(suite.RootDir(), "tmp", "security-export-test-ingress-nginx")
+
 	k2s = dsl.NewK2s(suite)
 
 	GinkgoWriter.Println("[Setup] Setup complete")
@@ -82,6 +94,7 @@ var _ = AfterSuite(func(ctx context.Context) {
 
 	if suite.ShouldCleanup(testFailed) {
 		exportimport.CleanupExportedFiles(exportPath, exportedOciFile)
+		exportimport.CleanupExportedFiles(ingressExportPath, ingressNginxOciFile)
 	}
 
 	suite.TearDown(ctx)
@@ -97,6 +110,7 @@ var _ = Describe("security addon export and import", Ordered, func() {
 	Describe("export security addon", func() {
 		BeforeAll(func(ctx context.Context) {
 			exportimport.CleanupExportedFiles(exportPath, "")
+			exportimport.CleanupExportedFiles(ingressExportPath, "")
 		})
 
 		It("exports security addon to versioned OCI tar file", func(ctx context.Context) {
@@ -110,6 +124,15 @@ var _ = Describe("security addon export and import", Ordered, func() {
 
 			// Baseline for the artifact immutability check of the '--omit' block below.
 			exportedOciFileChecksum = exportimport.Sha256OfFile(exportedOciFile)
+		})
+
+		It("exports ingress nginx, which security enables when no ingress controller is running", func(ctx context.Context) {
+			GinkgoWriter.Println(">>> TEST: exports ingress nginx, which security enables when no ingress controller is running")
+			ingressNginxOciFile = exportimport.ExportAddon(ctx, suite, "ingress", "nginx", ingressExportPath)
+
+			info, err := os.Stat(ingressNginxOciFile)
+			Expect(err).ToNot(HaveOccurred(), "exported ingress nginx OCI tar file should exist at %s", ingressNginxOciFile)
+			GinkgoWriter.Printf("[Test] Ingress nginx OCI tar file verified: %d bytes\n", info.Size())
 		})
 
 		It("contains security addon folder with correct OCI structure", func(ctx context.Context) {
@@ -255,18 +278,32 @@ var _ = Describe("security addon export and import", Ordered, func() {
 
 		BeforeAll(func(ctx context.Context) {
 			restoreProxyEnvironment = exportimport.PrepareAirGappedAddonImport(ctx, suite, k2s, addon, impl, controlPlaneIpAddress)
+
+			// Security enables ingress nginx when no ingress controller is running. Its images were removed with all
+			// other non-core images and cannot be pulled while air-gapped, so - like a customer would - its package is
+			// imported as well. Its addon folder is removed first so that the import has to restore it, too.
+			exportimport.StageAddonRemovedFromHost(suite.RootDir(), ingressAddon, ingressNginxImpl)
+
 			exportimport.LogAirGapState(ctx, suite, k2s, addon, impl, controlPlaneIpAddress)
 			exportimport.ImportAddon(ctx, suite, exportedOciFile)
-		})
+			exportimport.ImportAddon(ctx, suite, ingressNginxOciFile)
+		}, NodeTimeout(exportImportTestTimeout))
 
 		AfterAll(func(ctx context.Context) {
 			_, _ = suite.K2sCli().Exec(ctx, "addons", "disable", "security", "-o")
+			_, _ = suite.K2sCli().Exec(ctx, "addons", "disable", "ingress", "nginx", "-o")
 
 			if restoreProxyEnvironment != nil {
 				restoreProxyEnvironment()
 			}
 
 			exportimport.CleanupExportedFiles(exportPath, exportedOciFile)
+			exportimport.CleanupExportedFiles(ingressExportPath, ingressNginxOciFile)
+		})
+
+		It("ingress nginx images available after import", func(ctx context.Context) {
+			GinkgoWriter.Println(">>> TEST: ingress nginx images available after import")
+			exportimport.VerifyImportedImages(ctx, suite, k2s, ingressNginxImpl)
 		})
 
 		It("debian packages available after import", func(ctx context.Context) {

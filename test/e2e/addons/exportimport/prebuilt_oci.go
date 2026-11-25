@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -20,14 +21,41 @@ import (
 // When set, ExportAddon and ExportAddonRelativePath do not export anything (an export needs internet access and a
 // configured proxy); they copy that file into the requested output directory instead. The export-import suites then
 // test the import of exactly the shipped artifact, which allows to run them on an air-gapped system.
+//
+// The file is only used for the addon it belongs to (K2s-<version>-addons-<addon>[-<implementation>].oci.tar).
+// A suite that also needs another addon (e.g. ingress nginx, which security enables) uses that addon's own, separate
+// package if it lies next to the configured file (the offline-package workflows place it there); otherwise the suite
+// exports it itself, before it sets up the air-gapped environment.
 const PrebuiltAddonOciFileEnv = "SYSTEM_TEST_ADDON_OCI_FILE"
 
-// usePrebuiltAddonOci copies the pre-built addon OCI artifact into outputDir. It returns the path of the copy.
+// prebuiltAddonOciStem returns the addon part of the package file name, as produced by 'k2s addons export'.
+func prebuiltAddonOciStem(addonName, implName string) string {
+	if implName == "" || implName == addonName {
+		return strings.ReplaceAll(addonName, " ", "-")
+	}
+	return strings.ReplaceAll(addonName+"-"+implName, " ", "-")
+}
+
+// usePrebuiltAddonOci copies the pre-built package of the requested addon into outputDir and returns the path of the
+// copy: the configured file if it belongs to the addon, otherwise the addon's package next to it. Without such a
+// package it returns false, so the caller exports the addon.
 // The copy keeps the original file name, so cleanup helpers can delete it without touching the original.
-func usePrebuiltAddonOci(outputDir string) (string, bool) {
+func usePrebuiltAddonOci(addonName, implName, outputDir string) (string, bool) {
 	source := os.Getenv(PrebuiltAddonOciFileEnv)
 	if source == "" {
 		return "", false
+	}
+	stem := prebuiltAddonOciStem(addonName, implName)
+	if !strings.HasSuffix(filepath.Base(source), "-addons-"+stem+".oci.tar") {
+		pattern := filepath.Join(filepath.Dir(source), "K2s-*-addons-"+stem+".oci.tar")
+		matches, err := filepath.Glob(pattern)
+		Expect(err).ToNot(HaveOccurred(), "invalid pre-built addon OCI pattern '%s'", pattern)
+		Expect(len(matches)).To(BeNumerically("<=", 1), "ambiguous pre-built packages for '%s': %v", stem, matches)
+		if len(matches) == 0 {
+			GinkgoWriter.Printf("[Prebuilt] No pre-built package for '%s' next to %s, exporting it instead\n", stem, source)
+			return "", false
+		}
+		source = matches[0]
 	}
 
 	GinkgoWriter.Println("=== USE PRE-BUILT ADDON OCI (no export) START ===")

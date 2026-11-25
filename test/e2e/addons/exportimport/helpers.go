@@ -206,14 +206,30 @@ func RemoveConfigJsonMirrorRuntimeFiles(ctx context.Context, suite *framework.K2
 	RemoveAirGappedMirrorRuntimeFiles(ctx, suite, mirrors, controlPlaneIP)
 }
 
+// Backup location of the CRI-O mirror drop-ins on the control plane (/var/tmp survives a reboot, unlike /tmp).
+const linuxMirrorBackupDir = "/var/tmp/k2s-airgap-mirror-backup"
+
 // RemoveAirGappedMirrorRuntimeFiles removes container runtime mirror files that would mask air-gapped import gaps.
+//
+// The files are moved to a backup, not deleted: the CRI-O drop-ins on the control plane to linuxMirrorBackupDir and
+// the containerd certs.d folders on the Windows host to a sibling backup folder. They are restored automatically at
+// the end of the enclosing container (DeferCleanup), so that tests running afterwards pull through the configured
+// mirrors (pull-through cache) again instead of hitting the public registries. A backup left behind by an aborted run
+// is restored by the next run.
 func RemoveAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirrors []MirrorRegistry, controlPlaneIP string) {
 	GinkgoWriter.Println("=== REMOVE CONFIG.JSON MIRROR RUNTIME FILES START ===")
 	Expect(controlPlaneIP).NotTo(BeEmpty(), "control plane IP must be set to remove Linux runtime mirror files")
 
-	removeLinuxMirrorCmd := `sudo sh -c 'for f in /etc/containers/registries.conf.d/*.conf; do [ -f "$f" ] || continue; if grep -q "^[[:space:]]*\[\[registry\.mirror\]\]" "$f"; then rm -f "$f"; fi; done' && sudo systemctl daemon-reload && sudo systemctl restart crio`
-	GinkgoWriter.Println("[AirGap] Removing all Linux CRI-O registry mirror drop-ins")
-	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", removeLinuxMirrorCmd, "-o")
+	var once sync.Once
+	restore := func() {
+		once.Do(func() { restoreAirGappedMirrorRuntimeFiles(context.Background(), suite, mirrors, controlPlaneIP) })
+	}
+	// registered before anything is moved, so that a failure half way is restored as well
+	DeferCleanup(restore)
+
+	moveLinuxMirrorCmd := fmt.Sprintf(`sudo sh -c 'mkdir -p %[1]s && for f in /etc/containers/registries.conf.d/*.conf; do [ -f "$f" ] || continue; if grep -q "^[[:space:]]*\[\[registry\.mirror\]\]" "$f"; then mv -f "$f" %[1]s/ && echo "moved to backup: $f"; fi; done; echo "backup content:"; ls -1 %[1]s' && sudo systemctl daemon-reload && sudo systemctl restart crio`, linuxMirrorBackupDir)
+	GinkgoWriter.Printf("[AirGap] Moving all Linux CRI-O registry mirror drop-ins to %s\n", linuxMirrorBackupDir)
+	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", moveLinuxMirrorCmd, "-o")
 
 	if len(mirrors) == 0 {
 		GinkgoWriter.Println("[AirGap] No config.json mirror registries configured for Windows containerd cleanup")
@@ -223,12 +239,28 @@ func RemoveAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2s
 
 	for _, mirror := range mirrors {
 		if runtime.GOOS == "windows" {
-			removeWindowsMirrorRuntimeFiles(ctx, suite, mirror)
+			removeWindowsMirrorRuntimeFiles(mirror)
 		} else {
 			GinkgoWriter.Printf("[AirGap] Skipping Windows containerd mirror cleanup on non-Windows test host: %s\n", runtime.GOOS)
 		}
 	}
 	GinkgoWriter.Println("=== REMOVE CONFIG.JSON MIRROR RUNTIME FILES END ===")
+}
+
+// restoreAirGappedMirrorRuntimeFiles moves the backed-up mirror files back and verifies that they are in place.
+func restoreAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirrors []MirrorRegistry, controlPlaneIP string) {
+	GinkgoWriter.Println("=== RESTORE CONFIG.JSON MIRROR RUNTIME FILES START ===")
+
+	restoreLinuxMirrorCmd := fmt.Sprintf(`sudo sh -c 'restored=0; for f in %[1]s/*.conf; do [ -f "$f" ] || continue; mv -f "$f" /etc/containers/registries.conf.d/ && echo "restored: $(basename "$f")" && restored=1; done; if [ "$restored" = 1 ]; then systemctl daemon-reload && systemctl restart crio; else echo "no CRI-O mirror drop-ins to restore"; fi; rmdir %[1]s 2>/dev/null; true'`, linuxMirrorBackupDir)
+	GinkgoWriter.Printf("[AirGap] Restoring Linux CRI-O registry mirror drop-ins from %s\n", linuxMirrorBackupDir)
+	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", restoreLinuxMirrorCmd, "-o")
+
+	if runtime.GOOS == "windows" {
+		for _, mirror := range mirrors {
+			restoreWindowsMirrorRuntimeFiles(mirror)
+		}
+	}
+	GinkgoWriter.Println("=== RESTORE CONFIG.JSON MIRROR RUNTIME FILES END ===")
 }
 
 // VerifyConfigJsonMirrorsRemoved verifies that cfg/config.json mirrors are absent from runtime files.
@@ -261,19 +293,57 @@ func VerifyLinuxCriOMirrorsRemoved(ctx context.Context, suite *framework.K2sTest
 	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", checkLinuxMirrorCmd, "-o")
 }
 
-func removeWindowsMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirror MirrorRegistry) {
-	registryConfigName := runtimeRegistryConfigName(mirror.Registry)
-	powershellCommand := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$folder = Join-Path $env:SystemDrive 'etc\containerd\certs.d\%s'
-if (Test-Path -LiteralPath $folder) {
-    Remove-Item -LiteralPath $folder -Recurse -Force
+// windowsMirrorPaths returns the containerd certs.d folder of the registry and its backup location (same drive, so
+// that the move is a rename).
+func windowsMirrorPaths(mirror MirrorRegistry) (folder string, backup string) {
+	containerdDir := filepath.Join(os.Getenv("SystemDrive")+`\`, "etc", "containerd")
+	name := runtimeRegistryConfigName(mirror.Registry)
+	return filepath.Join(containerdDir, "certs.d", name), filepath.Join(containerdDir, "certs.d-airgap-backup", name)
 }
-if (Test-Path -LiteralPath $folder) {
-    throw "Containerd mirror folder still exists: $folder"
-}`, registryConfigName)
 
-	GinkgoWriter.Printf("[AirGap] Removing Windows containerd mirror folder for %s\n", mirror.Registry)
-	suite.Cli("powershell").MustExec(ctx, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershellCommand)
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// removeWindowsMirrorRuntimeFiles moves the containerd mirror folder of the registry to its backup location.
+func removeWindowsMirrorRuntimeFiles(mirror MirrorRegistry) {
+	folder, backup := windowsMirrorPaths(mirror)
+
+	if pathExists(backup) {
+		if pathExists(folder) {
+			GinkgoWriter.Printf("[AirGap] Discarding stale containerd mirror backup %s, the current folder %s is kept\n", backup, folder)
+			Expect(removeDirWithRetry(backup)).To(Succeed(), "should remove stale backup %s", backup)
+		} else {
+			GinkgoWriter.Printf("[AirGap] Keeping containerd mirror backup %s of an earlier, aborted run\n", backup)
+		}
+	}
+
+	if pathExists(folder) {
+		GinkgoWriter.Printf("[AirGap] Moving Windows containerd mirror folder %s -> %s\n", folder, backup)
+		Expect(os.MkdirAll(filepath.Dir(backup), 0o755)).To(Succeed())
+		Expect(renameWithRetry(folder, backup)).To(Succeed(), "should move %s to %s", folder, backup)
+	} else {
+		GinkgoWriter.Printf("[AirGap] No Windows containerd mirror folder for %s\n", mirror.Registry)
+	}
+	Expect(pathExists(folder)).To(BeFalse(), "containerd mirror folder must not exist: %s", folder)
+}
+
+// restoreWindowsMirrorRuntimeFiles moves the containerd mirror folder of the registry back from its backup location.
+// containerd reads certs.d on every pull, so no restart is needed.
+func restoreWindowsMirrorRuntimeFiles(mirror MirrorRegistry) {
+	folder, backup := windowsMirrorPaths(mirror)
+	if !pathExists(backup) {
+		GinkgoWriter.Printf("[AirGap] No containerd mirror backup to restore for %s\n", mirror.Registry)
+		return
+	}
+	if pathExists(folder) {
+		GinkgoWriter.Printf("[AirGap] Replacing re-created containerd mirror folder %s with its original\n", folder)
+		Expect(removeDirWithRetry(folder)).To(Succeed(), "should remove %s before restoring it", folder)
+	}
+	Expect(renameWithRetry(backup, folder)).To(Succeed(), "should restore %s from %s", folder, backup)
+	GinkgoWriter.Printf("[AirGap] Restored Windows containerd mirror folder %s\n", folder)
+	_ = os.Remove(filepath.Dir(backup)) // only removes the backup root once it is empty
 }
 
 func verifyWindowsMirrorRuntimeFilesRemoved(ctx context.Context, suite *framework.K2sTestSuite, mirror MirrorRegistry) {
@@ -294,7 +364,7 @@ func runtimeRegistryConfigName(registry string) string {
 // ExportAddon exports a single addon (or implementation) to an OCI tar file.
 // Returns the path to the exported OCI tar file.
 func ExportAddon(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, outputDir string) string {
-	if prebuilt, ok := usePrebuiltAddonOci(outputDir); ok {
+	if prebuilt, ok := usePrebuiltAddonOci(addonName, implName, outputDir); ok {
 		registerAddonSelection(prebuilt, addonName, implName)
 		return prebuilt
 	}
@@ -989,7 +1059,7 @@ func AssertWindowsCurlContains(impl *addons.Implementation, destination string) 
 // exports a single addon using a relative directory path.
 func ExportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, workingDir string, relativeOutputDir string) string {
 	if absOutputDir, err := filepath.Abs(filepath.Join(workingDir, relativeOutputDir)); err == nil {
-		if prebuilt, ok := usePrebuiltAddonOci(absOutputDir); ok {
+		if prebuilt, ok := usePrebuiltAddonOci(addonName, implName, absOutputDir); ok {
 			registerAddonSelection(prebuilt, addonName, implName)
 			return prebuilt
 		}

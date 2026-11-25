@@ -5,9 +5,12 @@
 package exportimport
 
 import (
+	"archive/tar"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -28,12 +31,63 @@ import (
 // exports it itself, before it sets up the air-gapped environment.
 const PrebuiltAddonOciFileEnv = "SYSTEM_TEST_ADDON_OCI_FILE"
 
+const maxOciIndexSize = 1 << 20
+
+type ociIndex struct {
+	Manifests []struct {
+		Annotations map[string]string `json:"annotations"`
+	} `json:"manifests"`
+}
+
 // prebuiltAddonOciStem returns the addon part of the package file name, as produced by 'k2s addons export'.
 func prebuiltAddonOciStem(addonName, implName string) string {
 	if implName == "" || implName == addonName {
 		return strings.ReplaceAll(addonName, " ", "-")
 	}
 	return strings.ReplaceAll(addonName+"-"+implName, " ", "-")
+}
+
+func prebuiltOciContainsAddon(source, addonName, implName string) (bool, error) {
+	file, err := os.Open(source)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	reader := tar.NewReader(file)
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if (header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA) || path.Clean(header.Name) != "index.json" {
+			continue
+		}
+		content, err := io.ReadAll(io.LimitReader(reader, maxOciIndexSize+1))
+		if err != nil {
+			return false, err
+		}
+		if len(content) > maxOciIndexSize {
+			return false, fmt.Errorf("OCI index exceeds %d bytes", maxOciIndexSize)
+		}
+		var index ociIndex
+		if err := json.Unmarshal(content, &index); err != nil {
+			return false, fmt.Errorf("parse OCI index: %w", err)
+		}
+		for _, manifest := range index.Manifests {
+			annotations := manifest.Annotations
+			if annotations["vnd.k2s.addon.name"] != addonName {
+				continue
+			}
+			if implName == "" || annotations["vnd.k2s.addon.implementation"] == implName {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 }
 
 // usePrebuiltAddonOci copies the pre-built package of the requested addon into outputDir and returns the path of the
@@ -46,7 +100,9 @@ func usePrebuiltAddonOci(addonName, implName, outputDir string) (string, bool) {
 		return "", false
 	}
 	stem := prebuiltAddonOciStem(addonName, implName)
-	if !strings.HasSuffix(filepath.Base(source), "-addons-"+stem+".oci.tar") {
+	containsAddon, err := prebuiltOciContainsAddon(source, addonName, implName)
+	Expect(err).ToNot(HaveOccurred(), "should inspect configured pre-built addon OCI file '%s'", source)
+	if !containsAddon {
 		pattern := filepath.Join(filepath.Dir(source), "K2s-*-addons-"+stem+".oci.tar")
 		matches, err := filepath.Glob(pattern)
 		Expect(err).ToNot(HaveOccurred(), "invalid pre-built addon OCI pattern '%s'", pattern)

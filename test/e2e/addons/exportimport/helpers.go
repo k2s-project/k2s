@@ -149,6 +149,7 @@ func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSu
 
 	RemoveAddonPackagesFromControlPlane(ctx, suite, k2sDsl, impl, controlPlaneIP)
 	PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIP)
+	framework.RecoverStaleAddonBackups(suite.RootDir())
 	StageAddonRemovedFromHost(suite.RootDir(), addon, impl)
 
 	// the K2s HTTP proxy would still forward to the internet: remove the K2s proxy, it is restored by the returned function
@@ -251,7 +252,7 @@ func RemoveAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2s
 func restoreAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirrors []MirrorRegistry, controlPlaneIP string) {
 	GinkgoWriter.Println("=== RESTORE CONFIG.JSON MIRROR RUNTIME FILES START ===")
 
-	restoreLinuxMirrorCmd := fmt.Sprintf(`sudo sh -c 'restored=0; for f in %[1]s/*.conf; do [ -f "$f" ] || continue; mv -f "$f" /etc/containers/registries.conf.d/ && echo "restored: $(basename "$f")" && restored=1; done; if [ "$restored" = 1 ]; then systemctl daemon-reload && systemctl restart crio; else echo "no CRI-O mirror drop-ins to restore"; fi; rmdir %[1]s 2>/dev/null; true'`, linuxMirrorBackupDir)
+	restoreLinuxMirrorCmd := fmt.Sprintf(`sudo sh -c 'set -e; restored=0; for f in %[1]s/*.conf; do [ -f "$f" ] || continue; mv -f "$f" /etc/containers/registries.conf.d/; echo "restored: $(basename "$f")"; restored=1; done; if [ "$restored" = 1 ]; then systemctl daemon-reload; systemctl restart crio; else echo "no CRI-O mirror drop-ins to restore"; fi; if [ -d %[1]s ]; then rmdir %[1]s; fi'`, linuxMirrorBackupDir)
 	GinkgoWriter.Printf("[AirGap] Restoring Linux CRI-O registry mirror drop-ins from %s\n", linuxMirrorBackupDir)
 	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", restoreLinuxMirrorCmd, "-o")
 

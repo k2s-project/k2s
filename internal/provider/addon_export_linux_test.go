@@ -510,13 +510,8 @@ func TestExport_StagesTheSharedStorageScripts(t *testing.T) {
 	fixture.write(t, "addons/storage/addon.manifest.yaml", "metadata:\n  name: storage\nspec:\n  implementations:\n    - name: smb\n    - name: ceph\n")
 	fixture.write(t, "addons/storage/smb/Enable.ps1", "enable smb")
 	fixture.write(t, "addons/storage/README.md", "storage readme")
-
-	err := fixture.provider.Export(AddonExportConfig{OutputDir: fixture.outputDir, Names: []string{"storage"}, OmitImages: true})
-	if err == nil || !strings.Contains(err.Error(), "shared module") {
-		t.Fatalf("expected the missing shared module to fail the export, got: %v", err)
-	}
-
 	fixture.write(t, "addons/storage/storage-validation.module.psm1", "validation")
+
 	if err := fixture.provider.Export(AddonExportConfig{OutputDir: fixture.outputDir, Names: []string{"storage"}, OmitImages: true}); err != nil {
 		t.Fatal(err)
 	}

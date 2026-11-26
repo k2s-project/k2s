@@ -34,8 +34,10 @@ Import-Module $vmModule
 Determines volume type and path from a PV spec object
 
 .DESCRIPTION
-Examines a PV spec to identify if it's local, hostPath, or other type,
+Examines a PV spec to identify if it's local, hostPath, or another volume source type,
 and extracts the corresponding path. Validates that supported types have paths.
+For other volume sources the type is the name of the spec field (e.g. 'nfs', or 'csi (<driver>)');
+'other' is returned if no volume source can be identified.
 
 .PARAMETER PVSpec
 The spec object from a PersistentVolume
@@ -90,6 +92,17 @@ function Get-PVTypeAndPath {
     else {
         $result.Type = 'other'
         $result.Path = $null
+
+        # spec fields that are not volume sources
+        $nonSourceFields = @('accessModes', 'capacity', 'claimRef', 'mountOptions', 'nodeAffinity', 'persistentVolumeReclaimPolicy', 'storageClassName', 'volumeAttributesClassName', 'volumeMode')
+        $specFields = if ($PVSpec -is [System.Collections.IDictionary]) { @($PVSpec.Keys) } else { @($PVSpec.PSObject.Properties.Name) }
+        $sourceField = $specFields | Where-Object { $_ -notin $nonSourceFields -and $null -ne $PVSpec.$_ } | Select-Object -First 1
+        if ($sourceField) {
+            $result.Type = [string]$sourceField
+            if ($sourceField -eq 'csi' -and $PVSpec.csi.driver) {
+                $result.Type = "csi ($($PVSpec.csi.driver))"
+            }
+        }
     }
     
     return $result
@@ -163,7 +176,10 @@ Lists all PersistentVolumes in the cluster
 Queries Kubernetes for all PVs and returns their details including name, capacity, type, and path
 
 .OUTPUTS
-Array of hashtables containing PV information
+Array of hashtables containing PV information. An empty result means the query succeeded and the cluster has no PVs.
+
+.NOTES
+Throws if the PVs cannot be queried or parsed, so that a discovery failure is never mistaken for an empty PV list.
 
 .EXAMPLE
 Get-PersistentVolumes
@@ -176,8 +192,7 @@ function Get-PersistentVolumes {
         $pvListJson = kubectl get pv -o json 2>&1
         
         if ($LASTEXITCODE -ne 0) {
-            Write-Log "[PVBackup] Failed to query PVs: $pvListJson" -Console -Error
-            return @()
+            throw "kubectl get pv failed with exit code $($LASTEXITCODE): $pvListJson"
         }
         
         # Convert array output to single string if needed
@@ -192,8 +207,60 @@ function Get-PersistentVolumes {
     }
     catch {
         Write-Log "[PVBackup] Error querying PVs: $_" -Console -Error
-        return @()
+        throw "Failed to query PersistentVolumes: $_"
     }
+}
+
+<#
+.SYNOPSIS
+[Internal] Throws when a command executed on the kubemaster VM during PV backup did not succeed
+#>
+function Assert-PVBackupVmCommandSucceeded {
+    param(
+        [Parameter(Mandatory = $false)]
+        $Result,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Operation
+    )
+
+    if ($null -ne $Result -and $Result.Success -eq $true) {
+        return
+    }
+
+    $exitCode = 'unknown'
+    $output = ''
+    if ($null -ne $Result) {
+        if ($null -ne $Result.ExitCode) { $exitCode = $Result.ExitCode }
+        if ($null -ne $Result.Output) { $output = ((@($Result.Output) | ForEach-Object { "$_" }) -join ' ').Trim() }
+    }
+
+    throw "$Operation failed on VM (exit code: $exitCode): $output"
+}
+
+<#
+.SYNOPSIS
+[Internal] Returns the size in bytes of a PV backup archive on the kubemaster VM; throws if it is missing or empty
+#>
+function Get-PVBackupVmArchiveSize {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ArchivePath
+    )
+
+    $statResult = Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "stat -c %s '$ArchivePath'" -NoLog -IgnoreErrors
+    Assert-PVBackupVmCommandSucceeded -Result $statResult -Operation "Verifying archive '$ArchivePath'"
+
+    $sizeText = ((@($statResult.Output) | ForEach-Object { "$_" }) -join '').Trim()
+    [long]$sizeBytes = 0
+    if (-not [long]::TryParse($sizeText, [ref]$sizeBytes)) {
+        throw "Could not determine size of archive '$ArchivePath' on VM (output: '$sizeText')"
+    }
+    if ($sizeBytes -le 0) {
+        throw "Archive '$ArchivePath' on VM is empty"
+    }
+
+    return $sizeBytes
 }
 
 <#
@@ -207,10 +274,13 @@ The backup is compressed as a tar.gz file for efficient storage and transfer.
 
 Uses the following approach:
 1. Validates PV exists and is a supported type (local/hostPath)
-2. Creates a temporary copy of the PV data with accessible permissions
+2. Creates a temporary copy of the PV data (including top-level hidden entries) with accessible permissions
 3. Compresses the directory into a tar.gz archive on the VM
 4. Transfers the compressed archive to the Windows host via SCP
 5. Cleans up temporary files on both VM and host
+
+The export fails (returns $false) if the copy or tar command fails, or if the archive is missing,
+empty or incompletely transferred.
 
 .PARAMETER PVName
 Name of the PersistentVolume to backup (e.g., 'registry-pv', 'opensearch-cluster-master-pv')
@@ -337,24 +407,25 @@ function Export-PersistentVolume {
         Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute $cleanupCmd -NoLog | Out-Null
         
         # Step 5: Create temporary copy with proper permissions
+        # '/.' (instead of '/*') also copies top-level hidden entries and succeeds for empty volumes
         Write-Log "[PVBackup] Creating temporary copy with accessible permissions..." -Console
-        $copyCmd = "sudo rm -rf '$tempCopyPath' && sudo mkdir -p '$tempCopyPath' && sudo cp -r '$volumePath'/* '$tempCopyPath'/ && sudo chown -R $sshUser`:users '$tempCopyPath'"
-        Invoke-CmdOnControlPlaneViaSSHKey -Timeout 60 -CmdToExecute $copyCmd -NoLog | Out-Null
+        $copyCmd = "sudo rm -rf '$tempCopyPath' && sudo mkdir -p '$tempCopyPath' && sudo cp -r '$volumePath'/. '$tempCopyPath'/ && sudo chown -R $sshUser`:users '$tempCopyPath'"
+        $copyResult = Invoke-CmdOnControlPlaneViaSSHKey -Timeout 60 -CmdToExecute $copyCmd -NoLog
+        Assert-PVBackupVmCommandSucceeded -Result $copyResult -Operation "Copying volume data from '$volumePath'"
         
         Write-Log "[PVBackup] Temporary copy created successfully" -Console
 
         # Step 6: Compress the directory into tar.gz on VM
         Write-Log "[PVBackup] Compressing volume data (this may take a while)..." -Console
         $compressCmd = "cd '$tempCopyPath' && tar czf '$tempArchivePath' ."
-        Invoke-CmdOnControlPlaneViaSSHKey -Timeout 180 -CmdToExecute $compressCmd -NoLog | Out-Null
+        $compressResult = Invoke-CmdOnControlPlaneViaSSHKey -Timeout 180 -CmdToExecute $compressCmd -NoLog
+        Assert-PVBackupVmCommandSucceeded -Result $compressResult -Operation "Archiving volume data to '$tempArchivePath'"
         
         Write-Log "[PVBackup] Compression completed" -Console
 
-        # Step 7: Get compressed archive size
-        $archiveSizeCmd = "ls -lh '$tempArchivePath' | awk '{print `$5}'"
-        $archiveSizeResult = Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute $archiveSizeCmd -NoLog
-        $archiveSize = $archiveSizeResult.Output
-        Write-Log "[PVBackup] Compressed archive size: $archiveSize" -Console
+        # Step 7: Verify compressed archive exists on VM and is not empty
+        $archiveSizeBytes = Get-PVBackupVmArchiveSize -ArchivePath $tempArchivePath
+        Write-Log "[PVBackup] Compressed archive size: $archiveSizeBytes bytes" -Console
 
         # Step 8: Transfer compressed archive to Windows host via SCP
         Write-Log "[PVBackup] Transferring archive to Windows host..." -Console
@@ -376,12 +447,18 @@ function Export-PersistentVolume {
         
         Write-Log "[PVBackup] Archive transferred successfully" -Console
 
-        # Step 9: Verify tar.gz file exists on Windows
-        if (-not (Test-Path $finalBackupPath)) {
+        # Step 9: Verify tar.gz file exists on Windows and matches the archive created on VM
+        if (-not (Test-Path -LiteralPath $finalBackupPath -PathType Leaf)) {
             throw "Transferred file not found at: $finalBackupPath"
         }
         
-        $localFileSize = (Get-Item $finalBackupPath).Length
+        $localFileSize = (Get-Item -LiteralPath $finalBackupPath).Length
+        if ($localFileSize -le 0) {
+            throw "Transferred archive is empty: $finalBackupPath"
+        }
+        if ($localFileSize -ne $archiveSizeBytes) {
+            throw "Transferred archive size ($localFileSize bytes) does not match archive size on VM ($archiveSizeBytes bytes): $finalBackupPath"
+        }
         Write-Log "[PVBackup] Backup archive size: $([Math]::Round($localFileSize / 1MB, 2)) MB" -Console
 
         # Step 10: Clean up temporary files on VM
@@ -430,13 +507,15 @@ function Export-PersistentVolume {
         try {
             Write-Log "[PVBackup] Attempting cleanup after error..." -Console
 
-            # Clean up VM
-            $vmCleanupCmd = "sudo rm -rf '$tempCopyPath' '$tempArchivePath'"
-            Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute $vmCleanupCmd -NoLog -ErrorAction SilentlyContinue | Out-Null
+            # Clean up VM (only when the temporary paths were already determined)
+            if ($tempCopyPath -and $tempArchivePath) {
+                $vmCleanupCmd = "sudo rm -rf '$tempCopyPath' '$tempArchivePath'"
+                Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute $vmCleanupCmd -NoLog -ErrorAction SilentlyContinue | Out-Null
+            }
             
-            # Clean up local files
-            if (Test-Path $finalBackupPath) {
-                Remove-Item $finalBackupPath -Force -ErrorAction SilentlyContinue
+            # Clean up incomplete local archive
+            if ($finalBackupPath -and (Test-Path -LiteralPath $finalBackupPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $finalBackupPath -Force -ErrorAction SilentlyContinue
             }
         }
         catch {
@@ -986,7 +1065,12 @@ Optional array of PV names to include. If specified, only these PVs will be back
 Optional array of PV names to exclude from backup.
 
 .OUTPUTS
-Hashtable with backup results for each PV
+PSCustomObject describing the outcome for every discovered PV:
+- Discovered:  all PVs found in the cluster as objects with Name and Type (empty if the cluster has no PVs)
+- Excluded:    names of PVs intentionally not backed up (ExcludeNames, or not in IncludeNames)
+- Unsupported: PVs with a volume type that cannot be backed up, as objects with Name and Type
+- Results:     hashtable PV name -> $true/$false for every PV whose backup was attempted
+Throws if the PVs cannot be discovered.
 
 .EXAMPLE
 Backup-AllPersistentVolumes -ExportPath "C:\backup\pv"
@@ -1010,34 +1094,41 @@ function Backup-AllPersistentVolumes {
 
     Write-Log "[PVBackup] Starting backup of all PersistentVolumes..." -Console
 
-    $pvList = Get-PersistentVolumes
+    $pvList = @(Get-PersistentVolumes)
+    $report = [pscustomobject]@{
+        Discovered  = @($pvList | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Type = [string]$_.Type } })
+        Excluded    = @()
+        Unsupported = @()
+        Results     = @{}
+    }
     
     if ($pvList.Count -eq 0) {
         Write-Log "[PVBackup] No PersistentVolumes found in cluster" -Console
-        return @{}
+        return $report
     }
     
-    # Filter PVs
-    $pvsToBackup = $pvList | Where-Object {
-        # Only local/hostPath volumes
-        ($_.Type -eq 'local' -or $_.Type -eq 'hostPath') -and
-        # Include filter
-        (-not $IncludeNames -or $IncludeNames -contains $_.Name) -and
-        # Exclude filter
-        (-not $ExcludeNames -or $ExcludeNames -notcontains $_.Name)
-    }
-    if ($ExcludeNames -and $ExcludeNames.Count -gt 0) {
-        Write-Log "[PVBackup] Applying addon PV exclusion filter to cluster PVs..."
-        $excludedPVs = $pvList | Where-Object { $ExcludeNames -contains $_.Name }
-        if ($excludedPVs.Count -gt 0) {
-            Write-Log "[PVBackup] Excluding addon-managed PV(s): $($excludedPVs.Name -join ', ')" -Console
-        } else {
-            Write-Log "[PVBackup] No addon PVs found in cluster to exclude"
+    $pvsToBackup = @()
+    foreach ($pv in $pvList) {
+        $isExcluded = ($IncludeNames -and $IncludeNames -notcontains $pv.Name) -or ($ExcludeNames -and $ExcludeNames -contains $pv.Name)
+        if ($isExcluded) {
+            $report.Excluded += [string]$pv.Name
         }
+        elseif ($pv.Type -notin @('local', 'hostPath')) {
+            $report.Unsupported += [pscustomobject]@{ Name = [string]$pv.Name; Type = [string]$pv.Type }
+        }
+        else {
+            $pvsToBackup += $pv
+        }
+    }
+    if ($report.Excluded.Count -gt 0) {
+        Write-Log "[PVBackup] Excluding PV(s) from backup: $($report.Excluded -join ', ')" -Console
+    }
+    foreach ($unsupportedPV in $report.Unsupported) {
+        Write-Log "[PVBackup] PV '$($unsupportedPV.Name)' cannot be backed up: unsupported volume type '$($unsupportedPV.Type)' (only local and hostPath are supported)" -Console
     }
     Write-Log "[PVBackup] Found $($pvsToBackup.Count) PV(s) to backup" -Console
 
-    $results = @{}
+    $results = $report.Results
     $successCount = 0
     $failCount = 0
     
@@ -1064,10 +1155,10 @@ function Backup-AllPersistentVolumes {
     
     Write-Log "[PVBackup] ========================================" -Console
     Write-Log "[PVBackup] All PV backups completed" -Console
-    Write-Log "[PVBackup] Success: $successCount | Failed: $failCount" -Console
+    Write-Log "[PVBackup] Success: $successCount | Failed: $failCount | Excluded: $($report.Excluded.Count) | Unsupported: $($report.Unsupported.Count)" -Console
     Write-Log "[PVBackup] ========================================" -Console
 
-    return $results
+    return $report
 }
 
 <#
@@ -1089,6 +1180,10 @@ Optional array of PV names to exclude from restore.
 
 .PARAMETER Force
 If specified, will not prompt for confirmation before restoring each PV.
+
+.PARAMETER RequireBackups
+If specified, PV backups are expected to exist: throws instead of returning an empty result when the backup
+directory does not exist, contains no backup archives, or none of its archives can be restored.
 
 .OUTPUTS
 Hashtable with restore results for each PV
@@ -1113,7 +1208,10 @@ function Restore-AllPersistentVolumes {
         [string[]]$ExcludeNames,
         
         [Parameter(Mandatory = $false)]
-        [switch]$Force
+        [switch]$Force,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$RequireBackups
     )
     
     Write-Log "[PVBackup] Starting restore of all PersistentVolumes..." -Console
@@ -1121,13 +1219,19 @@ function Restore-AllPersistentVolumes {
     # Find all backup files
     if (-not (Test-Path $BackupPath)) {
         Write-Log "[PVBackup] Backup directory not found: $BackupPath" -Console -Error
+        if ($RequireBackups) {
+            throw "PV backup directory not found: $BackupPath"
+        }
         return @{}
     }
     
-    $backupFiles = Get-ChildItem -Path $BackupPath -Filter "*-backup.tar.gz" -File
+    $backupFiles = @(Get-ChildItem -Path $BackupPath -Filter "*-backup.tar.gz" -File)
     
     if ($backupFiles.Count -eq 0) {
         Write-Log "[PVBackup] No backup files found in $BackupPath" -Console
+        if ($RequireBackups) {
+            throw "No PV backup archives found in $BackupPath"
+        }
         return @{}
     }
     
@@ -1167,6 +1271,9 @@ function Restore-AllPersistentVolumes {
     
     if ($backupsToRestore.Count -eq 0) {
         Write-Log "[PVBackup] No backups match the specified criteria" -Console
+        if ($RequireBackups) {
+            throw "None of the $($backupFiles.Count) PV backup archive(s) in $BackupPath can be restored"
+        }
         return @{}
     }
     

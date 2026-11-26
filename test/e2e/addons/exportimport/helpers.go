@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +44,26 @@ type MirrorRegistry struct {
 	Registry string `json:"registry"`
 	Server   string `json:"server"`
 	Mirror   string `json:"mirror"`
+}
+
+var addonSelectionsByOciPath sync.Map
+
+func registerAddonSelection(ociPath, addonName, implName string) {
+	selection := []string{addonName}
+	if implName != "" && implName != addonName {
+		selection = append(selection, implName)
+	}
+	absolutePath, err := filepath.Abs(ociPath)
+	Expect(err).ToNot(HaveOccurred(), "OCI archive path should resolve")
+	addonSelectionsByOciPath.Store(filepath.Clean(absolutePath), selection)
+}
+
+func addonSelectionForOciPath(ociPath string) []string {
+	absolutePath, err := filepath.Abs(ociPath)
+	Expect(err).ToNot(HaveOccurred(), "OCI archive path should resolve")
+	selection, ok := addonSelectionsByOciPath.Load(filepath.Clean(absolutePath))
+	Expect(ok).To(BeTrue(), "the requested addon implementation must be recorded before importing %s", ociPath)
+	return selection.([]string)
 }
 
 // GetAddonByName returns the addon with the given name from the list of all addons.
@@ -97,25 +118,61 @@ func ConfigJsonMirrorRegistries(suite *framework.K2sTestSuite) []MirrorRegistry 
 	return config.SmallSetup.MirrorRegistries
 }
 
-// PrepareAirGappedAddonImport removes proxy environment variables and runtime mirror files.
-func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSuite, controlPlaneIP string) func() {
+// PrepareAirGappedAddonImport brings the system into a state in which an addon import can only succeed
+// if the OCI artifact is self-contained, and verifies (with logs) that every precondition is met:
+//  1. no internet connectivity (host and control plane, direct and via the K2s proxy): the K2s proxy is reset first,
+//     then connectivity is verified (a failure on proxy-based machines, a warning on machines without proxy)
+//  2. no non-core images in the container runtimes of any node (and none of the addon's images)
+//  3. the addon folder and the Windows curl packages of the addon are removed from the K2s directory
+//     (moved to a backup and restored automatically at the end of the enclosing container)
+//  4. staged packages on the control plane, proxy environment variables and registry mirrors are removed
+//
+// The K2s proxy is reset for the air-gapped phase (if configured). The returned function restores it and the proxy
+// environment variables; the K2s proxy is additionally restored at the end of the enclosing container (DeferCleanup).
+func PrepareAirGappedAddonImport(ctx context.Context, suite *framework.K2sTestSuite, k2sDsl *dsl.K2s, addon *addons.Addon, impl *addons.Implementation, controlPlaneIP string) func() {
 	GinkgoWriter.Println("=== PREPARE AIR-GAPPED ADDON IMPORT START ===")
+	Expect(addon).NotTo(BeNil(), "addon must be set")
+	Expect(impl).NotTo(BeNil(), "addon implementation must be set")
+
+	// must happen before the proxy environment variables are removed
+	proxyInUse, _ := DetectProxyUsage(ctx, suite)
+
 	restoreProxyEnvironment := RemoveProxyEnvironment()
+	DeferCleanup(restoreProxyEnvironment)
 	mirrors := ConfigJsonMirrorRegistries(suite)
 
 	RemoveAirGappedMirrorRuntimeFiles(ctx, suite, mirrors, controlPlaneIP)
 	VerifyAirGappedMirrorsRemoved(ctx, suite, mirrors, controlPlaneIP)
 
+	RemoveAllAddonImages(ctx, suite, k2sDsl)
+	VerifyNoNonCoreImagesInContainerRuntimes(ctx, suite, k2sDsl, addon, impl)
+
+	RemoveAddonPackagesFromControlPlane(ctx, suite, k2sDsl, impl, controlPlaneIP)
+	PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIP)
+	framework.RecoverStaleAddonBackups(suite.RootDir())
+	StageAddonRemovedFromHost(suite.RootDir(), addon, impl)
+
+	// the K2s HTTP proxy would still forward to the internet: remove the K2s proxy, it is restored by the returned function
+	restoreK2sProxy := ResetK2sProxyForAirGap(ctx, suite)
+
+	VerifyNoInternetConnectivity(ctx, suite, controlPlaneIP, proxyInUse)
+
 	GinkgoWriter.Println("=== PREPARE AIR-GAPPED ADDON IMPORT END ===")
-	return restoreProxyEnvironment
+	return func() {
+		restoreK2sProxy()
+		restoreProxyEnvironment()
+	}
 }
+
+var proxyEnvironmentKeys = []string{"SYSTEM_TEST_PROXY", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"}
 
 // RemoveProxyEnvironment unsets proxy variables for the current test process and returns a restore function.
 func RemoveProxyEnvironment() func() {
 	GinkgoWriter.Println("[AirGap] Removing proxy environment variables for air-gapped phase")
 
-	keys := []string{"SYSTEM_TEST_PROXY", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"}
+	keys := proxyEnvironmentKeys
 	originalValues := map[string]*string{}
+	var restoreOnce sync.Once
 
 	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {
@@ -130,16 +187,18 @@ func RemoveProxyEnvironment() func() {
 	}
 
 	return func() {
-		GinkgoWriter.Println("[AirGap] Restoring proxy environment variables")
-		for _, key := range keys {
-			value := originalValues[key]
-			if value == nil {
-				Expect(os.Unsetenv(key)).To(Succeed(), "should keep %s unset", key)
-				continue
-			}
+		restoreOnce.Do(func() {
+			GinkgoWriter.Println("[AirGap] Restoring proxy environment variables")
+			for _, key := range keys {
+				value := originalValues[key]
+				if value == nil {
+					Expect(os.Unsetenv(key)).To(Succeed(), "should keep %s unset", key)
+					continue
+				}
 
-			Expect(os.Setenv(key, *value)).To(Succeed(), "should restore %s", key)
-		}
+				Expect(os.Setenv(key, *value)).To(Succeed(), "should restore %s", key)
+			}
+		})
 	}
 }
 
@@ -148,14 +207,30 @@ func RemoveConfigJsonMirrorRuntimeFiles(ctx context.Context, suite *framework.K2
 	RemoveAirGappedMirrorRuntimeFiles(ctx, suite, mirrors, controlPlaneIP)
 }
 
+// Backup location of the CRI-O mirror drop-ins on the control plane (/var/tmp survives a reboot, unlike /tmp).
+const linuxMirrorBackupDir = "/var/tmp/k2s-airgap-mirror-backup"
+
 // RemoveAirGappedMirrorRuntimeFiles removes container runtime mirror files that would mask air-gapped import gaps.
+//
+// The files are moved to a backup, not deleted: the CRI-O drop-ins on the control plane to linuxMirrorBackupDir and
+// the containerd certs.d folders on the Windows host to a sibling backup folder. They are restored automatically at
+// the end of the enclosing container (DeferCleanup), so that tests running afterwards pull through the configured
+// mirrors (pull-through cache) again instead of hitting the public registries. A backup left behind by an aborted run
+// is restored by the next run.
 func RemoveAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirrors []MirrorRegistry, controlPlaneIP string) {
 	GinkgoWriter.Println("=== REMOVE CONFIG.JSON MIRROR RUNTIME FILES START ===")
 	Expect(controlPlaneIP).NotTo(BeEmpty(), "control plane IP must be set to remove Linux runtime mirror files")
 
-	removeLinuxMirrorCmd := `sudo sh -c 'for f in /etc/containers/registries.conf.d/*.conf; do [ -f "$f" ] || continue; if grep -q "^[[:space:]]*\[\[registry\.mirror\]\]" "$f"; then rm -f "$f"; fi; done' && sudo systemctl daemon-reload && sudo systemctl restart crio`
-	GinkgoWriter.Println("[AirGap] Removing all Linux CRI-O registry mirror drop-ins")
-	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", removeLinuxMirrorCmd, "-o")
+	var once sync.Once
+	restore := func() {
+		once.Do(func() { restoreAirGappedMirrorRuntimeFiles(context.Background(), suite, mirrors, controlPlaneIP) })
+	}
+	// registered before anything is moved, so that a failure half way is restored as well
+	DeferCleanup(restore)
+
+	moveLinuxMirrorCmd := fmt.Sprintf(`sudo sh -c 'mkdir -p %[1]s && for f in /etc/containers/registries.conf.d/*.conf; do [ -f "$f" ] || continue; if grep -q "^[[:space:]]*\[\[registry\.mirror\]\]" "$f"; then mv -f "$f" %[1]s/ && echo "moved to backup: $f"; fi; done; echo "backup content:"; ls -1 %[1]s' && sudo systemctl daemon-reload && sudo systemctl restart crio`, linuxMirrorBackupDir)
+	GinkgoWriter.Printf("[AirGap] Moving all Linux CRI-O registry mirror drop-ins to %s\n", linuxMirrorBackupDir)
+	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", moveLinuxMirrorCmd, "-o")
 
 	if len(mirrors) == 0 {
 		GinkgoWriter.Println("[AirGap] No config.json mirror registries configured for Windows containerd cleanup")
@@ -165,12 +240,28 @@ func RemoveAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2s
 
 	for _, mirror := range mirrors {
 		if runtime.GOOS == "windows" {
-			removeWindowsMirrorRuntimeFiles(ctx, suite, mirror)
+			removeWindowsMirrorRuntimeFiles(mirror)
 		} else {
 			GinkgoWriter.Printf("[AirGap] Skipping Windows containerd mirror cleanup on non-Windows test host: %s\n", runtime.GOOS)
 		}
 	}
 	GinkgoWriter.Println("=== REMOVE CONFIG.JSON MIRROR RUNTIME FILES END ===")
+}
+
+// restoreAirGappedMirrorRuntimeFiles moves the backed-up mirror files back and verifies that they are in place.
+func restoreAirGappedMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirrors []MirrorRegistry, controlPlaneIP string) {
+	GinkgoWriter.Println("=== RESTORE CONFIG.JSON MIRROR RUNTIME FILES START ===")
+
+	restoreLinuxMirrorCmd := fmt.Sprintf(`sudo sh -c 'set -e; restored=0; for f in %[1]s/*.conf; do [ -f "$f" ] || continue; mv -f "$f" /etc/containers/registries.conf.d/; echo "restored: $(basename "$f")"; restored=1; done; if [ "$restored" = 1 ]; then systemctl daemon-reload; systemctl restart crio; else echo "no CRI-O mirror drop-ins to restore"; fi; if [ -d %[1]s ]; then rmdir %[1]s; fi'`, linuxMirrorBackupDir)
+	GinkgoWriter.Printf("[AirGap] Restoring Linux CRI-O registry mirror drop-ins from %s\n", linuxMirrorBackupDir)
+	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", restoreLinuxMirrorCmd, "-o")
+
+	if runtime.GOOS == "windows" {
+		for _, mirror := range mirrors {
+			restoreWindowsMirrorRuntimeFiles(mirror)
+		}
+	}
+	GinkgoWriter.Println("=== RESTORE CONFIG.JSON MIRROR RUNTIME FILES END ===")
 }
 
 // VerifyConfigJsonMirrorsRemoved verifies that cfg/config.json mirrors are absent from runtime files.
@@ -203,19 +294,57 @@ func VerifyLinuxCriOMirrorsRemoved(ctx context.Context, suite *framework.K2sTest
 	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", checkLinuxMirrorCmd, "-o")
 }
 
-func removeWindowsMirrorRuntimeFiles(ctx context.Context, suite *framework.K2sTestSuite, mirror MirrorRegistry) {
-	registryConfigName := runtimeRegistryConfigName(mirror.Registry)
-	powershellCommand := fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$folder = Join-Path $env:SystemDrive 'etc\containerd\certs.d\%s'
-if (Test-Path -LiteralPath $folder) {
-    Remove-Item -LiteralPath $folder -Recurse -Force
+// windowsMirrorPaths returns the containerd certs.d folder of the registry and its backup location (same drive, so
+// that the move is a rename).
+func windowsMirrorPaths(mirror MirrorRegistry) (folder string, backup string) {
+	containerdDir := filepath.Join(os.Getenv("SystemDrive")+`\`, "etc", "containerd")
+	name := runtimeRegistryConfigName(mirror.Registry)
+	return filepath.Join(containerdDir, "certs.d", name), filepath.Join(containerdDir, "certs.d-airgap-backup", name)
 }
-if (Test-Path -LiteralPath $folder) {
-    throw "Containerd mirror folder still exists: $folder"
-}`, registryConfigName)
 
-	GinkgoWriter.Printf("[AirGap] Removing Windows containerd mirror folder for %s\n", mirror.Registry)
-	suite.Cli("powershell").MustExec(ctx, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", powershellCommand)
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// removeWindowsMirrorRuntimeFiles moves the containerd mirror folder of the registry to its backup location.
+func removeWindowsMirrorRuntimeFiles(mirror MirrorRegistry) {
+	folder, backup := windowsMirrorPaths(mirror)
+
+	if pathExists(backup) {
+		if pathExists(folder) {
+			GinkgoWriter.Printf("[AirGap] Discarding stale containerd mirror backup %s, the current folder %s is kept\n", backup, folder)
+			Expect(removeDirWithRetry(backup)).To(Succeed(), "should remove stale backup %s", backup)
+		} else {
+			GinkgoWriter.Printf("[AirGap] Keeping containerd mirror backup %s of an earlier, aborted run\n", backup)
+		}
+	}
+
+	if pathExists(folder) {
+		GinkgoWriter.Printf("[AirGap] Moving Windows containerd mirror folder %s -> %s\n", folder, backup)
+		Expect(os.MkdirAll(filepath.Dir(backup), 0o755)).To(Succeed())
+		Expect(renameWithRetry(folder, backup)).To(Succeed(), "should move %s to %s", folder, backup)
+	} else {
+		GinkgoWriter.Printf("[AirGap] No Windows containerd mirror folder for %s\n", mirror.Registry)
+	}
+	Expect(pathExists(folder)).To(BeFalse(), "containerd mirror folder must not exist: %s", folder)
+}
+
+// restoreWindowsMirrorRuntimeFiles moves the containerd mirror folder of the registry back from its backup location.
+// containerd reads certs.d on every pull, so no restart is needed.
+func restoreWindowsMirrorRuntimeFiles(mirror MirrorRegistry) {
+	folder, backup := windowsMirrorPaths(mirror)
+	if !pathExists(backup) {
+		GinkgoWriter.Printf("[AirGap] No containerd mirror backup to restore for %s\n", mirror.Registry)
+		return
+	}
+	if pathExists(folder) {
+		GinkgoWriter.Printf("[AirGap] Replacing re-created containerd mirror folder %s with its original\n", folder)
+		Expect(removeDirWithRetry(folder)).To(Succeed(), "should remove %s before restoring it", folder)
+	}
+	Expect(renameWithRetry(backup, folder)).To(Succeed(), "should restore %s from %s", folder, backup)
+	GinkgoWriter.Printf("[AirGap] Restored Windows containerd mirror folder %s\n", folder)
+	_ = os.Remove(filepath.Dir(backup)) // only removes the backup root once it is empty
 }
 
 func verifyWindowsMirrorRuntimeFilesRemoved(ctx context.Context, suite *framework.K2sTestSuite, mirror MirrorRegistry) {
@@ -236,6 +365,11 @@ func runtimeRegistryConfigName(registry string) string {
 // ExportAddon exports a single addon (or implementation) to an OCI tar file.
 // Returns the path to the exported OCI tar file.
 func ExportAddon(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, outputDir string) string {
+	if prebuilt, ok := usePrebuiltAddonOci(addonName, implName, outputDir); ok {
+		registerAddonSelection(prebuilt, addonName, implName)
+		return prebuilt
+	}
+
 	GinkgoWriter.Println("=== EXPORT ADDON START ===")
 	GinkgoWriter.Printf("[Export] Addon: %s\n", addonName)
 	if implName != "" && implName != addonName {
@@ -280,6 +414,7 @@ func ExportAddon(ctx context.Context, suite *framework.K2sTestSuite, addonName s
 	}
 	GinkgoWriter.Println("=== EXPORT ADDON END ===")
 
+	registerAddonSelection(ociTarPath, addonName, implName)
 	return ociTarPath
 }
 
@@ -537,7 +672,7 @@ func CleanAddonResources(ctx context.Context, suite *framework.K2sTestSuite, k2s
 	suite.K2sCli().Exec(ctx, "image", "clean", "-o")
 	GinkgoWriter.Println("[Clean] Image clean completed")
 
-	rmCmd := fmt.Sprintf("sudo rm -rf .%s", impl.ExportDirectoryName)
+	rmCmd := fmt.Sprintf("sudo rm -rf .%s .%s", impl.ExportDirectoryName, debianPackageDirectoryName(impl))
 	GinkgoWriter.Printf("[Clean] Removing debian packages with command: %s\n", rmCmd)
 	suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", rmCmd)
 	GinkgoWriter.Println("[Clean] Debian packages removed")
@@ -553,7 +688,7 @@ func VerifyResourcesCleanedUp(ctx context.Context, suite *framework.K2sTestSuite
 	GinkgoWriter.Printf("[Verify] Control plane IP: %s\n", controlPlaneIP)
 
 	// Verify debian packages are removed
-	checkCmd := fmt.Sprintf("[ -d .%s ]", impl.ExportDirectoryName)
+	checkCmd := fmt.Sprintf("[ -d .%s ] || [ -d .%s ]", impl.ExportDirectoryName, debianPackageDirectoryName(impl))
 	GinkgoWriter.Printf("[Verify] Checking directory does not exist with command: %s\n", checkCmd)
 	GinkgoWriter.Println("[Verify] Expecting exit code 1 (directory should not exist)...")
 	suite.K2sCli().ExpectedExitCode(1).Exec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", checkCmd)
@@ -561,19 +696,20 @@ func VerifyResourcesCleanedUp(ctx context.Context, suite *framework.K2sTestSuite
 	GinkgoWriter.Println("=== VERIFY RESOURCES CLEANED UP END ===")
 }
 
-// ImportAddon imports all addons contained in an OCI tar file.
+// ImportAddon imports the addon or implementation requested by the matching export call.
 func ImportAddon(ctx context.Context, suite *framework.K2sTestSuite, ociTarPath string) {
-	ImportAddonsWithOmit(ctx, suite, ociTarPath, nil, nil)
+	ImportAddonsWithOmit(ctx, suite, ociTarPath, addonSelectionForOciPath(ociTarPath), nil)
 }
 
 // ImportAddonsWithOmit imports addons from an OCI tar file.
 //
 // addonArgs selects the addons/implementations to import as positional tokens exactly like on the
-// CLI (e.g. []string{"ingress", "nginx", "security"}); an empty slice imports everything.
+// CLI (e.g. []string{"ingress", "nginx", "security"}).
 // omitFlags are passed as repeated '--omit' options and make the importer skip the container images
 // of the omitted functionality. An image is only skipped when none of the SELECTED implementations
 // still requires it; the OCI artifact itself is never modified.
 func ImportAddonsWithOmit(ctx context.Context, suite *framework.K2sTestSuite, ociTarPath string, addonArgs []string, omitFlags []string) {
+	Expect(addonArgs).ToNot(BeEmpty(), "an addon or implementation must be selected for import")
 	GinkgoWriter.Println("=== IMPORT ADDON START ===")
 	GinkgoWriter.Printf("[Import] OCI tar file: %s\n", ociTarPath)
 	GinkgoWriter.Printf("[Import] Selected addons: %v\n", addonArgs)
@@ -593,6 +729,7 @@ func ImportAddonsWithOmit(ctx context.Context, suite *framework.K2sTestSuite, oc
 
 	GinkgoWriter.Printf("[Import] Executing 'k2s %s'\n", strings.Join(args, " "))
 	suite.K2sCli().MustExec(ctx, args...)
+	verifyStagedAddonFileInventory(suite.RootDir(), addonArgs)
 	GinkgoWriter.Println("[Import] Import command completed successfully")
 	GinkgoWriter.Println("=== IMPORT ADDON END ===")
 }
@@ -718,22 +855,33 @@ func VerifyImportedImages(ctx context.Context, suite *framework.K2sTestSuite, k2
 }
 
 func VerifyImportedDebPackages(ctx context.Context, suite *framework.K2sTestSuite, impl *addons.Implementation, controlPlaneIP string, folderName ...string) {
-	if len(folderName) > 0 && folderName[0] != "" {
-		impl.ExportDirectoryName = folderName[0]
-	}
 	GinkgoWriter.Println("=== VERIFY IMPORTED DEB PACKAGES START ===")
 	GinkgoWriter.Printf("[ImportedDeb] Implementation: %s\n", impl.Name)
-	GinkgoWriter.Printf("[ImportedDeb] Export directory name: %s\n", impl.ExportDirectoryName)
+	debDirName := debianPackageDirectoryName(impl)
+	if len(folderName) > 0 && folderName[0] != "" {
+		debDirName = folderName[0]
+	}
+	GinkgoWriter.Printf("[ImportedDeb] Export directory name: %s\n", debDirName)
 	GinkgoWriter.Printf("[ImportedDeb] Control plane IP: %s\n", controlPlaneIP)
 	GinkgoWriter.Printf("[ImportedDeb] Expected packages: %d\n", len(impl.OfflineUsage.LinuxResources.DebPackages))
 
 	for i, pkg := range impl.OfflineUsage.LinuxResources.DebPackages {
-		checkCmd := fmt.Sprintf("[ -d .%s/%s ]", impl.ExportDirectoryName, pkg)
+		checkCmd := fmt.Sprintf("[ -d .%s/%s ]", debDirName, pkg)
 		GinkgoWriter.Printf("[ImportedDeb]   [%d] Checking: %s\n", i, pkg)
 		suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIP, "-u", "remote", "-c", checkCmd)
 		GinkgoWriter.Printf("[ImportedDeb]   [%d] OK: %s exists\n", i, pkg)
 	}
 	GinkgoWriter.Println("=== VERIFY IMPORTED DEB PACKAGES END ===")
+}
+
+// debianPackageDirectoryName mirrors Install-DebianPackages/Import.ps1: ~/.<addon>[_<implementation>] on the control plane.
+// ExportDirectoryName of a multi-implementation addon is '<addon>-<implementation>', so the addon name is derived from it.
+func debianPackageDirectoryName(impl *addons.Implementation) string {
+	addonName := strings.TrimSuffix(impl.ExportDirectoryName, "-"+impl.Name)
+	if impl.Name != addonName {
+		return addonName + "_" + impl.Name
+	}
+	return addonName
 }
 
 func VerifyImportedLinuxCurlPackages(ctx context.Context, suite *framework.K2sTestSuite, impl *addons.Implementation, controlPlaneIP string, folderName ...string) {
@@ -914,6 +1062,13 @@ func AssertWindowsCurlContains(impl *addons.Implementation, destination string) 
 
 // exports a single addon using a relative directory path.
 func ExportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite, addonName string, implName string, workingDir string, relativeOutputDir string) string {
+	if absOutputDir, err := filepath.Abs(filepath.Join(workingDir, relativeOutputDir)); err == nil {
+		if prebuilt, ok := usePrebuiltAddonOci(addonName, implName, absOutputDir); ok {
+			registerAddonSelection(prebuilt, addonName, implName)
+			return prebuilt
+		}
+	}
+
 	GinkgoWriter.Println("=== EXPORT ADDON (RELATIVE PATH) START ===")
 	GinkgoWriter.Printf("[ExportRel] Addon: %s\n", addonName)
 	if implName != "" && implName != addonName {
@@ -952,6 +1107,7 @@ func ExportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite,
 		GinkgoWriter.Printf("[ExportRel] OCI tar file: %s (%d bytes)\n", ociTarPath, info.Size())
 	}
 	GinkgoWriter.Println("=== EXPORT ADDON (RELATIVE PATH) END ===")
+	registerAddonSelection(ociTarPath, addonName, implName)
 	return ociTarPath
 }
 
@@ -961,7 +1117,13 @@ func ImportAddonRelativePath(ctx context.Context, suite *framework.K2sTestSuite,
 	GinkgoWriter.Printf("[ImportRel] Working directory: %s\n", workingDir)
 	GinkgoWriter.Printf("[ImportRel] Relative file path: %s\n", relativeFilePath)
 
-	suite.K2sCli().WorkingDir(workingDir).MustExec(ctx, "addons", "import", "-f", relativeFilePath, "-o")
+	ociPath, err := filepath.Abs(filepath.Join(workingDir, relativeFilePath))
+	Expect(err).ToNot(HaveOccurred(), "[ImportRel] Failed to resolve OCI archive path")
+	addonArgs := addonSelectionForOciPath(ociPath)
+	args := append([]string{"addons", "import"}, addonArgs...)
+	args = append(args, "-f", relativeFilePath, "-o")
+	suite.K2sCli().WorkingDir(workingDir).MustExec(ctx, args...)
+	verifyStagedAddonFileInventory(suite.RootDir(), addonArgs)
 	GinkgoWriter.Println("[ImportRel] Import command completed successfully")
 	GinkgoWriter.Println("=== IMPORT ADDON (RELATIVE PATH) END ===")
 }

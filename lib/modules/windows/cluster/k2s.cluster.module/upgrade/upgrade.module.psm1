@@ -1279,6 +1279,172 @@ function Remove-SetupConfigIfExisting {
 		Remove-Item -Path $setupConfigPath -Force | Out-Null
 	}
 }
+
+# Classifies the per-PV result hashtable (PV name -> $true/$false) of Backup-AllPersistentVolumes and
+# Restore-AllPersistentVolumes. Only a boolean $true counts as success; any other result is invalid or failed.
+function Get-PVOperationSummary {
+	param(
+		[object] $Result
+	)
+	$succeeded = @()
+	$failed = @()
+	if ($Result -isnot [System.Collections.IDictionary]) {
+		return [pscustomobject]@{ IsValid = $false; Succeeded = $succeeded; Failed = $failed }
+	}
+	foreach ($entry in $Result.GetEnumerator()) {
+		if ($entry.Value -is [bool] -and $entry.Value) {
+			$succeeded += [string]$entry.Key
+		} else {
+			$failed += [string]$entry.Key
+		}
+	}
+	return [pscustomobject]@{ IsValid = $true; Succeeded = @($succeeded | Sort-Object); Failed = @($failed | Sort-Object) }
+}
+
+# Classifies the report of Backup-AllPersistentVolumes. Every discovered PV ends up in exactly one category:
+# Excluded (intentionally not backed up), Unsupported (volume type cannot be backed up), Succeeded, Failed,
+# or Missing (neither excluded nor reported as backed up). PV entries are objects with Name and Type.
+function Get-PVBackupReportSummary {
+	param(
+		[object] $Report
+	)
+	$invalid = [pscustomobject]@{ IsValid = $false }
+	if ($null -eq $Report -or $Report -is [System.Collections.IDictionary] -or $Report -is [string] -or $Report -is [ValueType]) {
+		return $invalid
+	}
+	foreach ($property in @('Discovered', 'Excluded', 'Unsupported', 'Results')) {
+		if ($Report.PSObject.Properties.Name -notcontains $property) {
+			return $invalid
+		}
+	}
+	$resultSummary = Get-PVOperationSummary -Result $Report.Results
+	if (-not $resultSummary.IsValid) {
+		return $invalid
+	}
+
+	$discovered = @($Report.Discovered | Where-Object { $null -ne $_ } | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Type = [string]$_.Type } })
+	$typeByName = @{}
+	foreach ($pv in $discovered) {
+		$typeByName[$pv.Name] = $pv.Type
+	}
+	$toPVEntry = {
+		param([string] $Name)
+		$type = if ($typeByName.ContainsKey($Name) -and $typeByName[$Name]) { $typeByName[$Name] } else { 'unknown' }
+		[pscustomobject]@{ Name = $Name; Type = $type }
+	}
+
+	$excluded = @($Report.Excluded | Where-Object { $_ } | ForEach-Object { [string]$_ } | Sort-Object)
+	$unsupported = @($Report.Unsupported | Where-Object { $null -ne $_ } | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Type = [string]$_.Type } } | Sort-Object Name)
+	$unsupportedNames = @($unsupported | ForEach-Object { $_.Name })
+	$accountedNames = @($excluded) + $unsupportedNames + $resultSummary.Succeeded + $resultSummary.Failed
+	$missing = @($discovered | Where-Object { $accountedNames -notcontains $_.Name } | Sort-Object Name)
+
+	return [pscustomobject]@{
+		IsValid     = $true
+		Discovered  = $discovered
+		Excluded    = $excluded
+		Unsupported = $unsupported
+		Succeeded   = @($resultSummary.Succeeded | ForEach-Object { & $toPVEntry $_ })
+		Failed      = @($resultSummary.Failed | ForEach-Object { & $toPVEntry $_ })
+		Missing     = $missing
+	}
+}
+
+# Logs the outcome of a summary from Get-PVBackupReportSummary and returns an error message if any discovered,
+# non-excluded PV was not backed up successfully, or $null if every such PV was backed up.
+function Get-PVBackupErrorMessage {
+	param(
+		[Parameter(Mandatory = $true)]
+		[pscustomobject] $Summary
+	)
+	if ($Summary.Excluded.Count -gt 0) {
+		Write-Log "[PVBackup] $($Summary.Excluded.Count) persistent volume(s) intentionally excluded from backup: $($Summary.Excluded -join ', ')" -Console
+	}
+	$formatPVs = { param($PVs) ($PVs | ForEach-Object { "$($_.Name) ($($_.Type))" }) -join ', ' }
+
+	$errorParts = @()
+	if ($Summary.Unsupported.Count -gt 0) {
+		foreach ($pv in $Summary.Unsupported) {
+			Write-Log "[PVBackup] ERROR: Persistent volume '$($pv.Name)' (type '$($pv.Type)') is not backed up: unsupported volume type" -Console
+		}
+		$errorParts += "Unsupported volume type for $($Summary.Unsupported.Count) persistent volume(s): $(& $formatPVs $Summary.Unsupported)"
+	}
+	if ($Summary.Failed.Count -gt 0) {
+		foreach ($pv in $Summary.Failed) {
+			Write-Log "[PVBackup] ERROR: Backup of persistent volume '$($pv.Name)' (type '$($pv.Type)') failed" -Console
+		}
+		$attemptedCount = $Summary.Failed.Count + $Summary.Succeeded.Count
+		$errorParts += "PV backup failed for $($Summary.Failed.Count) of $attemptedCount persistent volume(s): $(& $formatPVs $Summary.Failed)"
+	}
+	if ($Summary.Missing.Count -gt 0) {
+		foreach ($pv in $Summary.Missing) {
+			Write-Log "[PVBackup] ERROR: Persistent volume '$($pv.Name)' (type '$($pv.Type)') was neither excluded nor backed up" -Console
+		}
+		$errorParts += "No backup result for $($Summary.Missing.Count) persistent volume(s): $(& $formatPVs $Summary.Missing)"
+	}
+
+	$notBackedUpCount = $Summary.Unsupported.Count + $Summary.Failed.Count + $Summary.Missing.Count
+	if ($notBackedUpCount -eq 0) {
+		return $null
+	}
+	return "$notBackedUpCount of $($Summary.Discovered.Count) discovered persistent volume(s) are neither excluded nor backed up. $($errorParts -join '. ')"
+}
+
+# Restores the PV backups created by PrepareClusterUpgrade and returns the list of restore errors (empty on success).
+# An empty PVBackupPath means that no PV backup was expected; a missing directory, missing archives or
+# unprocessed archives are errors.
+function Restore-UpgradePersistentVolumes {
+	param(
+		[string] $PVBackupPath,
+		[switch] $ShowProgress
+	)
+	$errors = @()
+	if ([string]::IsNullOrEmpty($PVBackupPath)) {
+		Write-Log "No PV backup was created (no PVs to back up), skipping PV restore" -Console
+		return $errors
+	}
+	if (-not (Test-Path -Path $PVBackupPath -PathType Container)) {
+		return @("PV backup directory '$PVBackupPath' not found, the backed-up persistent volumes could not be restored")
+	}
+	if ($ShowProgress -eq $true) {
+		Write-Progress -Activity 'Restoring persistent volumes..' -Id 1 -Status '7/10' -PercentComplete 70 -CurrentOperation 'Restoring PVs, please wait..'
+	}
+
+	$backupArchives = @(Get-ChildItem -Path $PVBackupPath -Filter '*-backup.tar.gz' -File)
+	# metadata is written after a successful archive transfer, so metadata without archive means a missing archive
+	foreach ($metadataFile in @(Get-ChildItem -Path $PVBackupPath -Filter '*-backup-metadata.json' -File)) {
+		$archiveName = $metadataFile.Name -replace '-metadata\.json$', '.tar.gz'
+		if (-not (Test-Path -Path (Join-Path $PVBackupPath $archiveName) -PathType Leaf)) {
+			$errors += "Backup archive '$archiveName' of persistent volume '$($metadataFile.Name -replace '-backup-metadata\.json$', '')' is missing in '$PVBackupPath'"
+		}
+	}
+	if ($backupArchives.Count -eq 0) {
+		return @($errors) + "No PV backup archives found in '$PVBackupPath', the backed-up persistent volumes could not be restored"
+	}
+
+	try {
+		Write-Log "Starting PV restore process..." -Console
+		$restoreResult = Restore-AllPersistentVolumes -BackupPath $PVBackupPath -Force -RequireBackups
+		$restoreSummary = Get-PVOperationSummary -Result $restoreResult
+		if (-not $restoreSummary.IsValid) {
+			return @($errors) + 'PV restore returned an unexpected result, it cannot be verified that the persistent volumes were restored'
+		}
+		foreach ($failedPV in $restoreSummary.Failed) {
+			$errors += "Persistent volume '$failedPV' could not be restored"
+		}
+		$processedNames = @($restoreSummary.Succeeded) + @($restoreSummary.Failed)
+		$notProcessed = @($backupArchives | ForEach-Object { $_.Name -replace '-backup\.tar\.gz$', '' } | Where-Object { $processedNames -notcontains $_ } | Sort-Object)
+		if ($notProcessed.Count -gt 0) {
+			$errors += "Only $($backupArchives.Count - $notProcessed.Count) of $($backupArchives.Count) PV backup archive(s) in '$PVBackupPath' were restored, not restored: $($notProcessed -join ', ')"
+		}
+		Write-Log "PV restore completed: $($restoreSummary.Succeeded.Count) persistent volume(s) restored, $($restoreSummary.Failed.Count) failed" -Console
+	}
+	catch {
+		$errors += "PV restore failed: $_"
+	}
+	return $errors
+}
+
 function PrepareClusterUpgrade {
 	param(
 		[switch] $ShowProgress,
@@ -1378,22 +1544,34 @@ function PrepareClusterUpgrade {
 			Write-Progress -Activity 'Backing up persistent volumes..' -Id 1 -Status '4/10' -PercentComplete 40 -CurrentOperation 'Backing up PVs, please wait..'
 		}
 
+		# the current cluster must not be uninstalled unless every discovered PV was backed up
+		Write-Log "Starting PV backup process..." -Console
+		$pvBackupPath.Value = Join-Path $BackupDir 'pv'
+		$pvBackupAbortMessage = "Upgrade aborted before uninstalling the current cluster; the backup data is kept in '$BackupDir'."
 		try {
-			Write-Log "Starting PV backup process..." -Console
-			$pvBackupPath.Value = Join-Path $BackupDir 'pv'
 			$pvBackupResult = Backup-AllPersistentVolumes -ExportPath $pvBackupPath.Value
-			
-			if ($pvBackupResult) {
-				$successCount = ($pvBackupResult.GetEnumerator() | Where-Object { $_.Value -eq $true }).Count
-				Write-Log "PV backup completed: $successCount PV(s) backed up successfully" -Console
-			} else {
-				Write-Log "No persistent volumes found to backup" -Console
-				$pvBackupPath.Value = ""  # No PVs to backup
-			}
 		}
 		catch {
-			Write-Log "Warning: PV backup failed - $_. Continuing with upgrade..." -Console
-			$pvBackupPath.Value = ""  # Mark as failed
+			Write-Log "[PVBackup] ERROR: PV backup failed: $_" -Console
+			throw "PV backup failed: $_. $pvBackupAbortMessage"
+		}
+
+		$pvBackupSummary = Get-PVBackupReportSummary -Report $pvBackupResult
+		if (-not $pvBackupSummary.IsValid) {
+			throw "PV backup returned an unexpected result, it cannot be verified that all persistent volumes were backed up. $pvBackupAbortMessage"
+		}
+		$pvBackupError = Get-PVBackupErrorMessage -Summary $pvBackupSummary
+		if ($pvBackupError) {
+			throw "$pvBackupError. $pvBackupAbortMessage"
+		}
+		if ($pvBackupSummary.Succeeded.Count -gt 0) {
+			Write-Log "PV backup completed: $($pvBackupSummary.Succeeded.Count) PV(s) backed up successfully" -Console
+		} elseif ($pvBackupSummary.Discovered.Count -eq 0) {
+			Write-Log "No persistent volumes found to backup" -Console
+			$pvBackupPath.Value = ""  # No PVs to backup
+		} else {
+			Write-Log "No persistent volumes to backup: all $($pvBackupSummary.Discovered.Count) discovered PV(s) are excluded" -Console
+			$pvBackupPath.Value = ""  # No PVs to backup
 		}
 
 		# backup user application images
@@ -1578,28 +1756,14 @@ function PerformClusterUpgrade {
 			Write-Log "Skipping restore hooks (rollback mode)"
 		}
 
-		# restore persistent volumes
-		if (-not [string]::IsNullOrEmpty($pvBackupPath) -and (Test-Path $pvBackupPath)) {
-			if ($ShowProgress -eq $true) {
-				Write-Progress -Activity 'Restoring persistent volumes..' -Id 1 -Status '7/10' -PercentComplete 70 -CurrentOperation 'Restoring PVs, please wait..'
-			}
-			
-			try {
-				Write-Log "Starting PV restore process..." -Console
-				$pvRestoreResult = Restore-AllPersistentVolumes -BackupPath $pvBackupPath -Force
-				
-				if ($pvRestoreResult) {
-					$successCount = ($pvRestoreResult.GetEnumerator() | Where-Object { $_.Value -eq $true }).Count
-					Write-Log "Successfully restored $successCount persistent volume(s)" -Console
-				} else {
-					Write-Log "No persistent volumes were restored" -Console
-				}
-			}
-			catch {
-				Write-Log "Warning: PV restore failed - $_. Continuing with upgrade..." -Console
-			}
-		} else {
-			Write-Log "No PV backup found or PVs were skipped during backup" -Console
+		# restore persistent volumes; failures are recorded so that the backup directory is kept
+		$pvRestoreErrors = @(Restore-UpgradePersistentVolumes -PVBackupPath $pvBackupPath -ShowProgress:$ShowProgress)
+		foreach ($pvRestoreError in $pvRestoreErrors) {
+			Write-Log "[PVRestore] ERROR: $pvRestoreError" -Console
+		}
+		# record immediately so a later failure in this function cannot lose the PV restore errors
+		if ($null -ne $resourceRestoreErrors) {
+			$resourceRestoreErrors.Value = @($pvRestoreErrors)
 		}
 
 		$kubeExeFolder = Get-KubeBinPathGivenKubePath -KubePathLocal $K2sPathToInstallFrom
@@ -1668,7 +1832,8 @@ function PerformClusterUpgrade {
 			}
 		}
 		if ($null -ne $resourceRestoreErrors) {
-			$resourceRestoreErrors.Value = $restoreErrors
+			# append: PV restore errors recorded earlier must not be overwritten
+			$resourceRestoreErrors.Value = @(@($resourceRestoreErrors.Value) + $restoreErrors | Where-Object { $_ })
 		}
 		
 		# show completion
@@ -1729,6 +1894,19 @@ function PerformClusterUpgrade {
 			Write-Log "** The backup directory is kept: $BackupDir" -Console
 			Write-Log '** After cert-manager is available, restore the missing backed-up ClusterIssuers with:' -Console
 			Write-Log "**   kubectl create -f `"$clusterIssuersBackup`"" -Console
+			Write-Log '********************************************************************************************' -Console
+		}
+
+		if ($pvRestoreErrors.Count -gt 0) {
+			Write-Log '' -Console
+			Write-Log '********************************************************************************************' -Console
+			Write-Log '** PERSISTENT VOLUME RESTORE ERRORS                                                       **' -Console
+			Write-Log '********************************************************************************************' -Console
+			foreach ($pvRestoreError in $pvRestoreErrors) {
+				Write-Log "**   - $pvRestoreError" -Console
+			}
+			Write-Log "** The backup directory is kept: $BackupDir" -Console
+			Write-Log "** The PV backup archives are located in: $pvBackupPath" -Console
 			Write-Log '********************************************************************************************' -Console
 		}
 
@@ -1825,26 +2003,54 @@ function Invoke-PVBackup {
         Write-Log "Excluding addon-managed PVs: $($excludeNames -join ', ')" -Console
 
         # Invoke the core backup function
-        $backupResult = Backup-AllPersistentVolumes -ExportPath $BackupDirectory -ExcludeNames $excludeNames
+        $backupReport = Backup-AllPersistentVolumes -ExportPath $BackupDirectory -ExcludeNames $excludeNames
 
-        if ($backupResult) {
-            $successCount = ($backupResult.GetEnumerator() | Where-Object { $_.Value -eq $true }).Count
-            Write-Log "PV backup completed: $successCount PV(s) backed up successfully" -Console
+        # success requires every discovered, non-excluded PV to be backed up successfully
+        $summary = Get-PVBackupReportSummary -Report $backupReport
+        if (-not $summary.IsValid) {
+            $message = 'PV backup returned an unexpected result, it cannot be verified that all persistent volumes were backed up'
+            Write-Log "[PVBackup] ERROR: $message" -Console
+            return @{
+                Success = $false
+                BackedUpCount = 0
+                Details = @{}
+                Message = $message
+            }
+        }
+        $backupResult = $backupReport.Results
+
+        $message = Get-PVBackupErrorMessage -Summary $summary
+        if ($message) {
+            Write-Log "[PVBackup] ERROR: $message" -Console
+            return @{
+                Success = $false
+                BackedUpCount = $summary.Succeeded.Count
+                Details = $backupResult
+                Message = $message
+            }
+        }
+
+        if ($summary.Succeeded.Count -gt 0) {
+            Write-Log "PV backup completed: $($summary.Succeeded.Count) PV(s) backed up successfully" -Console
 
             return @{
                 Success = $true
-                BackedUpCount = $successCount
+                BackedUpCount = $summary.Succeeded.Count
                 Details = $backupResult
             }
         }
-        else {
+
+        if ($summary.Discovered.Count -eq 0) {
             Write-Log "No persistent volumes found to backup" -Console
-            return @{
-                Success = $true
-                BackedUpCount = 0
-                Details = @{}
-                Message = "No PVs to backup"
-            }
+        }
+        else {
+            Write-Log "No persistent volumes to backup: all $($summary.Discovered.Count) discovered PV(s) are excluded" -Console
+        }
+        return @{
+            Success = $true
+            BackedUpCount = 0
+            Details = @{}
+            Message = "No PVs to backup"
         }
     }
     catch {

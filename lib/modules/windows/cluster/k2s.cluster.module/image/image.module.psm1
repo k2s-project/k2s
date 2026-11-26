@@ -77,11 +77,32 @@ function Write-KubernetesImagesIntoJson {
     $kubernetesImagesJsonString | Set-Content -Path $kubernetesImagesJson
 }
 
-function Get-FilteredImages([ContainerImage[]]$ContainerImages, [ContainerImage[]]$ContainerImagesToBeCleaned) {
+function Get-FilteredImages([ContainerImage[]]$ContainerImages, [ContainerImage[]]$ContainerImagesToBeCleaned, [switch]$MatchByName) {
+    if ($MatchByName) {
+        return Get-FilteredImagesByName -ContainerImages $ContainerImages -ContainerImagesToBeCleaned $ContainerImagesToBeCleaned
+    }
+
     $filteredImages = @()
     foreach ($containerImage in $ContainerImages) {
         $count = ($ContainerImagesToBeCleaned | Where-Object { $_.ImageId -eq $containerImage.ImageId } ).Count
         if ($count -eq 0 ) {
+            $filteredImages += $containerImage
+        }
+    }
+    return $filteredImages
+}
+
+# Image IDs differ on added Linux nodes: resolve the system images by name to their local IDs, so tag aliases sharing that ID are hidden too.
+function Get-FilteredImagesByName([ContainerImage[]]$ContainerImages, [ContainerImage[]]$ContainerImagesToBeCleaned) {
+    $systemImageIds = @($ContainerImagesToBeCleaned | ForEach-Object { $_.ImageId })
+    $systemImageIds += @($ContainerImages | Where-Object {
+            $containerImage = $_
+            $null -ne ($ContainerImagesToBeCleaned | Where-Object { $_.Repository -eq $containerImage.Repository -and $_.Tag -ceq $containerImage.Tag } | Select-Object -First 1)
+        } | ForEach-Object { $_.ImageId })
+
+    $filteredImages = @()
+    foreach ($containerImage in $ContainerImages) {
+        if ($systemImageIds -notcontains $containerImage.ImageId) {
             $filteredImages += $containerImage
         }
     }
@@ -169,8 +190,11 @@ function Get-ContainerImagesOnLinuxNode([bool]$IncludeK8sImages = $false, [bool]
     }
     Write-Log "[ImageList] Total parsed images before K8s filter = $($linuxContainerImages.Count)"
     if ($IncludeK8sImages -eq $false) {
+        # Image IDs of the same system image differ on added Linux nodes, so only those are matched by name.
+        $matchByName = -not [string]::IsNullOrWhiteSpace($IpAddress)
+        Write-Log "[ImageList] Filtering K8s images on '$hostname' by $(if ($matchByName) { 'image name (repository:tag), resolved to the node-local image IDs' } else { 'image ID' })"
         $linuxContainerImages =
-        Get-FilteredImages -ContainerImages $linuxContainerImages -ContainerImagesToBeCleaned $KubernetesImages
+        Get-FilteredImages -ContainerImages $linuxContainerImages -ContainerImagesToBeCleaned $KubernetesImages -MatchByName:$matchByName
         Write-Log "[ImageList] Total images after K8s filter = $($linuxContainerImages.Count)"
     }
     # Filter addon images and deduplicate

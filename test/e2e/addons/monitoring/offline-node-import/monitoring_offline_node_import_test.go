@@ -134,7 +134,8 @@ var _ = It("imports monitoring images onto added Linux workers and enables their
 
 	exportimport.CleanAddonResources(ctx, suite, k2s, monitoringImpl, controlPlaneIpAddress)
 	exportimport.VerifyResourcesCleanedUp(ctx, suite, k2s, monitoringImpl, controlPlaneIpAddress)
-	suite.K2sCli().MustExec(ctx, "image", "clean", "--nodes", strings.Join(nodeNames(linuxWorkers), ","), "-o")
+	// Exits non-zero ("Nothing to delete") when the workers hold only system images; absence is asserted below.
+	suite.K2sCli().Exec(ctx, "image", "clean", "--nodes", strings.Join(nodeNames(linuxWorkers), ","), "-o")
 	expectMonitoringImageAbsentOnLinuxWorkers(ctx)
 	restoreProxy = exportimport.PrepareAirGappedAddonImport(ctx, suite, k2s, monitoringAddon, monitoringImpl, controlPlaneIpAddress)
 	exportimport.LogAirGapState(ctx, suite, k2s, monitoringAddon, monitoringImpl, controlPlaneIpAddress)

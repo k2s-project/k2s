@@ -811,7 +811,7 @@ function Set-CrioOfflineImageRetention {
     }
 }
 
-# Returns the image reference with the highest version tag per repository, e.g. kube-apiserver:v1.37.2 over v1.36.4.
+# Returns the image reference with the highest version tag per repository, e.g. kube-apiserver:v1.37.3 over v1.36.4.
 function Select-NewestImageRefs {
     param (
         [string[]] $ImageRefs

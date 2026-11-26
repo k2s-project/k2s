@@ -222,12 +222,13 @@ k2s_node_download_packages() {
 
 # Masks the credentials of a proxy URL in the output passed through.
 k2s_node_mask_proxy() {
-  local proxy="$1" masked line
+  local proxy="$1" scheme='' masked line
   if [[ $proxy != *@* ]]; then
     cat
     return
   fi
-  masked="${proxy%%://*}://***@${proxy##*@}"
+  [[ $proxy == *://* ]] && scheme="${proxy%%://*}://"
+  masked="${scheme}***@${proxy##*@}"
   while IFS= read -r line || [[ -n $line ]]; do
     printf '%s\n' "${line//"$proxy"/"$masked"}"
   done

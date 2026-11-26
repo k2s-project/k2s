@@ -180,13 +180,17 @@ k2s_proxy_config_no_proxy "$1/missing"`
 		Entry("without configuration and host address", "", "", "localhost,127.0.0.1,::1,.local,.cluster.local,.svc"),
 	)
 
-	It("masks the credentials of a proxy URL in the output", func() {
-		out, err := runNodeModuleFunction(nil, `printf '%s\n' "proxy: $1" "other line" | k2s_node_mask_proxy "$1"; printf '%s\n' "plain: $2" | k2s_node_mask_proxy "$2"`,
-			"http://user:secret@proxy.example:3128", "http://proxy.example:3128")
+	DescribeTable("masks the credentials of a proxy URL in the output",
+		func(proxy, want string) {
+			out, err := runNodeModuleFunction(nil, `printf '%s\n' "proxy: $1" "other line" | k2s_node_mask_proxy "$1"`, proxy)
 
-		Expect(err).ToNot(HaveOccurred())
-		Expect(out).To(Equal("proxy: http://***@proxy.example:3128\nother line\nplain: http://proxy.example:3128"))
-	})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(out).To(Equal("proxy: " + want + "\nother line"))
+		},
+		Entry("with scheme", "http://user:secret@proxy.example:3128", "http://***@proxy.example:3128"),
+		Entry("without scheme", "user:secret@proxy.example:3128", "***@proxy.example:3128"),
+		Entry("without credentials", "http://proxy.example:3128", "http://proxy.example:3128"),
+	)
 
 	DescribeTable("rejects nodes that are known to the cluster or the configuration",
 		func(node string, wantExitCode int) {

@@ -88,12 +88,15 @@ The snapshot is internal, stored next to `setup.json`, and separate from `cfg\co
 Internally the following high‑level steps are performed:
 1. Export all existing workloads (cluster‑scoped resources and namespaced resources).
 2. Capture the list of currently enabled addons.
-3. Uninstall the existing cluster components.
-4. Install the new version from the extracted package.
-5. Import previously exported workloads.
-6. Re-enable previously enabled addons.
-7. Verify workload health (basic readiness checks).
-8. Final cluster availability validation.
+3. Back up the data of all persistent volumes. Only `local` and `hostPath` volumes can be backed up. If the persistent volumes cannot be listed, a volume has another type (for example `nfs` or `csi`), or any volume cannot be backed up, the upgrade stops before the existing cluster is uninstalled and logs the names and types of the affected volumes.
+4. Uninstall the existing cluster components.
+5. Install the new version from the extracted package.
+6. Restore the persistent volume data and import previously exported workloads.
+7. Re-enable previously enabled addons.
+8. Verify workload health (basic readiness checks).
+9. Final cluster availability validation.
+
+The backup directory is deleted only after a successful upgrade in which everything was restored. It is kept if a persistent volume or another backed-up resource could not be restored (including a missing or empty persistent volume backup), if the upgrade was rolled back, or if the rollback failed.
 
 ### Rollback Considerations
 If the new installation fails during a full upgrade, K2s attempts to reinstall the previous version with the staged previous effective configuration. If that rollback also fails:

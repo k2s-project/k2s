@@ -292,8 +292,6 @@ func StageAddonRemovedFromHost(rootDir string, addon *addons.Addon, impl *addons
 	}
 	toRemove = append(toRemove, windowsCurlPackagePaths(rootDir, impl)...)
 
-	framework.RecoverStaleAddonBackups(rootDir)
-
 	inventory, err := captureAddonFileInventory(filepath.Join(addonsRoot, addon.Metadata.Name))
 	Expect(err).ToNot(HaveOccurred(), "[AirGap] failed to capture original addon file inventory")
 

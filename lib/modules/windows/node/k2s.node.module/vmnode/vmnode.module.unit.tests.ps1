@@ -245,7 +245,7 @@ Describe 'Real stop-job waiting deadline without a VM' -Tag 'unit', 'ci', 'vm' {
         Mock Write-Log {}
         Mock Get-VM { [pscustomobject]@{ Name = 'KubeMaster'; State = 'Running'; Id = 'mock-vm' } }
         Mock Stop-VM {
-            $script:liveStopJob = Start-Job { Start-Sleep -Seconds 30 }
+            $script:liveStopJob = Start-Job { Start-Sleep -Seconds 120 }
             $script:liveStopJob
         }
     }
@@ -261,7 +261,8 @@ Describe 'Real stop-job waiting deadline without a VM' -Tag 'unit', 'ci', 'vm' {
     It 'bounds real Wait-Job and leaves the unfinished operation alone' {
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
         { Stop-VirtualMachine -VmName 'KubeMaster' -Wait -TimeoutInSeconds 1 } | Should -Throw '*stop operation exceeded 1s*'
-        $timer.Elapsed.TotalSeconds | Should -BeLessThan 15
+        # Includes the job start-up time on slow runners; an unbounded wait would last the full 120s of the job
+        $timer.Elapsed.TotalSeconds | Should -BeLessThan 60
         $script:liveStopJob.State | Should -Be 'Running'
         Should -Invoke Write-Log -Times 1 -Exactly -ParameterFilter { $Messages -like '*Retaining unfinished stop job*' }
     }

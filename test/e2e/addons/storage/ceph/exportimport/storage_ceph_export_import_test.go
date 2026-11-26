@@ -91,7 +91,8 @@ var _ = Describe("storage ceph addon export and import", Ordered, func() {
 	Describe("export storage ceph addon", func() {
 		BeforeAll(func(ctx context.Context) {
 			exportimport.CleanupExportedFiles(exportPath, "")
-			// Earlier suites may have installed the packages; apt then no longer downloads them for the export.
+			// Earlier suites leave ~/.storage_ceph and the installed packages behind; the export then skips the download.
+			exportimport.RemoveAddonPackagesFromControlPlane(ctx, suite, k2s, impl, controlPlaneIpAddress)
 			exportimport.PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIpAddress)
 		})
 

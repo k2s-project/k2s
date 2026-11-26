@@ -97,7 +97,7 @@ function Get-FilteredImagesByName([ContainerImage[]]$ContainerImages, [Container
     $systemImageIds = @($ContainerImagesToBeCleaned | ForEach-Object { $_.ImageId })
     $systemImageIds += @($ContainerImages | Where-Object {
             $containerImage = $_
-            $null -ne ($ContainerImagesToBeCleaned | Where-Object { $_.Repository -eq $containerImage.Repository -and $_.Tag -eq $containerImage.Tag } | Select-Object -First 1)
+            $null -ne ($ContainerImagesToBeCleaned | Where-Object { $_.Repository -eq $containerImage.Repository -and $_.Tag -ceq $containerImage.Tag } | Select-Object -First 1)
         } | ForEach-Object { $_.ImageId })
 
     $filteredImages = @()

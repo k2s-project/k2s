@@ -6,7 +6,7 @@
 # Counterpart of lib/scripts/windows/worker/linux/bare-metal/Add.ps1. Invoked by 'k2s node add'.
 #
 # Without --node-package the node downloads its packages itself (online). Like on a Windows host, the node uses the
-# proxy of the K2s install (<config-dir>/proxy.conf).
+# proxy and no-proxy list of the K2s install (<config-dir>/proxy.conf).
 #
 # Usage: sudo Add.sh --ip-address <ip> --user <name> [--node-package <zip>] [--install-dir <dir>] [--config-dir <dir>]
 
@@ -105,6 +105,7 @@ host_ip=''
 if [[ $flannel_backend == host-gw ]]; then
   host_ip="$(k2s_node_host_ip)"
 fi
+no_proxy="$(k2s_node_no_proxy "$(k2s_proxy_config_no_proxy "$config_dir")" "$host_ip")"
 
 k2s_node_config_add "$cluster_config" "$node_name"
 node_configured=true
@@ -114,7 +115,7 @@ k2s_node_harden prepare
 if [[ -z $package_dir ]]; then
   k2s_node_download_packages "$(kubeadm version -o short)" "$proxy"
 fi
-k2s_node_install_packages "$registry_token" "$proxy"
+k2s_node_install_packages "$registry_token" "$proxy" "$no_proxy"
 if [[ -n $package_dir ]]; then
   k2s_node_import_images
 fi

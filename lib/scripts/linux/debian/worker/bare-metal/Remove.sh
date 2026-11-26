@@ -59,10 +59,15 @@ else
 fi
 
 k2s_node_remove_from_cluster "$node_name"
+cleanup_complete=$reachable
 if [[ $reachable == true ]]; then
-  k2s_node_reset || k2s_log WARN "Removing Kubernetes from $K2S_NODE_IP did not complete; see $K2S_LOG_FILE."
+  k2s_node_reset || { cleanup_complete=false; k2s_log WARN "Removing Kubernetes from $K2S_NODE_IP did not complete; see $K2S_LOG_FILE."; }
 fi
 k2s_node_config_remove "$cluster_config" "$node_name"
 k2s_node_forget_host
 
-k2s_log INFO "[NodeRemove] Worker node $node_name ($K2S_NODE_IP) removed from the cluster."
+if [[ $cleanup_complete == true ]]; then
+  k2s_log INFO "[NodeRemove] Worker node $node_name ($K2S_NODE_IP) removed from the cluster."
+else
+  k2s_log WARN "[NodeRemove] Worker node $node_name ($K2S_NODE_IP) removed from the cluster; the cleanup on the node is incomplete."
+fi

@@ -306,9 +306,11 @@ k2s_windows_worker_wait_for_ssh() {
 # an hour of skew), which fails kubeadm join's TLS validation ("certificate ... is not yet
 # valid"). Rather than depend on QEMU/libvirt clock plumbing, set the guest's time directly
 # over the SSH channel we already have, using the Linux host's own (NTP-synced) clock as the
-# source of truth.
+# source of truth. The guest lags by at most the SSH round trip (mostly powershell.exe startup,
+# several seconds on a fresh guest). Up to 30 seconds are harmless: the Kubernetes certificate
+# signer backdates NotBefore by 5 minutes.
 k2s_windows_worker_sync_clock() {
-  local now_utc started_at finished_at elapsed_ms deadline=$((SECONDS + 300))
+  local now_utc started_at finished_at elapsed_ms max_lag_ms=30000 deadline=$((SECONDS + 300))
   # A single unprotected SSH call here is exactly as exposed to the worker's occasional
   # multi-minute connectivity blips (see k2s_windows_worker_wait_for_ssh) as any other; retry
   # instead of letting one transient hiccup abort the whole install.
@@ -318,11 +320,11 @@ k2s_windows_worker_sync_clock() {
     if k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date ([DateTimeOffset]::FromUnixTimeMilliseconds($started_at).UtcDateTime)\""; then
       finished_at=$(date -u +%s%3N) || return 1
       elapsed_ms=$((finished_at - started_at))
-      if (( elapsed_ms <= 5000 )); then
+      if (( elapsed_ms <= max_lag_ms )); then
         k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc; SSH round trip ${elapsed_ms}ms)."
         return 0
       fi
-      k2s_log WARN "Windows worker clock sync took ${elapsed_ms}ms, exceeding the 5000ms skew bound; retrying with a fresh timestamp."
+      k2s_log WARN "Windows worker clock sync took ${elapsed_ms}ms, exceeding the ${max_lag_ms}ms skew bound; retrying with a fresh timestamp."
     else
       k2s_log WARN 'Setting the Windows worker clock failed; retrying.'
     fi
@@ -760,7 +762,10 @@ k2s_windows_worker_start() {
 }
 k2s_windows_worker_stop() {
   local deadline=$((SECONDS + 120)) state
-  virsh domstate "$K2S_WINDOWS_WORKER_NAME" >/dev/null 2>&1 || return 0
+  state=$(virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null) || return 0
+  [[ "$state" == 'shut off' ]] && return 0
+  # Windows ignores the ACPI power button (virsh shutdown) without a logged-on user, so ask it over SSH first.
+  k2s_windows_worker_ssh 'shutdown.exe /s /t 0 /f' >/dev/null 2>&1 || true
   virsh shutdown "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true
   while :; do
     state=$(virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true)

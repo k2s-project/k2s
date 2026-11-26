@@ -15,6 +15,7 @@ export K2S_LOG_FILE="${K2S_LOG_FILE:-/var/log/k2s.log}"
 
 source "$K2S_INSTALL_DIR/lib/modules/linux/common/logging.sh"
 source "$K2S_INSTALL_DIR/lib/modules/linux/infra/ssh.sh"
+source "$K2S_INSTALL_DIR/lib/modules/linux/node/crio.sh"
 source "$K2S_INSTALL_DIR/lib/modules/linux/node/worker-node.module.sh"
 
 node_name=''

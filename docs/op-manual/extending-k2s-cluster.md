@@ -374,7 +374,7 @@ k2s stop --node <NodeName>
 k2s start --node <NodeName>
 ```
 
-On a Linux host, run the commands with `sudo`. Stopping a node stops kubelet and CRI-O on it; starting waits until the node is `Ready` again.
+On a Linux host, run the commands with `sudo`. Stopping a node stops kubelet, its pods, and CRI-O on it; starting waits until the node is `Ready` again.
 
 To remove a node from the cluster:
 
@@ -382,7 +382,29 @@ To remove a node from the cluster:
 k2s node remove --name <NodeName>
 ```
 
-The node is drained and deleted from the cluster. If it is reachable, K2s resets Kubernetes on it and removes the installed Kubernetes and CRI-O packages and the K2s configuration; the [hardening changes](#changes-made-to-a-debian-13-target) remain. The node can be added again afterwards.
+The cluster must be running. The node is drained and deleted from the cluster. If it is reachable, K2s resets Kubernetes on it and removes the installed Kubernetes and CRI-O packages and the K2s configuration; the [hardening changes](#changes-made-to-a-debian-13-target) remain. If this cleanup on the node fails, the command ends with a warning and details in the log. The node can be added again afterwards.
+
+`k2s node remove` does not revoke the SSH access you set up in [Install and verify the K2s SSH key](#1-install-and-verify-the-k2s-ssh-key): the K2s host can still log in to the node. If the node does not rejoin, remove the K2s public key on the node and revoke the `sudo` rights you granted for *K2s*. Print the key on the K2s host:
+
+=== "Windows host"
+
+    ```powershell
+    Get-Content "$env:USERPROFILE\.ssh\k2s\id_rsa.pub"
+    ```
+
+=== "Linux host (experimental)"
+
+    ```bash
+    sudo cat /root/.ssh/k2s/id_ed25519.pub
+    ```
+
+Then remove it on the node:
+
+```bash
+key='<K2sPublicKey>'
+grep -vF "$key" ~/.ssh/authorized_keys > /tmp/authorized_keys || true
+cat /tmp/authorized_keys > ~/.ssh/authorized_keys && rm /tmp/authorized_keys
+```
 
 !!! warning "Linux host (experimental)"
     `k2s uninstall` does not remove added nodes yet. Remove them with `sudo k2s node remove` before uninstalling *K2s*.

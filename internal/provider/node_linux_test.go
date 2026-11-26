@@ -155,16 +155,30 @@ k2s_node_configure admin 10.10.0.21 key && k2s_node_config_add "$1/cluster.json"
 K2S_CONFIG_DIR="$1" K2S_PROXY='http://user:secret@proxy.example:3128' K2S_NO_PROXY='localhost,.svc' k2s_proxy_config_write
 stat -c %a "$1/proxy.conf"
 k2s_proxy_config_http "$1"
-k2s_proxy_config_http "$1/missing"`
+k2s_proxy_config_http "$1/missing"
+k2s_proxy_config_no_proxy "$1"
+k2s_proxy_config_no_proxy "$1/missing"`
 
 		out, err := runNodeModuleFunction(nil, snippet, configDir)
 
 		Expect(err).ToNot(HaveOccurred())
-		Expect(out).To(Equal("600\nhttp://user:secret@proxy.example:3128"))
+		Expect(out).To(Equal("600\nhttp://user:secret@proxy.example:3128\nlocalhost,.svc"))
 		content, err := os.ReadFile(filepath.Join(configDir, "proxy.conf"))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(string(content)).To(Equal("http_proxy=http://user:secret@proxy.example:3128\nhttps_proxy=http://user:secret@proxy.example:3128\nno_proxy=localhost,.svc\n"))
 	})
+
+	DescribeTable("k2s_node_no_proxy adds the local names and the host address to the configured list",
+		func(configured, hostIP, want string) {
+			out, err := runNodeModuleFunction(nil, `k2s_node_no_proxy "$1" "$2"`, configured, hostIP)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(out).To(Equal(want))
+		},
+		Entry("with configuration and host address", "registry.corp,localhost,172.20.0.0/16", "10.10.0.5",
+			"registry.corp,localhost,172.20.0.0/16,127.0.0.1,::1,.local,.cluster.local,.svc,10.10.0.5"),
+		Entry("without configuration and host address", "", "", "localhost,127.0.0.1,::1,.local,.cluster.local,.svc"),
+	)
 
 	It("masks the credentials of a proxy URL in the output", func() {
 		out, err := runNodeModuleFunction(nil, `printf '%s\n' "proxy: $1" "other line" | k2s_node_mask_proxy "$1"; printf '%s\n' "plain: $2" | k2s_node_mask_proxy "$2"`,
@@ -287,6 +301,41 @@ k2s_proxy_config_http "$1/missing"`
 			))
 		})
 
+		It("installs the packages with the no-proxy list", func() {
+			_, err := runNodeModuleFunction(sshStub(), `k2s_node_configure debian 10.10.0.20 key && k2s_node_install_packages token http://proxy:3128 'localhost,.svc'`)
+
+			Expect(err).ToNot(HaveOccurred())
+			args, err := os.ReadFile(filepath.Join(record, "args"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(args)).To(ContainSubstring("http://proxy:3128 'token' false localhost\\,.svc false"))
+		})
+
+		It("stops kubelet, then the pods, then CRI-O", func() {
+			_, err := runNodeModuleFunction(sshStub(), `source "$K2S_INSTALL_DIR/lib/modules/linux/node/crio.sh"
+k2s_node_configure debian 10.10.0.20 key && k2s_node_stop_services`)
+			Expect(err).ToNot(HaveOccurred())
+
+			calls := filepath.Join(record, "calls")
+			stubDir := GinkgoT().TempDir()
+			for name, body := range map[string]string{
+				"systemctl": `printf '%s\n' "systemctl $*" >> "` + calls + `"`,
+				"crictl":    `printf '%s\n' "crictl $*" >> "` + calls + `"; [[ $3 != pods ]] || printf '%s\n' pod1 pod2`,
+			} {
+				Expect(os.WriteFile(filepath.Join(stubDir, name), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o700)).To(Succeed())
+			}
+			cmd := exec.Command("bash", filepath.Join(record, "stdin"))
+			cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			Expect(cmd.Run()).To(Succeed())
+
+			Expect(os.ReadFile(calls)).To(BeEquivalentTo(`systemctl stop kubelet
+systemctl is-active --quiet crio
+crictl --runtime-endpoint unix:///var/run/crio/crio.sock pods -q
+crictl --runtime-endpoint unix:///var/run/crio/crio.sock stopp pod1
+crictl --runtime-endpoint unix:///var/run/crio/crio.sock stopp pod2
+systemctl stop crio
+`))
+		})
+
 		It("resets the node with a valid script and the configured KubeSwitch and pod CIDRs", func() {
 			_, err := runNodeModuleFunction(sshStub(), `k2s_node_configure debian 10.10.0.20 key && k2s_node_reset`)
 
@@ -313,9 +362,10 @@ k2s_proxy_config_http "$1/missing"`
 			Expect(err != nil).To(Equal(wantErr), "got %v", err)
 			Expect(strings.TrimSpace(string(commands))).To(Equal(wantCommands))
 		},
-		Entry("skips a node that is not in the cluster", `[[ $1 != get ]] || exit 1`, false, "get"),
-		Entry("deletes the node when draining fails", `[[ $1 != drain ]] || exit 1`, false, "get drain delete"),
-		Entry("fails when deleting fails", `[[ $1 != delete ]] || exit 1`, true, "get drain delete"),
+		Entry("skips a node that is not in the cluster", `:`, false, "get"),
+		Entry("fails when the node lookup fails", `[[ $1 != get ]] || exit 1`, true, "get"),
+		Entry("deletes the node when draining fails", `[[ $1 != get ]] || echo node/worker1; [[ $1 != drain ]] || exit 1`, false, "get drain delete"),
+		Entry("fails when deleting fails", `[[ $1 != get ]] || echo node/worker1; [[ $1 != delete ]] || exit 1`, true, "get drain delete"),
 	)
 })
 

@@ -219,24 +219,13 @@ k2s_start_cluster() {
   k2s_dns_start
   [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_start
 }
-k2s_crictl() { crictl --runtime-endpoint unix:///var/run/crio/crio.sock "$@"; }
-
-# CRI-O runs every container under its own conmon outside crio.service, so stopping the
-# service leaves all pods, including the control plane, running. Stop them through CRI-O first.
-k2s_stop_pods() {
-  local pod_id
-  command -v crictl >/dev/null 2>&1 && systemctl is-active --quiet crio || return 0
-  for pod_id in $(k2s_crictl pods -q 2>/dev/null); do
-    k2s_crictl stopp "$pod_id" >/dev/null 2>&1 || true
-  done
-}
 
 k2s_stop_cluster() {
   [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_stop || true
   k2s_dns_stop
   systemctl stop kubelet 2>/dev/null || true
   k2s_log INFO 'Stopping all pods.'
-  k2s_stop_pods
+  k2s_crio_stop_pods
   systemctl stop crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true
   k2s_wait_for_api_port_release || k2s_log WARN 'Port 6443 is still in use after stopping K2s.'
 }

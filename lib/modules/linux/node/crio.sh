@@ -78,6 +78,19 @@ k2s_crio_remove_registry() {
   fi
 }
 
+k2s_crictl() { crictl --runtime-endpoint unix:///var/run/crio/crio.sock "$@"; }
+
+# CRI-O runs every container under its own conmon outside crio.service, so stopping the
+# service leaves all pods running. Stop them through CRI-O first.
+# Self-contained (no logging) so that it can also run on remote nodes via declare -f.
+k2s_crio_stop_pods() {
+  local pod_id
+  command -v crictl >/dev/null 2>&1 && systemctl is-active --quiet crio || return 0
+  for pod_id in $(k2s_crictl pods -q 2>/dev/null); do
+    k2s_crictl stopp "$pod_id" >/dev/null 2>&1 || true
+  done
+}
+
 # Reloads systemd and restarts the CRI-O daemon
 k2s_crio_reload() {
   k2s_log INFO "Reloading systemd and restarting crio service"

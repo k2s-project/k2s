@@ -100,6 +100,13 @@ k2s_proxy_config_http() {
   sed -n 's/^http_proxy=//p' "$file" | head -n 1 | tr -d "\"'\r"
 }
 
+# Prints the no_proxy of the proxy configuration; nothing without a configuration.
+k2s_proxy_config_no_proxy() {
+  local file="${1:-$K2S_CONFIG_DIR}/proxy.conf"
+  [[ -f $file ]] || return 0
+  sed -n 's/^no_proxy=//p' "$file" | head -n 1 | tr -d "\"'\r"
+}
+
 k2s_proxy_cleanup() {
   systemctl disable --now k2s-httpproxy 2>/dev/null || true
   rm -f /etc/systemd/system/k2s-httpproxy.service

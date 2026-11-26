@@ -191,6 +191,14 @@ k2s_node_host_ip() {
   printf '%s\n' "$host_ip"
 }
 
+# Same entries as Get-KubenodeNoProxy on a Windows host: the configured list (with the cluster CIDRs) plus the local
+# names and this host's address.
+k2s_node_no_proxy() {
+  local configured="$1" host_ip="$2"
+  printf '%s\n' "${configured//,/$'\n'}" localhost 127.0.0.1 ::1 .local .cluster.local .svc "$host_ip" \
+    | awk 'NF && !seen[$0]++' | paste -sd, -
+}
+
 # Copies the packages, the images, and the node-extension scripts to the worker staging directory.
 # Directories are streamed through tar, which keeps permissions and avoids one scp per file.
 k2s_node_copy_artifacts() {
@@ -228,12 +236,12 @@ k2s_node_mask_proxy() {
 # Installs buildah first (the image import needs it), then the Kubernetes packages. The scripts are the
 # node-extension scripts of cfg/nodeextension/debian13: they only install packages the node does not have.
 k2s_node_install_packages() {
-  local registry_token="$1" proxy="$2"
+  local registry_token="$1" proxy="$2" no_proxy="$3"
   k2s_log INFO "Installing buildah packages on $K2S_NODE_IP."
   k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-buildah-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/buildah" 2>&1 | k2s_log_output \
     || { k2s_log ERROR "Installing the buildah packages failed on $K2S_NODE_IP."; return 1; }
   k2s_log INFO "Installing Kubernetes packages on $K2S_NODE_IP."
-  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-k8s-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes $(printf '%q' "$proxy") '$registry_token' false" 2>&1 \
+  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-k8s-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes $(printf '%q' "$proxy") '$registry_token' false $(printf '%q' "$no_proxy") false" 2>&1 \
     | k2s_node_mask_proxy "$proxy" | k2s_log_output \
     || { k2s_log ERROR "Installing the Kubernetes packages failed on $K2S_NODE_IP."; return 1; }
 }
@@ -393,10 +401,17 @@ k2s_node_start_services() {
     || { k2s_log ERROR "Could not start CRI-O and kubelet on $K2S_NODE_IP."; return 1; }
 }
 
+# Pods keep running after CRI-O stops (see k2s_crio_stop_pods in node/crio.sh), so they are stopped in between.
 k2s_node_stop_services() {
-  k2s_log INFO "Stopping kubelet and CRI-O on $K2S_NODE_IP."
-  k2s_node_ssh 'sudo systemctl stop kubelet && sudo systemctl stop crio' 2>&1 | k2s_log_output \
-    || { k2s_log ERROR "Could not stop kubelet and CRI-O on $K2S_NODE_IP."; return 1; }
+  k2s_log INFO "Stopping kubelet, pods and CRI-O on $K2S_NODE_IP."
+  k2s_node_ssh 'sudo bash -s' <<EOF 2>&1 | k2s_log_output \
+    || { k2s_log ERROR "Could not stop kubelet, pods and CRI-O on $K2S_NODE_IP."; return 1; }
+set -euo pipefail
+$(declare -f k2s_crictl k2s_crio_stop_pods)
+systemctl stop kubelet
+k2s_crio_stop_pods
+systemctl stop crio
+EOF
 }
 
 k2s_node_remove_staging() {
@@ -415,8 +430,10 @@ k2s_node_collect_diagnostics() {
 }
 
 k2s_node_remove_from_cluster() {
-  local node_name="$1"
-  if ! KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl get node "$node_name" >/dev/null 2>&1; then
+  local node_name="$1" found
+  found=$(KUBECONFIG="$K2S_NODE_KUBECONFIG" kubectl get node "$node_name" --ignore-not-found -o name 2>>"$K2S_LOG_FILE") \
+    || { k2s_log ERROR "Could not look up node $node_name in the cluster."; return 1; }
+  if [[ -z $found ]]; then
     k2s_log INFO "Node $node_name is not part of the cluster."
     return 0
   fi
@@ -427,7 +444,7 @@ k2s_node_remove_from_cluster() {
     || { k2s_log ERROR "Could not delete node $node_name from the cluster."; return 1; }
 }
 
-# Best effort, like Remove-LinuxNode and Remove-KubernetesArtifacts on a Windows host.
+# Best effort, like Remove-LinuxNode and Remove-KubernetesArtifacts on a Windows host; fails if a required step failed.
 k2s_node_reset() {
   local switch_cidr pod_cidr
   switch_cidr=$(jq -er '.smallsetup.masterNetworkCIDR' "$K2S_INSTALL_DIR/cfg/config.json") || return 1
@@ -436,11 +453,13 @@ k2s_node_reset() {
   k2s_node_ssh "sudo bash -s -- $(printf '%q %q' "$switch_cidr" "$pod_cidr")" <<'SCRIPT' 2>&1 | k2s_log_output
 switch_cidr=$1
 pod_cidr=$2
+result=0
+failed() { echo "[NodeReset] $1 failed." >&2; result=1; }
 if systemctl cat k2s-routes.service >/dev/null 2>&1; then
   systemctl disable --now k2s-routes.service
 fi
 rm -f /etc/systemd/system/k2s-routes.service
-kubeadm reset --force
+kubeadm reset --force || failed 'kubeadm reset'
 systemctl disable --now kubelet crio
 for cidr in "$switch_cidr" "$pod_cidr"; do
   ip -4 route show root "$cidr" | grep -v 'proto kernel' | while read -r route; do ip route delete $route; done
@@ -450,9 +469,7 @@ for link in cni0 flannel.1; do
     ip link delete "$link"
   fi
 done
-for package in kubeadm kubectl kubelet cri-tools cri-o buildah; do
-  DEBIAN_FRONTEND=noninteractive dpkg -P "$package"
-done
+DEBIAN_FRONTEND=noninteractive dpkg -P kubeadm kubectl kubelet cri-tools cri-o buildah || failed 'Purging the Kubernetes packages'
 for file in /etc/containers/registries.conf.d/*.conf; do
   grep -q '^[[:space:]]*\[\[registry\.mirror\]\]' "$file" 2>/dev/null && rm -f "$file"
 done
@@ -462,10 +479,11 @@ rm -rf /etc/kubernetes /etc/cni /etc/crio /var/lib/crio/* /etc/crictl.yaml /etc/
   /etc/apt/apt.conf.d/90k2s-install-proxy /etc/apt/apt.conf.d/95k2s-proxy /tmp/k2s-node \
   /etc/apt/apt.conf.d/90k2s-proxy /etc/apt/apt.conf.d/10sandbox-for-k2s \
   /etc/apt/sources.list.d/kubernetes.list /etc/apt/sources.list.d/cri-o.list \
-  /usr/share/keyrings/kubernetes-apt-keyring.gpg /usr/share/keyrings/cri-o-apt-keyring.gpg
+  /usr/share/keyrings/kubernetes-apt-keyring.gpg /usr/share/keyrings/cri-o-apt-keyring.gpg || failed 'Removing the K2s files'
 sysctl --system >/dev/null
-DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y
+DEBIAN_FRONTEND=noninteractive apt-get --fix-broken install -y || failed 'apt-get --fix-broken install'
 systemctl daemon-reload
+exit "$result"
 SCRIPT
 }
 

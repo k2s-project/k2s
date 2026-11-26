@@ -289,7 +289,7 @@ Describe 'New-AddonImagePrunePlan' -Tag 'unit', 'ci', 'addon' {
         $script:keycloakFlag = New-TestFlag -Name 'omitKeycloak' -FromFiles @('manifests/keycloak/keycloak.yaml', 'manifests/keycloak/keycloak-postgres.yaml')
         $script:oauth2Flag = New-TestFlag -Name 'omitOAuth2Proxy' -FromFiles @('manifests/keycloak/oauth2-proxy.yaml', 'manifests/hydra/oauth2-proxy-hydra.yaml')
         $script:hydraFlag = New-TestFlag -Name 'omitHydra' -FromFiles @('manifests/keycloak/windowsprovider/hydra.yaml')
-        $script:policyFlag = New-TestFlag -Name 'omitPolicyEnf' -Explicit @('reg.kyverno.io/kyverno/kyverno:v1.19.0')
+        $script:policyFlag = New-TestFlag -Name 'omitPolicyEnf' -Explicit @('reg.kyverno.io/kyverno/kyverno:v1.20.0')
     }
 
     AfterAll {
@@ -435,14 +435,14 @@ Describe 'New-AddonImagePrunePlan' -Tag 'unit', 'ci', 'addon' {
             $security = New-TestEntry -Key 'security' -Name 'security' -Implementation 'security' `
                 -ImplementationPath "$script:testRoot\security" `
                 -Flags @($script:policyFlag) `
-                -LinuxImages @('reg.kyverno.io/kyverno/kyverno:v1.19.0', 'quay.io/keycloak/keycloak:26.7.2')
+                -LinuxImages @('reg.kyverno.io/kyverno/kyverno:v1.20.0', 'quay.io/keycloak/keycloak:26.7.2')
 
             $script:explicitPlan = New-AddonImagePrunePlan -Entries @($security) -Omit @('omitPolicyEnf')
         }
 
         It 'prunes the explicitly listed image' {
             @($script:explicitPlan.SkipByKey['security'].Linux) |
-                Should -Contain (ConvertTo-ImageTarFileName -Image 'reg.kyverno.io/kyverno/kyverno:v1.19.0')
+                Should -Contain (ConvertTo-ImageTarFileName -Image 'reg.kyverno.io/kyverno/kyverno:v1.20.0')
         }
 
         It 'leaves unrelated images untouched' {

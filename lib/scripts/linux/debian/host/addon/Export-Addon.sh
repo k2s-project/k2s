@@ -167,24 +167,19 @@ addon_export_copy_matching() {
   done < <(find "$source" -type f \( "$@" \) -print0)
 }
 
-# Copies the shared module and documentation of the storage addon root into the shared scripts layer,
-# like Copy-AddonSharedScripts of addons/export.module.psm1. Other addons have no shared scripts.
+# Copies the files at the root of a multi-implementation addon (README, shared modules) into the shared scripts
+# layer, like Copy-AddonSharedScripts of addons/export.module.psm1. The manifest is merged through the config layer.
 addon_export_shared_scripts() {
-  local addon_path="$1" implementation_path="$2" destination="$3" module optional
-  if [[ $addon_path == "$implementation_path" || $(basename "$addon_path") != storage ]]; then
+  local addon_path="$1" implementation_path="$2" destination="$3" file
+  if [[ $addon_path == "$implementation_path" ]]; then
     return 0
   fi
-  module="$addon_path/storage-validation.module.psm1"
-  if [[ ! -f $module ]]; then
-    addon_export_error "Cannot export storage addon: shared module '$module' is missing."
-    return 1
-  fi
-  cp "$module" "$destination/" || return 1
-  for optional in storage-validation.module.psm1.license README.md README.md.license; do
-    if [[ -f "$addon_path/$optional" ]]; then
-      cp "$addon_path/$optional" "$destination/" || return 1
-    fi
-  done
+  while IFS= read -r -d '' file; do
+    case $(basename "$file") in
+      addon.manifest.yaml | addon.manifest.yaml.license) continue ;;
+    esac
+    cp "$file" "$destination/" || return 1
+  done < <(find "$addon_path" -maxdepth 1 -type f -print0)
 }
 
 # Adds the gitops-sync Job template to the manifests layer for GitOps delivery.
@@ -247,7 +242,7 @@ addon_export_config_files() {
     [[ ${parent,,} == "${base_name,,}" ]] || continue
     grep -Eqi '"apiVersion"[[:space:]]*:[[:space:]]*"' "$file" && continue
     cp "$file" "$destination/" || return 1
-  done < <(find "$implementation_path" -type f -iname '*.json' -print0)
+  done < <(find "$implementation_path" -maxdepth 1 -type f -iname '*.json' -print0)
 }
 
 # Prints the images referenced by 'image:' lines of the YAML files as '<linux|windows>\t<image>'; files
@@ -588,7 +583,7 @@ addon_export_addon() {
   addon_export_copy_matching "$dir_path" "$scripts_stage" -iname '*.ps1' -o -iname '*.psm1' -o -iname '*.sh' || return 1
   addon_export_copy_matching "$dir_path" "$scripts_stage" \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' \
     -o -iname '*.svg' -o -iname '*.drawio' -o -iname '*.md' -o -iname '*.ndjson' -o -iname '*.json' -o -iname '*.license' \
-    -o -iname 'Dockerfile*' \) ! -iname 'README.md' || return 1
+    -o -iname '*.tar.gz' -o -iname 'Dockerfile*' \) ! -path "$dir_path/README.md" || return 1
 
   addon_export_config_files "$base_dir/$ADDON_EXPORT_MANIFEST" "$base_name" "$implementation" "$dir_path" "$config_stage" "$single_export" || return 1
 

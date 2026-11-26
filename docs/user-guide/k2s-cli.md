@@ -449,12 +449,13 @@ k2s addons status <addon> [flags]
 
 Export an addon and its container images as an OCI artifact.
 
-Storage exports include the shared validation module and, when present, the
-storage-root `README.md` and companion license files in a `shared-scripts`
-layer, independently of image and package omission options. Other addons do
-not produce this layer. Both `storage smb` and `storage ceph` exports include
-`storage-validation.module.psm1`. Import restores these shared files to the
-`storage` addon root without replacing implementation-specific READMEs.
+Exports of addons with several implementations (e.g. `storage`, `ingress`,
+`rollout`) include the files at the addon root (such as `README.md`, companion
+license files and shared modules like `storage-validation.module.psm1`, but not
+`addon.manifest.yaml`) in a `shared-scripts` layer, independently of image and
+package omission options. Single-implementation addons do not produce this
+layer. Import restores these shared files to the addon root without replacing
+implementation-specific READMEs.
 
 importer when importing archives containing this layer.
 

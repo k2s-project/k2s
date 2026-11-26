@@ -56,7 +56,7 @@ jobs:
       - name: Download Kubernetes packages (debian13 scripts, arm64 host)
         run: |
           mkdir -p /tmp/k8s-packages
-          sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.2 ""
+          sudo bash cfg/nodeextension/debian13/scripts/download-k8s-packages.sh /tmp/k8s-packages v1.37.3 ""
           echo "Downloaded packages:"
           ls -la /tmp/k8s-packages
           for f in /tmp/k8s-packages/*.deb; do

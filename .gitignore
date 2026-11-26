@@ -209,3 +209,7 @@ testResults.xml
 .github/prompts
 .github/skills
 
+build/bom/vcs-resolution-report.json
+build/bom/k2s-bom.json
+build/bom/k2s-bom.xml
+

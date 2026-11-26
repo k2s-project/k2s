@@ -79,12 +79,12 @@ function EnsureCdxCli() {
     DownloadFile $cli "https://github.com/CycloneDX/cyclonedx-cli/releases/download/v$cycloneDxCliVersion/cyclonedx-win-x64.exe" $true -ProxyToUse $Proxy
 }
 
-function GenerateBomGolang($dirname) {
-    Write-Output "Generate bom for directory: $dirname"
+function GenerateBomGolang([string] $scanPath, [string] $bomName) {
+    Write-Output "Generate bom for directory: $scanPath"
 
     $tempdir = "$bomRootDir\merge"
     New-Item $tempdir -ItemType Directory -ErrorAction SilentlyContinue
-    $bomfile = "$tempdir\$($dirname.Split('\')[-1]).json"
+    $bomfile = "$tempdir\$bomName.json"
     if (Test-Path $bomfile) { Remove-Item -Force $bomfile }
     $env:FETCH_LICENSE = 'true'
     if ($Proxy -ne '') {
@@ -92,13 +92,28 @@ function GenerateBomGolang($dirname) {
         $env:https_proxy = $Proxy
     }
     $env:SCAN_DEBUG_MODE = 'debug'
-    $indir = $global:KubernetesPath + '\' + $dirname
-    Write-Output "Generate $dirname with command 'trivy.exe fs `"$indir`"' --scanners license --license-full --format cyclonedx -o `"$bomfile`" "
-    trivy.exe fs `"$indir`" --scanners license --license-full --format cyclonedx -o `"$bomfile`"
+    $sbomToolPaths = @(
+        "$global:BinPath\trivy.exe",
+        "$global:BinPath\cyclonedx-win-x64.exe",
+        "$bomRootDir\sbomgenerator.exe"
+    )
+    $trivyArguments = @('fs', "$scanPath", '--scanners', 'license', '--license-full', '--format', 'cyclonedx', '-o', "$bomfile")
+    foreach ($sbomToolPath in $sbomToolPaths) {
+        $trivyArguments += '--skip-files'
+        $trivyArguments += $sbomToolPath
+    }
+    Write-Output "Generate $scanPath while excluding SBOM-generation tools"
+    & "$global:BinPath\trivy.exe" $trivyArguments
+    if ($LASTEXITCODE -ne 0 -or !(Test-Path -Path $bomfile)) {
+        throw "Trivy source scan failed for '$scanPath'."
+    }
 
     if ($Annotate) {
-        Write-Output "Enriching generated SBOM for '$dirname'"
-        & "$bomRootDir\sbomgenerator.exe" -e "$bomfile"
+        Write-Output "Enriching generated SBOM for '$bomName'"
+        & "$bomRootDir\sbomgenerator.exe" -e "$bomfile" -root-component-name "$bomName"
+        if ($LASTEXITCODE -ne 0) {
+            throw "SBOM enrichment failed for '$bomName'."
+        }
     }
 
     Write-Output "bom now available: $bomfile"
@@ -186,49 +201,81 @@ function CheckVMState() {
 
 function Get-KubeMasterGoExecutableInventory([string] $OutputPath) {
     $remoteInventoryPath = '/home/remote/kubemaster-go-executables.tsv'
+    $remoteReaderPath = '/home/remote/read-go-buildinfo'
+    $localReaderSourcePath = "$PSScriptRoot\read-go-buildinfo.go"
+    $localReaderPath = "$env:TEMP\read-go-buildinfo"
+    $script:KubeMasterExecutableInventoryEntryCount = 0
+    $script:KubeMasterExecutableInventoryError = ''
     $inventoryScript = @'
+test -x /home/remote/read-go-buildinfo
 rm -f /home/remote/kubemaster-go-executables.tsv
 
-if ! command -v go >/dev/null 2>&1; then
-    echo 'Go toolchain is not available; executable-level Go module inventory cannot be generated.' >&2
-    exit 2
-fi
-
 {
-    for directory in /usr/local/bin /usr/bin /usr/sbin /opt /home/remote; do
+    for directory in /usr/local/bin /usr/bin /usr/sbin /opt /home/remote /var/lib/kubelet /etc/kubernetes; do
         [ -d "$directory" ] || continue
         find "$directory" -xdev -type f -executable -print0 2>/dev/null
     done
 } | while IFS= read -r -d '' executable; do
-    go version -m "$executable" 2>/dev/null | awk -v executable="$executable" '
-        NR == 1 && $2 ~ /^go[0-9]/ {
-            version = $2
-            sub(/^go/, "v", version)
-            print "pkg:golang/stdlib@" version "\t" executable
-        }
-        $1 == "dep" && $2 != "" && $3 != "" {
-            print "pkg:golang/" $2 "@" $3 "\t" executable
-        }
-    '
+    /home/remote/read-go-buildinfo "$executable" 2>/dev/null || true
 done | sort -u > /home/remote/kubemaster-go-executables.tsv
 '@
+    $inventoryScript = $inventoryScript -replace "`r`n", "`n"
     $encodedScript = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($inventoryScript))
 
     try {
-        Write-Output 'Generate KubeMaster Go module-to-executable inventory'
-        ExecCmdMaster "echo $encodedScript | base64 --decode | sudo bash" -NoLog
+        if (!(Test-Path -Path $localReaderSourcePath)) {
+            throw "Go build-info reader source was not found at '$localReaderSourcePath'."
+        }
+        $previousGoOs = $env:GOOS
+        $previousGoArch = $env:GOARCH
+        $previousCgoEnabled = $env:CGO_ENABLED
+        try {
+            $env:GOOS = 'linux'
+            $env:GOARCH = 'amd64'
+            $env:CGO_ENABLED = '0'
+            & go build -o $localReaderPath $localReaderSourcePath
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path -Path $localReaderPath)) {
+                throw 'Could not build the Linux Go build-info reader.'
+            }
+        }
+        finally {
+            $env:GOOS = $previousGoOs
+            $env:GOARCH = $previousGoArch
+            $env:CGO_ENABLED = $previousCgoEnabled
+        }
 
-        Copy-FromToMaster -Source "$global:Remote_Master`:$remoteInventoryPath" -Target $OutputPath
+        $copyOutput = @(scp.exe -o StrictHostKeyChecking=no -i $global:LinuxVMKey $localReaderPath "$global:Remote_Master`:$remoteReaderPath" 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not upload KubeMaster build-info reader: $($copyOutput -join [Environment]::NewLine)"
+        }
+
+        $remoteOutput = @(ssh.exe -T -n -o StrictHostKeyChecking=no -i $global:LinuxVMKey $global:Remote_Master "chmod +x $remoteReaderPath && echo $encodedScript | base64 --decode | bash && test -s $remoteInventoryPath" 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "KubeMaster executable inventory command failed: $($remoteOutput -join [Environment]::NewLine)"
+        }
+
+        Remove-Item -Path $OutputPath -Force -ErrorAction SilentlyContinue
+        $copyOutput = @(scp.exe -o StrictHostKeyChecking=no -i $global:LinuxVMKey "$global:Remote_Master`:$remoteInventoryPath" $OutputPath 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not download KubeMaster executable inventory: $($copyOutput -join [Environment]::NewLine)"
+        }
+        if (!(Test-Path -Path $OutputPath)) {
+            throw "KubeMaster executable inventory was not copied to '$OutputPath'."
+        }
         $entryCount = @(Get-Content -Path $OutputPath).Count
-        Write-Output "KubeMaster executable inventory contains $entryCount module-to-executable entries"
+        if ($entryCount -eq 0) {
+            throw 'KubeMaster executable inventory is empty.'
+        }
+        $script:KubeMasterExecutableInventoryEntryCount = $entryCount
         return $true
     }
     catch {
-        Write-Warning "Could not generate KubeMaster executable inventory: $($_.Exception.Message)"
+        $script:KubeMasterExecutableInventoryError = $_.Exception.Message
         return $false
     }
     finally {
-        ExecCmdMaster "sudo rm -f $remoteInventoryPath" -IgnoreErrors -NoLog
+        ExecCmdMaster "rm -f $remoteInventoryPath $remoteReaderPath" -IgnoreErrors -NoLog
+        Remove-Item -Path $localReaderPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -271,15 +318,23 @@ function GenerateBomDebian() {
     if ($Annotate) {
         $kubeSBOMJsonFile = "$bomRootDir\merge\kubemaster.json"
         $kubeExecutableInventoryPath = "$bomRootDir\merge\kubemaster-go-executables.tsv"
+        if (!(Test-Path -Path $kubeSBOMJsonFile)) {
+            throw "KubeMaster BOM was not copied to '$kubeSBOMJsonFile'."
+        }
         try {
             $inventoryAvailable = Get-KubeMasterGoExecutableInventory -OutputPath $kubeExecutableInventoryPath
             if ($inventoryAvailable) {
+                Write-Output "KubeMaster executable inventory contains $script:KubeMasterExecutableInventoryEntryCount module-to-executable entries"
                 Write-Output 'Enriching KubeMaster SBOM with executable-level provenance'
-                & "$bomRootDir\sbomgenerator.exe" -e "$kubeSBOMJsonFile" -root-executable-map "$kubeExecutableInventoryPath"
+                & "$bomRootDir\sbomgenerator.exe" -e "$kubeSBOMJsonFile" -root-component-name kubemaster -root-executable-map "$kubeExecutableInventoryPath" -exclude-root-executables trivy
             }
             else {
-                Write-Warning 'Enriching KubeMaster SBOM without executable-level provenance.'
-                & "$bomRootDir\sbomgenerator.exe" -e "$kubeSBOMJsonFile"
+                Write-Output "WARNING: Could not generate KubeMaster executable inventory: $script:KubeMasterExecutableInventoryError"
+                Write-Output 'WARNING: Enriching KubeMaster SBOM without executable-level provenance.'
+                & "$bomRootDir\sbomgenerator.exe" -e "$kubeSBOMJsonFile" -root-component-name kubemaster
+            }
+            if ($LASTEXITCODE -ne 0 -or !(Select-String -Path $kubeSBOMJsonFile -Pattern 'k2s:core:pkg:(deb|golang):kubemaster' -Quiet)) {
+                throw 'KubeMaster SBOM enrichment did not produce the expected SW360 project groups.'
             }
         }
         finally {
@@ -358,7 +413,7 @@ function GenerateBomContainers() {
             # Run trivy with error handling to continue on failure
             try {
                 Write-Output "  -> Running trivy scan for image $imageName"
-                $trivyOutput = k2s node exec -i 172.19.1.100 -u remote -c "sudo HTTPS_PROXY=http://172.19.1.1:8181 trivy image --input $imageName.tar --scanners license --license-full --format cyclonedx -o $imageName.json 2>&1" 2>&1
+                $trivyOutput = & "$global:KubernetesPath\k2s.exe" node exec -i 172.19.1.100 -u remote -c "sudo HTTPS_PROXY=http://172.19.1.1:8181 trivy image --input $imageName.tar --scanners license --license-full --format cyclonedx -o $imageName.json 2>&1" 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     Write-Output "  -> WARNING: Trivy scan failed for image ${fullname} with exit code $LASTEXITCODE"
                     Write-Output "  -> Trivy output: $trivyOutput"
@@ -439,7 +494,8 @@ function GenerateBomContainers() {
         # get image id
         $img = (&"$global:KubernetesPath\k2s.exe" image ls -A -o json | ConvertFrom-Json).containerimages | Where-Object { $_.repository -eq $image }
         if ($null -eq $img) {
-            throw "Image $image not found in k2s, please use for containerd a drive with more space !"
+            Write-Warning "Image $image is unavailable for Windows export; skipping it."
+            continue
         }
 
         # copy to master
@@ -457,7 +513,7 @@ function GenerateBomContainers() {
         # Run trivy with error handling to continue on failure
         try {
             Write-Output "  -> Running trivy scan for windows image $imageName"
-            $trivyOutput = k2s node exec -i 172.19.1.100 -u remote -c "sudo HTTPS_PROXY=http://172.19.1.1:8181 trivy image --input $imageName.tar --scanners license --license-full --format cyclonedx -o $imageName.json 2>&1" 2>&1
+            $trivyOutput = & "$global:KubernetesPath\k2s.exe" node exec -i 172.19.1.100 -u remote -c "sudo HTTPS_PROXY=http://172.19.1.1:8181 trivy image --input $imageName.tar --scanners license --license-full --format cyclonedx -o $imageName.json 2>&1" 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Write-Output "  -> WARNING: Trivy scan failed for windows image ${imagefullname} with exit code $LASTEXITCODE"
                 Write-Output "  -> Trivy output: $trivyOutput"
@@ -561,7 +617,7 @@ EnsureCdxCli
 Write-Output '4 -> Remove old container files'
 RemoveOldContainerFiles
 Write-Output '5 -> Generate bom for directory: k2s'
-GenerateBomGolang('k2s')
+GenerateBomGolang -scanPath $global:KubernetesPath -bomName 'k2s'
 Write-Output '6 -> Generate bom for debian VM'
 GenerateBomDebian
 Write-Output '7 -> Load k2s images'

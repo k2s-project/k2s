@@ -247,7 +247,7 @@ drainLoop:
 			drainTimer = time.NewTimer(cmdCancelWaitDelay)
 			drainTimeout = drainTimer.C
 		case <-drainTimeout:
-			slog.Debug("Timed out draining command output after cancellation", "command", c.cmd)
+			slog.Debug("Timed out draining command output after cancellation")
 			_ = stdOut.Close()
 			_ = stdErr.Close()
 			break drainLoop

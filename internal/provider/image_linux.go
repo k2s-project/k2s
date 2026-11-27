@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -47,7 +48,12 @@ func newLinuxImageProvider(cfg ProviderConfig) *linuxImageProvider {
 }
 
 func (p *linuxImageProvider) runScript(script string, showOutput bool, args ...string) error {
+	return p.runScriptWithContext(context.Background(), script, showOutput, args...)
+}
+
+func (p *linuxImageProvider) runScriptWithContext(ctx context.Context, script string, showOutput bool, args ...string) error {
 	return bash.NewScript(script).
+		WithContext(ctx).
 		WithArgs(args...).
 		WithShowLogs(showOutput).
 		WithStdWriter(p.stdWriter).
@@ -309,9 +315,7 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 		if p.isLinuxOnly() {
 			return fmt.Errorf("importing Windows container images is not supported on Linux hosts (Windows container images can only be used on Windows worker nodes)")
 		}
-		// Import on Windows VM via SSH
-		_, err := sshCmd(fmt.Sprintf(`ctr -n k8s.io images import "%s"`, path))
-		return err
+		return p.importWindowsImage(path)
 	}
 
 	script := p.scriptPath("Import-Image.sh")
@@ -339,7 +343,146 @@ func (p *linuxImageProvider) Import(cfg ImageImportConfig) error {
 	return nil
 }
 
+func (p *linuxImageProvider) effectiveConfigDir() string {
+	if p.configDir != "" {
+		return p.configDir
+	}
+	return host.K2sConfigDir()
+}
+
+func (p *linuxImageProvider) windowsWorkerSSHConfig() (keyPath, knownHostsPath, workerIP string, err error) {
+	configPath := filepath.Join(p.installDir, "cfg", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to read K2s config '%s': %w", configPath, err)
+	}
+
+	var cfg struct {
+		SmallSetup struct {
+			KubeSwitch string `json:"kubeSwitch"`
+		} `json:"smallsetup"`
+		ConfigDir struct {
+			SSH string `json:"ssh"`
+		} `json:"configDir"`
+		SSHKey struct {
+			SubDir   string `json:"subDir"`
+			FileName struct {
+				Linux string `json:"linux"`
+			} `json:"fileName"`
+		} `json:"sshKey"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return "", "", "", fmt.Errorf("failed to parse K2s config '%s': %w", configPath, err)
+	}
+	if cfg.ConfigDir.SSH == "" || cfg.SSHKey.SubDir == "" || cfg.SSHKey.FileName.Linux == "" {
+		return "", "", "", fmt.Errorf("K2s SSH key configuration is incomplete in '%s'", configPath)
+	}
+
+	sshDir := cfg.ConfigDir.SSH
+	if sshDir == "~" || strings.HasPrefix(sshDir, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", "", "", fmt.Errorf("failed to resolve home directory for SSH key: %w", err)
+		}
+		sshDir = filepath.Join(homeDir, strings.TrimPrefix(strings.TrimPrefix(sshDir, "~"), "/"))
+	}
+	keyPath = filepath.Join(sshDir, cfg.SSHKey.SubDir, cfg.SSHKey.FileName.Linux)
+	knownHostsPath = filepath.Join(p.effectiveConfigDir(), "ssh", "windows-worker.known_hosts")
+
+	workerIP = winVMIP
+	if gateway := strings.TrimSpace(cfg.SmallSetup.KubeSwitch); gateway != "" {
+		if idx := strings.LastIndex(gateway, "."); idx > 0 {
+			workerIP = gateway[:idx] + ".101"
+		}
+	}
+
+	return keyPath, knownHostsPath, workerIP, nil
+}
+
+func windowsWorkerSSHOptions(keyPath, knownHostsPath string) []string {
+	return []string{
+		"-i", keyPath,
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + knownHostsPath,
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
+	}
+}
+
+func (p *linuxImageProvider) windowsWorkerSSHCmd(keyPath, knownHostsPath, workerIP, command string) (string, error) {
+	args := append(windowsWorkerSSHOptions(keyPath, knownHostsPath), fmt.Sprintf("%s@%s", sshUser, workerIP), command)
+	cmd := exec.Command("ssh", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(exitErr.Stderr))
+		}
+		return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(out))
+	}
+	return string(out), nil
+}
+
+func (p *linuxImageProvider) importWindowsImage(path string) error {
+	keyPath, knownHostsPath, workerIP, err := p.windowsWorkerSSHConfig()
+	if err != nil {
+		return fmt.Errorf("failed to resolve Windows worker SSH configuration: %w", err)
+	}
+
+	temp, err := os.CreateTemp("", "k2s-image-import-*.tar")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary Windows image path: %w", err)
+	}
+	baseName := filepath.Base(temp.Name())
+	remotePath := "C:/Windows/Temp/" + baseName
+	remoteWinPath := `C:\Windows\Temp\` + baseName
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(temp.Name())
+		return err
+	}
+	if err := os.Remove(temp.Name()); err != nil {
+		return err
+	}
+	defer func() {
+		cleanupCmd := fmt.Sprintf(`powershell.exe -NoProfile -Command "Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue"`, remoteWinPath)
+		if _, cleanupErr := p.windowsWorkerSSHCmd(keyPath, knownHostsPath, workerIP, cleanupCmd); cleanupErr != nil {
+			slog.Warn("[Image] Failed to clean up temporary Windows image archive", "remotePath", remoteWinPath, "error", cleanupErr)
+		}
+	}()
+
+	target := fmt.Sprintf("%s@%s:%s", sshUser, workerIP, remotePath)
+	scpArgs := append(windowsWorkerSSHOptions(keyPath, knownHostsPath), path, target)
+	scp := exec.Command("scp", scpArgs...)
+	if out, err := scp.CombinedOutput(); err != nil {
+		if p.stdWriter != nil {
+			p.stdWriter.WriteStdErr(string(out))
+		}
+		return fmt.Errorf("failed to transfer Windows image archive to worker: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	out, err := p.windowsWorkerSSHCmd(keyPath, knownHostsPath, workerIP, fmt.Sprintf(`ctr -n k8s.io images import "%s"`, remotePath))
+	if p.stdWriter != nil && out != "" {
+		p.stdWriter.WriteStdOut(out)
+	}
+	if err != nil {
+		if p.stdWriter != nil {
+			p.stdWriter.WriteStdErr(err.Error())
+		}
+		return fmt.Errorf("failed to import Windows image archive on worker: %w", err)
+	}
+	return nil
+}
+
 func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
+	return p.exportWithContext(context.Background(), cfg)
+}
+
+func (p *linuxImageProvider) exportWithContext(ctx context.Context, cfg ImageExportConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ref := cfg.ImageId
 	if ref == "" {
 		ref = cfg.ImageName
@@ -361,25 +504,31 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		if cfg.DockerArchive {
 			args = append(args, "--docker-archive")
 		}
-		return p.runScript(script, cfg.ShowOutput, args...)
+		return p.runScriptWithContext(ctx, script, cfg.ShowOutput, args...)
 	}
 
 	if cfg.DockerArchive {
-		cmd := exec.Command("nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		return runExportCmd(ctx, cfg.ShowOutput, "nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref)
 	}
 
-	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "export", cfg.OutputPath, ref)
-	if cfg.ShowOutput {
+	if err := runExportCmd(ctx, cfg.ShowOutput, "ctr", "-n", "k8s.io", "images", "export", cfg.OutputPath, ref); err != nil {
+		_ = os.Remove(cfg.OutputPath)
+		if nerdErr := runExportCmd(ctx, cfg.ShowOutput, "nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref); nerdErr == nil {
+			return nil
+		}
+		_ = os.Remove(cfg.OutputPath)
+		if docErr := runExportCmd(ctx, cfg.ShowOutput, "docker", "save", "-o", cfg.OutputPath, ref); docErr == nil {
+			return nil
+		}
+		_ = os.Remove(cfg.OutputPath)
+		return err
+	}
+	return nil
+}
+
+func runExportCmd(ctx context.Context, showOutput bool, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if showOutput {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()

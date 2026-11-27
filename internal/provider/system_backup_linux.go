@@ -18,9 +18,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 
+	kos "github.com/k2s-project/k2s/internal/os"
 	"github.com/k2s-project/k2s/internal/version"
 	"gopkg.in/yaml.v3"
 )
@@ -32,22 +35,23 @@ const (
 	clusterReachableTimeout   = 10 * time.Second
 )
 
+// backupKubeconfig is the kubeconfig of the local K2s cluster that every backup kubectl command and hook is bound to.
+var backupKubeconfig string
+
+type rawBackupExclusionsJSON struct {
+	ExcludedNamespaces             *string                  `json:"excludednamespaces"`
+	ExcludedNamespacedResources    *string                  `json:"excludednamespacedresources"`
+	ExcludedClusterResources       *string                  `json:"excludedclusterresources"`
+	ExcludedAddonPersistentVolumes *string                  `json:"excludedaddonpersistentvolumes"`
+	Linux                          *rawBackupExclusionsJSON `json:"linux"`
+}
+
 type rawBackupConfigJSON struct {
 	SmallSetup struct {
-		Backup struct {
-			ExcludedNamespaces             string `json:"excludednamespaces"`
-			ExcludedNamespacedResources    string `json:"excludednamespacedresources"`
-			ExcludedClusterResources       string `json:"excludedclusterresources"`
-			ExcludedAddonPersistentVolumes string `json:"excludedaddonpersistentvolumes"`
-		} `json:"backup"`
+		Backup rawBackupExclusionsJSON `json:"backup"`
 	} `json:"smallsetup"`
-	Backup struct {
-		ExcludedNamespaces             string `json:"excludednamespaces"`
-		ExcludedNamespacedResources    string `json:"excludednamespacedresources"`
-		ExcludedClusterResources       string `json:"excludedclusterresources"`
-		ExcludedAddonPersistentVolumes string `json:"excludedaddonpersistentvolumes"`
-	} `json:"backup"`
-	ClusterName string `json:"clusterName"`
+	Backup      rawBackupExclusionsJSON `json:"backup"`
+	ClusterName string                  `json:"clusterName"`
 }
 
 type backupConfig struct {
@@ -129,6 +133,10 @@ type k8sPVItem struct {
 }
 
 func runLinuxSystemBackup(installDir string, cfg SystemBackupConfig) error {
+	return runLinuxSystemBackupWithProviderConfig(installDir, ProviderConfig{InstallDir: installDir}, cfg)
+}
+
+func runLinuxSystemBackupWithProviderConfig(installDir string, providerCfg ProviderConfig, cfg SystemBackupConfig) error {
 	slog.Info("[System Backup] Starting K2s system backup...")
 
 	if cfg.BackupFile == "" {
@@ -183,7 +191,15 @@ func runLinuxSystemBackup(installDir string, cfg SystemBackupConfig) error {
 	if cfg.SkipImages {
 		slog.Info("[System Backup] Skipping image backup as requested")
 	} else {
-		if err := backupContainerImages(stagingDir, includedNamespaces); err != nil {
+		imageProvider := newLinuxImageProvider(providerCfg)
+		exportImage := func(ctx context.Context, imageName, targetTar string) error {
+			return imageProvider.exportWithContext(ctx, ImageExportConfig{
+				ImageName:  imageName,
+				OutputPath: targetTar,
+				ShowOutput: cfg.ShowOutput,
+			})
+		}
+		if err := backupContainerImages(stagingDir, includedNamespaces, exportImage); err != nil {
 			return fmt.Errorf("failed to backup container images: %w", err)
 		}
 	}
@@ -209,39 +225,64 @@ func runLinuxSystemBackup(installDir string, cfg SystemBackupConfig) error {
 	return nil
 }
 
+func backupKubectlCmd(ctx context.Context, args ...string) *exec.Cmd {
+	if backupKubeconfig != "" {
+		args = append([]string{"--kubeconfig", backupKubeconfig}, args...)
+	}
+	return exec.CommandContext(ctx, "kubectl", args...)
+}
+
+func withKubeconfigEnv(env []string, kubeconfig string) []string {
+	if kubeconfig == "" {
+		return env
+	}
+	filtered := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "KUBECONFIG=") {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, "KUBECONFIG="+kubeconfig)
+}
+
 func checkClusterReachable() error {
 	slog.Info("[System Backup] Checking cluster status...")
+	if _, err := os.Stat(linuxAdminKubeconfig); err != nil {
+		return fmt.Errorf("kubeconfig of the local K2s cluster '%s' not found: %w", linuxAdminKubeconfig, err)
+	}
+	backupKubeconfig = linuxAdminKubeconfig
+
 	ctx, cancel := context.WithTimeout(context.Background(), clusterReachableTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "kubectl", "cluster-info", "--request-timeout=5s")
+	cmd := backupKubectlCmd(ctx, "cluster-info", "--request-timeout=5s")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("Kubernetes cluster is not reachable: %w: %s", err, string(out))
+		return fmt.Errorf("local K2s cluster is not reachable using '%s': %w: %s", linuxAdminKubeconfig, err, string(out))
 	}
 	return nil
+}
+
+func hasRawBackupExclusions(b rawBackupExclusionsJSON) bool {
+	return b.ExcludedNamespaces != nil ||
+		b.ExcludedNamespacedResources != nil ||
+		b.ExcludedClusterResources != nil ||
+		b.ExcludedAddonPersistentVolumes != nil ||
+		b.Linux != nil
 }
 
 func loadBackupConfig(installDir string) *backupConfig {
 	cfg := &backupConfig{
 		ExcludedNamespaces: []string{
 			"kube-flannel", "kube-node-lease", "kube-public", "kube-system",
-			"k2s-webhook", "kubernetes-dashboard", "nginx-gw", "gpu-node",
-			"ingress-nginx", "kubevirt", "monitoring", "registry", "dicom",
-			"ingress-traefik", "logging", "security", "viewer", "storage-smb",
-			"linkerd", "cert-manager", "dashboard", "autoscaling", "metrics", "rollout",
 		},
 		ExcludedNamespacedResources: []string{
 			"endpoints", "endpointslices", "events",
 		},
 		ExcludedClusterResources: []string{
 			"componentstatuses", "nodes", "csinodes", "ipaddresses",
-			"certificatesigningrequests", "storageclasses", "servicecidrs",
+			"certificatesigningrequests", "servicecidrs",
 			"apiservices", "flowschemas", "prioritylevelconfigurations",
 			"ingressclasses", "runtimeclasses", "mutatingwebhookconfigurations",
-		},
-		ExcludedAddonPersistentVolumes: []string{
-			"postgresql-pv-volume", "dicom-pv-volume", "orthanc-pv",
-			"registry-pv", "smb-static-pv", "opensearch-cluster-master-pv",
 		},
 		ClusterName: "k2s-cluster",
 	}
@@ -264,21 +305,24 @@ func loadBackupConfig(installDir string) *backupConfig {
 	}
 
 	b := raw.SmallSetup.Backup
-	if b.ExcludedNamespaces == "" && raw.Backup.ExcludedNamespaces != "" {
+	if !hasRawBackupExclusions(b) && hasRawBackupExclusions(raw.Backup) {
 		b = raw.Backup
 	}
+	if b.Linux != nil {
+		b = *b.Linux
+	}
 
-	if b.ExcludedNamespaces != "" {
-		cfg.ExcludedNamespaces = splitAndTrim(b.ExcludedNamespaces)
+	if b.ExcludedNamespaces != nil {
+		cfg.ExcludedNamespaces = splitAndTrim(*b.ExcludedNamespaces)
 	}
-	if b.ExcludedNamespacedResources != "" {
-		cfg.ExcludedNamespacedResources = splitAndTrim(b.ExcludedNamespacedResources)
+	if b.ExcludedNamespacedResources != nil {
+		cfg.ExcludedNamespacedResources = splitAndTrim(*b.ExcludedNamespacedResources)
 	}
-	if b.ExcludedClusterResources != "" {
-		cfg.ExcludedClusterResources = splitAndTrim(b.ExcludedClusterResources)
+	if b.ExcludedClusterResources != nil {
+		cfg.ExcludedClusterResources = splitAndTrim(*b.ExcludedClusterResources)
 	}
-	if b.ExcludedAddonPersistentVolumes != "" {
-		cfg.ExcludedAddonPersistentVolumes = splitAndTrim(b.ExcludedAddonPersistentVolumes)
+	if b.ExcludedAddonPersistentVolumes != nil {
+		cfg.ExcludedAddonPersistentVolumes = splitAndTrim(*b.ExcludedAddonPersistentVolumes)
 	}
 
 	return cfg
@@ -310,7 +354,7 @@ func exportClusterResources(stagingDir string, bcfg *backupConfig) ([]string, er
 
 	// 1. Get all namespaces
 	ctxNs, cancelNs := context.WithTimeout(context.Background(), defaultKubeTimeout)
-	out, err := exec.CommandContext(ctxNs, "kubectl", "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}").CombinedOutput()
+	out, err := backupKubectlCmd(ctxNs, "get", "namespaces", "-o", "jsonpath={.items[*].metadata.name}").CombinedOutput()
 	cancelNs()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list namespaces: %w: %s", err, string(out))
@@ -326,7 +370,7 @@ func exportClusterResources(stagingDir string, bcfg *backupConfig) ([]string, er
 
 	// 2. Export Namespaced Resources
 	ctxRes, cancelRes := context.WithTimeout(context.Background(), defaultKubeTimeout)
-	namespacedResOut, err := exec.CommandContext(ctxRes, "kubectl", "api-resources", "--namespaced=true", "--verbs=list").CombinedOutput()
+	namespacedResOut, err := backupKubectlCmd(ctxRes, "api-resources", "--namespaced=true", "--verbs=list").CombinedOutput()
 	cancelRes()
 	if err != nil {
 		slog.Warn("[System Backup] Failed to query namespaced api-resources", "error", err)
@@ -351,7 +395,7 @@ func exportClusterResources(stagingDir string, bcfg *backupConfig) ([]string, er
 
 			for _, resType := range namespacedTypes {
 				ctxGet, cancelGet := context.WithTimeout(context.Background(), defaultKubeTimeout)
-				resJSON, err := exec.CommandContext(ctxGet, "kubectl", "get", resType, "-n", ns, "-o", "json").Output()
+				resJSON, err := backupKubectlCmd(ctxGet, "get", resType, "-n", ns, "-o", "json").Output()
 				cancelGet()
 				if err != nil {
 					continue
@@ -372,7 +416,7 @@ func exportClusterResources(stagingDir string, bcfg *backupConfig) ([]string, er
 
 	// 3. Export Cluster-scoped Resources
 	ctxClusterRes, cancelClusterRes := context.WithTimeout(context.Background(), defaultKubeTimeout)
-	clusterResOut, err := exec.CommandContext(ctxClusterRes, "kubectl", "api-resources", "--namespaced=false", "--verbs=list").CombinedOutput()
+	clusterResOut, err := backupKubectlCmd(ctxClusterRes, "api-resources", "--namespaced=false", "--verbs=list").CombinedOutput()
 	cancelClusterRes()
 	if err != nil {
 		slog.Warn("[System Backup] Failed to query cluster-scoped api-resources", "error", err)
@@ -394,7 +438,7 @@ func exportClusterResources(stagingDir string, bcfg *backupConfig) ([]string, er
 
 		for _, resType := range clusterTypes {
 			ctxGet, cancelGet := context.WithTimeout(context.Background(), defaultKubeTimeout)
-			resJSON, err := exec.CommandContext(ctxGet, "kubectl", "get", resType, "-o", "json").Output()
+			resJSON, err := backupKubectlCmd(ctxGet, "get", resType, "-o", "json").Output()
 			cancelGet()
 			if err != nil {
 				continue
@@ -427,6 +471,10 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 
 	cleanResourceMap(data)
 
+	if items, ok := data["items"].([]any); ok && len(items) == 0 {
+		return nil, false, nil
+	}
+
 	yamlBytes, err := yaml.Marshal(data)
 	if err != nil {
 		return nil, false, err
@@ -436,15 +484,48 @@ func cleanAndConvertResourceJSON(rawJSON []byte) ([]byte, bool, error) {
 
 func cleanResourceMap(data map[string]any) {
 	if items, ok := data["items"].([]any); ok {
+		kept := make([]any, 0, len(items))
+		listKind := ""
+		if k, ok := data["kind"].(string); ok && k != "List" {
+			listKind = strings.TrimSuffix(k, "List")
+		}
 		for _, item := range items {
 			if itemMap, ok := item.(map[string]any); ok {
+				itemKind, _ := itemMap["kind"].(string)
+				if itemKind == "" {
+					itemKind = listKind
+				}
+				if (itemKind == "Pod" || itemKind == "ReplicaSet") && isControllerOwned(itemMap) {
+					continue
+				}
 				cleanSingleResource(itemMap)
 			}
+			kept = append(kept, item)
 		}
+		data["items"] = kept
 	} else {
 		cleanSingleResource(data)
 	}
 	cleanMetadata(data)
+}
+
+func isControllerOwned(m map[string]any) bool {
+	meta, ok := m["metadata"].(map[string]any)
+	if !ok {
+		return false
+	}
+	owners, ok := meta["ownerReferences"].([]any)
+	if !ok {
+		return false
+	}
+	for _, owner := range owners {
+		if ownerMap, ok := owner.(map[string]any); ok {
+			if controller, ok := ownerMap["controller"].(bool); ok && controller {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cleanSingleResource(m map[string]any) {
@@ -481,7 +562,7 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultKubeTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "kubectl", "get", "pv", "-o", "json").CombinedOutput()
+	out, err := backupKubectlCmd(ctx, "get", "pv", "-o", "json").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to query persistent volumes: %w: %s", err, string(out))
 	}
@@ -514,6 +595,12 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 			continue
 		}
 
+		if _, err := resolveVolumePath(volumePath); err != nil {
+			slog.Warn("[System Backup] PV volume path is not eligible for restore", "pv", pvName, "path", volumePath, "error", err)
+			pvErrors = append(pvErrors, fmt.Sprintf("%s (%v)", pvName, err))
+			continue
+		}
+
 		stat, err := os.Stat(volumePath)
 		if err != nil {
 			slog.Warn("[System Backup] PV volume path not accessible", "pv", pvName, "path", volumePath, "error", err)
@@ -522,6 +609,10 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 		}
 
 		targetTarGz := filepath.Join(pvDir, pvName+"-backup.tar.gz")
+		volumeKind := "directory"
+		if !stat.IsDir() {
+			volumeKind = "file"
+		}
 		if stat.IsDir() {
 			if err := tarGzDirectory(volumePath, targetTarGz); err != nil {
 				_ = os.Remove(targetTarGz)
@@ -551,12 +642,21 @@ func backupPersistentVolumes(stagingDir string, bcfg *backupConfig) error {
 			"pvName":         pvName,
 			"volumeType":     volumeType,
 			"volumePath":     volumePath,
+			"volumeKind":     volumeKind,
 			"capacity":       pv.Spec.Capacity.Storage,
 			"createdAt":      time.Now().UTC().Format(time.RFC3339),
 			"backupFile":     pvName + "-backup.tar.gz",
 			"claimNamespace": claimNs,
 			"claimName":      claimName,
 			"reclaimPolicy":  pv.Spec.PersistentVolumeReclaimPolicy,
+		}
+		if stat.IsDir() {
+			metadata["volumeRootMetadata"] = true
+			metadata["volumeRootMode"] = unixFileMode(stat.Mode())
+			if st, ok := stat.Sys().(*syscall.Stat_t); ok {
+				metadata["volumeRootUID"] = st.Uid
+				metadata["volumeRootGID"] = st.Gid
+			}
 		}
 
 		metaJSON, _ := json.MarshalIndent(metadata, "", "  ")
@@ -598,15 +698,14 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 		if err != nil {
 			return err
 		}
-		if relPath == "." {
-			return nil
-		}
-
 		header, err := tar.FileInfoHeader(info, info.Name())
 		if err != nil {
 			return err
 		}
 		header.Name = filepath.ToSlash(relPath)
+		if relPath == "." {
+			header.Name = "."
+		}
 
 		if info.IsDir() {
 			header.Name += "/"
@@ -617,6 +716,9 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 			linkTarget, err := os.Readlink(path)
 			if err != nil {
 				return err
+			}
+			if strings.Contains(linkTarget, "\\") || !filepath.IsLocal(linkTarget) {
+				return fmt.Errorf("PV symlink '%s' has a target that cannot be restored safely", relPath)
 			}
 			header.Linkname = linkTarget
 			return tw.WriteHeader(header)
@@ -656,6 +758,20 @@ func tarGzDirectory(srcDir, destTarGz string) error {
 	success = true
 
 	return nil
+}
+
+func unixFileMode(mode os.FileMode) uint32 {
+	raw := uint32(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		raw |= 04000
+	}
+	if mode&os.ModeSetgid != 0 {
+		raw |= 02000
+	}
+	if mode&os.ModeSticky != 0 {
+		raw |= 01000
+	}
+	return raw
 }
 
 func tarGzSingleFile(srcFile, destTarGz string) error {
@@ -720,7 +836,7 @@ func tarGzSingleFile(srcFile, destTarGz string) error {
 	return nil
 }
 
-func backupContainerImages(stagingDir string, includedNamespaces []string) error {
+func backupContainerImages(stagingDir string, includedNamespaces []string, exportImage func(ctx context.Context, imageName, targetTar string) error) error {
 	slog.Info("[System Backup] Backing up user workload images...")
 	imagesDir := filepath.Join(stagingDir, "images")
 	if err := os.MkdirAll(imagesDir, 0755); err != nil {
@@ -731,7 +847,7 @@ func backupContainerImages(stagingDir string, includedNamespaces []string) error
 	queryFailures := 0
 	for _, ns := range includedNamespaces {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultKubeTimeout)
-		out, err := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns,
+		out, err := backupKubectlCmd(ctx, "get", "pods", "-n", ns,
 			"-o", "jsonpath={.items[*].spec.containers[*].image} {.items[*].spec.initContainers[*].image}").Output()
 		cancel()
 		if err != nil {
@@ -751,50 +867,68 @@ func backupContainerImages(stagingDir string, includedNamespaces []string) error
 		return fmt.Errorf("failed to query pod images: all %d namespace queries failed", queryFailures)
 	}
 
-	backedUpCount := 0
-	var exportErrors []string
+	images := make([]string, 0, len(imageSet))
 	for img := range imageSet {
+		images = append(images, img)
+	}
+	sort.Strings(images)
+
+	var manifest imageRestoreManifest
+	var exportErrors []string
+	for _, img := range images {
 		sanitized := sanitizeImageName(img) + ".tar"
 		targetTar := filepath.Join(imagesDir, sanitized)
 
-		// Try ctr (containerd in k8s.io namespace) first
-		ctxCtr, cancelCtr := context.WithTimeout(context.Background(), defaultImageExportTimeout)
-		cmd := exec.CommandContext(ctxCtr, "ctr", "-n", "k8s.io", "images", "export", targetTar, img)
-		errCtr := cmd.Run()
-		cancelCtr()
-
-		if errCtr != nil {
-			_ = os.Remove(targetTar)
-			// Fall back to nerdctl or docker
-			ctxNerd, cancelNerd := context.WithTimeout(context.Background(), defaultImageExportTimeout)
-			cmd2 := exec.CommandContext(ctxNerd, "nerdctl", "-n", "k8s.io", "save", "-o", targetTar, img)
-			errNerd := cmd2.Run()
-			cancelNerd()
-
-			if errNerd != nil {
-				_ = os.Remove(targetTar)
-				ctxDoc, cancelDoc := context.WithTimeout(context.Background(), defaultImageExportTimeout)
-				cmd3 := exec.CommandContext(ctxDoc, "docker", "save", "-o", targetTar, img)
-				errDoc := cmd3.Run()
-				cancelDoc()
-
-				if errDoc != nil {
-					_ = os.Remove(targetTar)
-					slog.Warn("[System Backup] Failed to export image", "image", img, "error", errDoc)
-					exportErrors = append(exportErrors, fmt.Sprintf("%s: %v", img, errDoc))
-					continue
-				}
-			}
+		var exportErr error
+		if exportImage != nil {
+			ctxExport, cancelExport := context.WithTimeout(context.Background(), defaultImageExportTimeout)
+			exportErr = exportImage(ctxExport, img, targetTar)
+			cancelExport()
+		} else {
+			exportErr = fmt.Errorf("image export provider not configured")
 		}
-		backedUpCount++
+
+		if exportErr != nil {
+			_ = os.Remove(targetTar)
+			slog.Warn("[System Backup] Failed to export image", "image", img, "error", exportErr)
+			exportErrors = append(exportErrors, fmt.Sprintf("%s: %v", img, exportErr))
+			continue
+		}
+
+		repo, tag := splitImageRepoTag(img)
+		// An empty Node marks a Linux image; restore treats any other node name except "kubemaster" as a Windows worker.
+		manifest.Images = append(manifest.Images, imageRestoreManifestEntry{
+			Repository: repo,
+			Tag:        tag,
+			TarFile:    sanitized,
+		})
 	}
 
 	if len(exportErrors) > 0 {
 		return fmt.Errorf("failed to export %d image(s): %s (use --skip-images to exclude images from backup)", len(exportErrors), strings.Join(exportErrors, "; "))
 	}
 
-	slog.Info("[System Backup] Successfully backed up user workload container images", "count", backedUpCount)
+	if len(manifest.Images) > 0 {
+		manifestData, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal image manifest: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(imagesDir, "manifest.json"), manifestData, 0644); err != nil {
+			return fmt.Errorf("failed to write image manifest: %w", err)
+		}
+	}
+
+	slog.Info("[System Backup] Successfully backed up user workload container images", "count", len(manifest.Images))
 	return nil
+}
+
+func splitImageRepoTag(image string) (string, string) {
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon > lastSlash {
+		return image[:lastColon], image[lastColon+1:]
+	}
+	return image, ""
 }
 
 func sanitizeImageName(image string) string {
@@ -821,7 +955,7 @@ func executeBackupHooks(installDir, stagingDir, additionalHooksDir string) {
 				parts := strings.Split(filepath.ToSlash(relPath), "/")
 				if len(parts) > 1 {
 					addonName := parts[len(parts)-2]
-					if !isAddonDeployed(addonName) {
+					if !isAddonDeployedWithKubeconfig(addonName, backupKubeconfig) {
 						slog.Debug("[System Backup] Skipping backup hook for disabled addon", "addon", addonName, "path", path)
 						return nil
 					}
@@ -853,6 +987,8 @@ func runBackupHook(scriptPath, hooksDir string) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath, "--backup-dir", hooksDir)
+	cmd.Env = withKubeconfigEnv(os.Environ(), backupKubeconfig)
+	kos.ConfigureProcessGroup(cmd, 5*time.Second)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		slog.Warn("[System Backup] Hook execution failed", "path", scriptPath, "error", err, "output", string(out))
 	} else {

@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 The *k2s* CLI is the primary interface for managing a *K2s* cluster. It covers the full lifecycle — installation, startup, upgrade, image management, addon management, and system maintenance.
 
 !!! warning "Linux Host Support — Experimental"
-    Running the *k2s* CLI on a **Linux host** is an experimental feature. Core cluster lifecycle commands (`install`, `start`, `stop`, `uninstall`, `status`), image/addon management, and `system backup` work, but some system commands (`system upgrade`, `system package`, `system restore`) are not yet implemented on Linux. See [Hosting Variants](hosting-variants.md#linux-host) for details.
+    Running the *k2s* CLI on a **Linux host** is an experimental feature. Core cluster lifecycle commands (`install`, `start`, `stop`, `uninstall`, `status`), image/addon management, `system backup`, and `system restore` work, but some system commands (`system upgrade`, `system package`) are not yet implemented on Linux. See [Hosting Variants](hosting-variants.md#linux-host) for details.
 
 Every command supports `--output` / `-o` (show log in terminal) and `--verbosity` / `-v` (log level, default `info`) as global flags.
 

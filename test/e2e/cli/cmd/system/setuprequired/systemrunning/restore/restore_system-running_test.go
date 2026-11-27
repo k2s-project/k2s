@@ -4,10 +4,12 @@
 package restore
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -229,6 +231,9 @@ var _ = Describe("'k2s system restore' - persistent volumes", Ordered, Label("pv
 			// Then clean up any orphaned PVs (use --wait=false to avoid hanging)
 			pvName := fmt.Sprintf("test-restore-pv-%s", randomSeed)
 			suite.Kubectl().Exec(ctx, "delete", "pv", pvName, "--ignore-not-found=true", "--wait=false")
+			if runtime.GOOS == "linux" {
+				_ = os.RemoveAll(fmt.Sprintf("/var/lib/k2s/volumes/k2s-test-pv-%s", randomSeed))
+			}
 		})
 	})
 
@@ -249,7 +254,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: /tmp/k2s-test-pv-%s
+    path: /var/lib/k2s/volumes/k2s-test-pv-%s
     type: DirectoryOrCreate
   nodeAffinity:
     required:
@@ -301,7 +306,7 @@ spec:
   containers:
   - name: writer
     image: busybox:1.36
-    command: ["sh", "-c", "echo '%s' > /data/restore-test.txt && sleep 2"]
+    command: ["sh", "-c", "sleep 600"]
     volumeMounts:
     - name: data
       mountPath: /data
@@ -310,21 +315,31 @@ spec:
     persistentVolumeClaim:
       claimName: %s
   restartPolicy: Never
-`, podName, testNamespace, testDataContent, pvcName)
+`, podName, testNamespace, pvcName)
 
 		applyYaml(ctx, suite, podYaml)
 
 		Eventually(func(ctx context.Context) string {
 			output, _ := suite.Kubectl().Exec(ctx, "get", "pod", podName, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
 			return output
-		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Or(Equal("Running"), Equal("Succeeded")))
+		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Equal("Running"))
 
-		time.Sleep(1 * time.Second) // Reduced from 2s
+		// Seed the marker via exec rather than the Pod's startup command so that
+		// recreating the Pod cannot regenerate the marker without PV restore.
+		_, seedExitCode := suite.Kubectl().Exec(ctx, "exec", podName, "-n", testNamespace, "--",
+			"sh", "-c", fmt.Sprintf("printf '%%s\\n' '%s' > /data/restore-test.txt", testDataContent))
+		Expect(seedExitCode).To(Equal(0), "failed to seed test marker file in PV before backup")
 
 		GinkgoWriter.Println("Creating backup for PV restore test at:", pvRestoreBackup)
 		// Use --skip-images since we're testing PV restore, not image backup
 		suite.K2sCli().MustExec(ctx, "system", "backup", "-f", pvRestoreBackup, "--skip-images")
 		Expect(pvRestoreBackup).To(BeAnExistingFile())
+
+		// Remove the marker after backup so the test only passes if restore
+		// actually puts the backed-up volume data back.
+		_, exitCode := suite.Kubectl().Exec(ctx, "exec", podName, "-n", testNamespace, "--",
+			"sh", "-c", "rm -f /data/restore-test.txt && test ! -e /data/restore-test.txt")
+		Expect(exitCode).To(Equal(0), "the marker must be absent from the source volume before restore")
 
 		// Now test restore - delete PV, PVC, and pod so restore creates them fresh.
 		// The PV must be deleted because the backup strips spec.claimRef (by design),
@@ -555,6 +570,379 @@ data:
 				return output
 			}).WithContext(ctx).WithTimeout(20 * time.Second).WithPolling(500 * time.Millisecond).Should(Equal(fmt.Sprintf("%d", i)))
 		}
+	})
+})
+
+var _ = Describe("'k2s system restore' after Linux lifecycle restart", Ordered, Label("linux-only"), func() {
+	It("restores a deleted workload after stop and start", func(ctx context.Context) {
+		if !suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
+			Skip("Linux-only")
+		}
+
+		testNamespace := fmt.Sprintf("test-restore-lifecycle-%s", randomSeed)
+		backupFile := filepath.Join(testTempDir, fmt.Sprintf("backup-lifecycle-%s.zip", randomSeed))
+		const (
+			configMapName = "restore-lifecycle"
+			configMapKey  = "marker"
+			configMapData = "restored-after-lifecycle-restart"
+		)
+
+		suite.Kubectl().MustExec(ctx, "create", "namespace", testNamespace)
+		DeferCleanup(func(ctx context.Context) {
+			if !suite.StatusChecker().IsK2sRunning(ctx) {
+				suite.K2sCli().MustExec(ctx, "start")
+			}
+			suite.Kubectl().Exec(ctx, "delete", "namespace", testNamespace, "--ignore-not-found=true", "--timeout=60s")
+			cleanupBackupFile(ctx, backupFile)
+		})
+
+		configMap := fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: %s
+  namespace: %s
+data:
+  %s: %s
+`, configMapName, testNamespace, configMapKey, configMapData)
+		applyYaml(ctx, suite, configMap)
+
+		suite.K2sCli().MustExec(ctx, "system", "backup", "-f", backupFile, "--skip-images", "--skip-pvs")
+		Expect(backupFile).To(BeAnExistingFile())
+		suite.Kubectl().MustExec(ctx, "delete", "namespace", testNamespace, "--timeout=60s")
+
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "namespace", testNamespace, "--ignore-not-found=true", "-o", "name")
+			return output
+		}).WithContext(ctx).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(BeEmpty())
+
+		suite.K2sCli().MustExec(ctx, "stop")
+		Eventually(func(ctx context.Context) bool {
+			return !suite.StatusChecker().IsK2sRunning(ctx)
+		}).WithContext(ctx).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(BeTrue())
+
+		suite.K2sCli().MustExec(ctx, "start")
+		Eventually(func(ctx context.Context) bool {
+			return suite.StatusChecker().IsK2sRunning(ctx)
+		}).WithContext(ctx).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(BeTrue())
+
+		output := suite.K2sCli().MustExec(ctx, "system", "restore", "-f", backupFile)
+		Expect(output).To(ContainSubstring(successMessage))
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "configmap", configMapName, "-n", testNamespace,
+				"-o", fmt.Sprintf("jsonpath={.data.%s}", configMapKey))
+			return output
+		}).WithContext(ctx).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Equal(configMapData))
+	})
+})
+
+var _ = Describe("'k2s system restore' - Linux host capabilities", Ordered, Label("linux-only", "sanity"), func() {
+	BeforeEach(func() {
+		if runtime.GOOS != "linux" || !suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
+			Skip("Linux host only")
+		}
+	})
+
+	It("backs up and restores user workload container images without --skip-images", func(ctx context.Context) {
+		testNamespace := fmt.Sprintf("test-linux-img-%s", randomSeed)
+		deploymentName := "test-linux-img-deploy"
+		backupFile := filepath.Join(testTempDir, fmt.Sprintf("backup-linux-img-%s.zip", randomSeed))
+		testImageRepo := "localhost/k2s-restore-e2e"
+		testImage := fmt.Sprintf("%s:%s", testImageRepo, randomSeed)
+
+		suite.Kubectl().MustExec(ctx, "create", "namespace", testNamespace)
+		DeferCleanup(func(ctx context.Context) {
+			cleanupBackupFile(ctx, backupFile)
+			suite.Kubectl().Exec(ctx, "delete", "namespace", testNamespace, "--ignore-not-found=true", "--timeout=60s")
+			suite.K2sCli().Exec(ctx, "image", "rm", "-n", testImage, "-f")
+		})
+
+		suite.K2sCli().MustExec(ctx, "image", "pull", "docker.io/library/busybox:1.36")
+		suite.K2sCli().MustExec(ctx, "image", "tag", "-n", "docker.io/library/busybox:1.36", "-t", testImage)
+
+		deployYaml := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-linux-img
+  template:
+    metadata:
+      labels:
+        app: test-linux-img
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: test
+        image: %s
+        imagePullPolicy: Never
+        command: ["sleep", "600"]
+`, deploymentName, testNamespace, testImage)
+		applyYaml(ctx, suite, deployYaml)
+
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "deployment", deploymentName, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+			return output
+		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Equal("True"))
+
+		// Do NOT pass --skip-images so image export and import are exercised end-to-end.
+		suite.K2sCli().MustExec(ctx, "system", "backup", "-f", backupFile, "--skip-pvs")
+		Expect(backupFile).To(BeAnExistingFile())
+
+		zr, err := zip.OpenReader(backupFile)
+		Expect(err).NotTo(HaveOccurred())
+		hasManifest := false
+		hasTar := false
+		for _, f := range zr.File {
+			name := strings.ReplaceAll(f.Name, "\\", "/")
+			if name == "images/manifest.json" {
+				hasManifest = true
+			}
+			if strings.HasPrefix(name, "images/") && strings.HasSuffix(name, ".tar") {
+				hasTar = true
+			}
+		}
+		_ = zr.Close()
+		Expect(hasManifest).To(BeTrue(), "backup should contain images/manifest.json")
+		Expect(hasTar).To(BeTrue(), "backup should contain at least one exported image .tar archive")
+
+		suite.Kubectl().MustExec(ctx, "delete", "deployment", deploymentName, "-n", testNamespace, "--timeout=60s")
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "pods", "-n", testNamespace, "-l", "app=test-linux-img", "--ignore-not-found=true")
+			return output
+		}).WithContext(ctx).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(BeEmpty())
+
+		// Remove the dedicated local tag and prove it is absent before restore so recovery must come from the archive.
+		suite.K2sCli().MustExec(ctx, "image", "rm", "-n", testImage, "-f")
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.K2sCli().Exec(ctx, "image", "ls")
+			return output
+		}).WithContext(ctx).WithTimeout(15 * time.Second).WithPolling(time.Second).ShouldNot(ContainSubstring(testImageRepo))
+
+		output := suite.K2sCli().MustExec(ctx, "system", "restore", "-f", backupFile, "-e")
+		Expect(output).To(ContainSubstring(successMessage))
+
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "deployment", deploymentName, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+			return output
+		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Equal("True"))
+
+		Eventually(func(ctx context.Context) bool {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "pods", "-n", testNamespace, "-l", "app=test-linux-img",
+				"-o", "jsonpath={.items[*].status.containerStatuses[*].state.waiting.reason}")
+			return !strings.Contains(output, "ImagePullBackOff") && !strings.Contains(output, "ErrImagePull")
+		}).WithContext(ctx).WithTimeout(15 * time.Second).WithPolling(500 * time.Millisecond).Should(BeTrue())
+	})
+
+	It("executes additional backup and restore hooks via --additional-hooks-dir", func(ctx context.Context) {
+		backupHooksDir := filepath.Join(testTempDir, fmt.Sprintf("backup-hooks-%s", randomSeed))
+		restoreHooksDir := filepath.Join(testTempDir, fmt.Sprintf("restore-hooks-%s", randomSeed))
+		Expect(os.MkdirAll(backupHooksDir, 0755)).To(Succeed())
+		Expect(os.MkdirAll(restoreHooksDir, 0755)).To(Succeed())
+		backupFile := filepath.Join(testTempDir, fmt.Sprintf("backup-hooks-%s.zip", randomSeed))
+		restoreMarkerOut := filepath.Join(testTempDir, fmt.Sprintf("restore-hook-out-%s.txt", randomSeed))
+		expectedMarker := fmt.Sprintf("hook-roundtrip-%s", randomSeed)
+
+		DeferCleanup(func(ctx context.Context) {
+			cleanupBackupFile(ctx, backupFile)
+			_ = os.RemoveAll(backupHooksDir)
+			_ = os.RemoveAll(restoreHooksDir)
+			_ = os.Remove(restoreMarkerOut)
+		})
+
+		backupHook := fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+backup_dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --backup-dir) backup_dir="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%%s' %q > "$backup_dir/e2e-hook.txt"
+`, expectedMarker)
+		Expect(os.WriteFile(filepath.Join(backupHooksDir, "e2e.Backup.sh"), []byte(backupHook), 0755)).To(Succeed())
+
+		restoreHook := fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+backup_dir=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --backup-dir) backup_dir="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp "$backup_dir/e2e-hook.txt" %q
+`, restoreMarkerOut)
+		Expect(os.WriteFile(filepath.Join(restoreHooksDir, "e2e.Restore.sh"), []byte(restoreHook), 0755)).To(Succeed())
+
+		suite.K2sCli().MustExec(ctx, "system", "backup", "-f", backupFile, "--skip-images", "--skip-pvs", "--additional-hooks-dir", backupHooksDir)
+		Expect(backupFile).To(BeAnExistingFile())
+		Expect(restoreMarkerOut).NotTo(BeAnExistingFile(), "backup must not execute restore hooks")
+
+		zr, err := zip.OpenReader(backupFile)
+		Expect(err).NotTo(HaveOccurred())
+		foundHookFile := false
+		for _, f := range zr.File {
+			if strings.ReplaceAll(f.Name, "\\", "/") == "hooks/e2e-hook.txt" {
+				foundHookFile = true
+				break
+			}
+		}
+		_ = zr.Close()
+		Expect(foundHookFile).To(BeTrue(), "backup archive should include hooks/e2e-hook.txt written by backup hook")
+
+		output := suite.K2sCli().MustExec(ctx, "system", "restore", "-f", backupFile, "--additional-hooks-dir", restoreHooksDir, "-e")
+		Expect(output).To(ContainSubstring(successMessage))
+
+		restoredBytes, err := os.ReadFile(restoreMarkerOut)
+		Expect(err).NotTo(HaveOccurred(), "restore hook should have written output file")
+		Expect(strings.TrimSpace(string(restoredBytes))).To(Equal(expectedMarker))
+	})
+
+	It("quiesces an active Deployment consumer and restores PV data in place", func(ctx context.Context) {
+		testNamespace := fmt.Sprintf("test-pv-quiesce-%s", randomSeed)
+		pvName := fmt.Sprintf("test-quiesce-pv-%s", randomSeed)
+		pvcName := "test-quiesce-pvc"
+		deploymentName := "test-quiesce-deploy"
+		backupFile := filepath.Join(testTempDir, fmt.Sprintf("backup-pv-quiesce-%s.zip", randomSeed))
+		expectedMarker := fmt.Sprintf("quiesce-marker-%s", randomSeed)
+
+		suite.Kubectl().MustExec(ctx, "create", "namespace", testNamespace)
+		DeferCleanup(func(ctx context.Context) {
+			cleanupBackupFile(ctx, backupFile)
+			suite.Kubectl().Exec(ctx, "delete", "namespace", testNamespace, "--ignore-not-found=true", "--timeout=60s")
+			suite.Kubectl().Exec(ctx, "delete", "pv", pvName, "--ignore-not-found=true", "--wait=false")
+			if runtime.GOOS == "linux" {
+				_ = os.RemoveAll(fmt.Sprintf("/var/lib/k2s/volumes/k2s-test-quiesce-pv-%s", randomSeed))
+			}
+		})
+
+		pvYaml := fmt.Sprintf(`
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: %s
+spec:
+  capacity:
+    storage: 5Mi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /var/lib/k2s/volumes/k2s-test-quiesce-pv-%s
+    type: DirectoryOrCreate
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/os
+          operator: In
+          values:
+          - linux
+  claimRef:
+    name: %s
+    namespace: %s
+`, pvName, randomSeed, pvcName, testNamespace)
+		applyYaml(ctx, suite, pvYaml)
+
+		pvcYaml := fmt.Sprintf(`
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Mi
+  storageClassName: ""
+  volumeName: %s
+`, pvcName, testNamespace, pvName)
+		applyYaml(ctx, suite, pvcYaml)
+
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "pvc", pvcName, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
+			return output
+		}).WithContext(ctx).WithTimeout(20 * time.Second).WithPolling(500 * time.Millisecond).Should(Equal("Bound"))
+
+		deployYaml := fmt.Sprintf(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-pv-quiesce
+  template:
+    metadata:
+      labels:
+        app: test-pv-quiesce
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: app
+        image: busybox:1.36
+        command: ["sh", "-c", "sleep 600"]
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: %s
+`, deploymentName, testNamespace, pvcName)
+		applyYaml(ctx, suite, deployYaml)
+
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "deployment", deploymentName, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+			return output
+		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Equal("True"))
+
+		// Write the marker into the mounted volume before backup.
+		_, exitCode := suite.Kubectl().Exec(ctx, "exec", "deployment/"+deploymentName, "-n", testNamespace, "--",
+			"sh", "-c", fmt.Sprintf("printf '%%s' %q > /data/quiesce.txt", expectedMarker))
+		Expect(exitCode).To(Equal(0))
+
+		suite.K2sCli().MustExec(ctx, "system", "backup", "-f", backupFile, "--skip-images")
+		Expect(backupFile).To(BeAnExistingFile())
+
+		// Overwrite the marker while the Deployment is still running.
+		_, exitCode = suite.Kubectl().Exec(ctx, "exec", "deployment/"+deploymentName, "-n", testNamespace, "--",
+			"sh", "-c", "printf 'corrupted-after-backup' > /data/quiesce.txt")
+		Expect(exitCode).To(Equal(0))
+
+		// Restore in place: Linux restore must scale down the Deployment, restore the PV, and scale it back up.
+		output := suite.K2sCli().MustExec(ctx, "system", "restore", "-f", backupFile, "-e")
+		Expect(output).To(ContainSubstring(successMessage))
+
+		Eventually(func(ctx context.Context) string {
+			output, _ := suite.Kubectl().Exec(ctx, "get", "deployment", deploymentName, "-n", testNamespace,
+				"-o", "jsonpath={.status.conditions[?(@.type=='Available')].status}")
+			return output
+		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Equal("True"))
+
+		Eventually(func(ctx context.Context) string {
+			out, code := suite.Kubectl().Exec(ctx, "exec", "deployment/"+deploymentName, "-n", testNamespace, "--",
+				"cat", "/data/quiesce.txt")
+			if code != 0 {
+				return ""
+			}
+			return strings.TrimSpace(out)
+		}).WithContext(ctx).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Equal(expectedMarker))
 	})
 })
 

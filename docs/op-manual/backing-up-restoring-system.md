@@ -13,11 +13,11 @@ This guide explains how to back up and restore your entire K2s cluster state, in
 K2s provides comprehensive backup and restore functionality for your cluster across supported platforms:
 
 - **`k2s system backup`**: Creates a complete backup of cluster resources, persistent volumes, and container images (supported on both Windows and Linux hosts)
-- **`k2s system restore`**: Restores cluster state from a backup archive
+- **`k2s system restore`**: Restores cluster state from a backup archive (supported on both Windows and Linux hosts)
 - **Integration with Upgrade**: The `k2s system upgrade` command automatically creates a backup before upgrading
 
 !!! tip "Dual-Platform Support"
-    `k2s system backup` runs natively on both **Windows** (using PowerShell automation) and **Linux** hosts (using Go native orchestration and CLI tools).
+    Both `k2s system backup` and `k2s system restore` run natively on **Windows** (using PowerShell automation) and **Linux** hosts (using Go native orchestration and CLI tools).
 
 ## Configuration Settings
 
@@ -217,6 +217,22 @@ Addon-managed PVs are excluded from system backup (they're handled by addon-spec
 !!! tip "Large PVs"
     Backing up large persistent volumes can significantly increase backup time and size. Consider using `--skip-pvs` if you have external PV backup solutions or if PV data is not critical.
 
+### Allowed Host-Path Roots on Linux Hosts
+
+On Linux hosts, both `k2s system backup` and `k2s system restore` restrict host-path and local persistent volumes to trusted root directories to prevent reading or overwriting arbitrary host paths:
+
+- `/mnt`
+- `/srv`
+- `/var/lib/k2s/volumes`
+- `/registry`
+
+If your cluster stores persistent volumes under additional host directories, extend the allowlist using the `K2S_RESTORE_PV_ROOTS` environment variable (comma-separated absolute paths, excluding protected system directories such as `/etc`, `/usr`, `/var/lib/kubelet`, `/var/lib/etcd`):
+
+```console
+K2S_RESTORE_PV_ROOTS="/data/k2s-volumes,/storage/pvs" k2s system backup -f backup.zip
+K2S_RESTORE_PV_ROOTS="/data/k2s-volumes,/storage/pvs" k2s system restore -f backup.zip
+```
+
 ## Container Images Backup
 
 ### What Gets Backed Up
@@ -353,6 +369,12 @@ k2s system restore [options]
 
 ```console
 k2s system restore -f c:\backups\k2s-backup.zip
+```
+
+On Linux hosts:
+
+```console
+k2s system restore -f /tmp/backups/k2s-backup.zip
 ```
 
 #### Strict Restore (Fail on Any Error)

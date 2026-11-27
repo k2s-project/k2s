@@ -458,6 +458,30 @@ var _ = Describe("os pkg", Ordered, func() {
 				writerMock.AssertExpectations(GinkgoT())
 			})
 		})
+
+		When("context is cancelled while command has background descendants holding pipes open", func() {
+			It("terminates the process group promptly without hanging", func() {
+				if runtime.GOOS == "windows" {
+					Skip("POSIX process-group cancellation test")
+				}
+
+				writerMock := &stdWriterMock{}
+				writerMock.On(reflection.GetFunctionName(writerMock.WriteStdOut), mock.Anything).Maybe()
+				writerMock.On(reflection.GetFunctionName(writerMock.WriteStdErr), mock.Anything).Maybe()
+				writerMock.On(reflection.GetFunctionName(writerMock.Flush)).Once()
+
+				cancelCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+				defer cancel()
+
+				start := time.Now()
+				sut := os.NewCmdExecutor(writerMock).WithContext(cancelCtx)
+				err := sut.ExecuteCmd("sh", "-c", "sleep 60 & wait")
+				elapsed := time.Since(start)
+
+				Expect(err).To(HaveOccurred())
+				Expect(elapsed).To(BeNumerically("<", 5*time.Second))
+			})
+		})
 	})
 
 	Describe("Files", Label("unit"), func() {

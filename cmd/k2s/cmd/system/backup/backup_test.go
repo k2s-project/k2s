@@ -4,6 +4,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/internal/healthcheck"
 	"github.com/k2s-project/k2s/internal/provider"
+	"github.com/pterm/pterm"
 	"github.com/stretchr/testify/mock"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -189,13 +191,18 @@ var _ = Describe("backup", func() {
 		})
 
 		When("provider Backup returns an error", func() {
-			It("returns the error", func() {
+			It("returns the error without printing a success completion message", func() {
 				expectedErr := errors.New("backup failed")
 				mockSys.On("Backup", mock.Anything).Return(expectedErr).Once()
+
+				var output bytes.Buffer
+				pterm.SetDefaultOutput(&output)
+				defer pterm.SetDefaultOutput(os.Stdout)
 
 				err := runSystemBackup(SystemBackupCmd, nil)
 
 				Expect(err).To(MatchError(expectedErr))
+				Expect(output.String()).NotTo(ContainSubstring("SUCCESS"))
 				mockSys.AssertExpectations(GinkgoT())
 			})
 		})

@@ -4,14 +4,78 @@
 package restore
 
 import (
+	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	"github.com/k2s-project/k2s/internal/healthcheck"
+	"github.com/k2s-project/k2s/internal/provider"
+	"github.com/stretchr/testify/mock"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+type mockSystemProvider struct {
+	mock.Mock
+}
+
+func (m *mockSystemProvider) Dump(config provider.SystemDumpConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Upgrade(config provider.SystemUpgradeConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Package(config provider.SystemPackageConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Reset(config provider.SystemResetConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) ResetNetwork(config provider.SystemResetNetworkConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Compact(config provider.SystemCompactConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Backup(config provider.SystemBackupConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Restore(config provider.SystemRestoreConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) CertificateRenew(config provider.SystemCertRenewConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) CertificateAutoRotation(config provider.SystemCertAutoRotationConfig) error {
+	args := m.Called(config)
+	return args.Error(0)
+}
+
+func (m *mockSystemProvider) Check(config provider.SystemCheckConfig) (healthcheck.Report, error) {
+	args := m.Called(config)
+	return args.Get(0).(healthcheck.Report), args.Error(1)
+}
 
 func TestRestore(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -37,106 +101,75 @@ func resetRestoreFlags() {
 }
 
 var _ = Describe("restore", func() {
+	var mockSys *mockSystemProvider
 
-	Describe("createSystemRestorePsCommand", func() {
+	BeforeEach(func() {
+		resetRestoreFlags()
+		mockSys = &mockSystemProvider{}
+		cmdContext := common.NewCmdContext(nil, nil, &provider.Registry{System: mockSys})
+		ctx := context.WithValue(context.TODO(), common.ContextKeyCmdContext, cmdContext)
+		SystemRestoreCmd.SetContext(ctx)
+	})
 
-		When("only mandatory flags are set", func() {
-			It("creates minimal restore command", func() {
-				const staticPart = `\lib\scripts\windows\host\system\restore\Start-SystemRestore.ps1`
-				const args = ` -BackupFile 'C:\temp\backup.zip'`
+	Describe("runSystemRestore", func() {
+		When("mandatory flags are provided", func() {
+			It("delegates to provider Restore with expected config", func() {
+				testFile := filepath.Join("test", "dir", "backup.zip")
+				SystemRestoreCmd.Flags().Set(restoreFileFlag, testFile)
 
-				expected := utils.FormatScriptFilePath(
-					utils.InstallDir()+staticPart,
-				) + args
+				expectedConfig := provider.SystemRestoreConfig{
+					BackupFile:         testFile,
+					AdditionalHooksDir: "",
+					ErrorOnFailure:     false,
+					ShowOutput:         false,
+				}
 
-				resetRestoreFlags()
-				SystemRestoreCmd.Flags().Set(restoreFileFlag, `C:\temp\backup.zip`)
+				mockSys.On("Restore", expectedConfig).Return(nil).Once()
 
-				actual := createSystemRestorePsCommand(SystemRestoreCmd)
+				err := runSystemRestore(SystemRestoreCmd, nil)
 
-				Expect(actual).To(Equal(expected))
+				Expect(err).ToNot(HaveOccurred())
+				mockSys.AssertExpectations(GinkgoT())
 			})
 		})
 
-		When("show logs flag is enabled", func() {
-			It("adds -ShowLogs to restore command", func() {
-				const staticPart = `\lib\scripts\windows\host\system\restore\Start-SystemRestore.ps1`
-				const args = ` -ShowLogs -BackupFile 'C:\temp\backup.zip'`
+		When("all flags are provided", func() {
+			It("passes all flags to provider Restore", func() {
+				testFile := filepath.Join("test", "dir", "backup.zip")
+				SystemRestoreCmd.Flags().Set(restoreFileFlag, testFile)
+				SystemRestoreCmd.Flags().Set(common.OutputFlagName, "true")
+				SystemRestoreCmd.Flags().Set(errorOnFailureFlag, "true")
+				SystemRestoreCmd.Flags().Set(common.AdditionalHooksDirFlagName, "/custom/hooks")
 
-				expected := utils.FormatScriptFilePath(
-					utils.InstallDir()+staticPart,
-				) + args
+				expectedConfig := provider.SystemRestoreConfig{
+					BackupFile:         testFile,
+					AdditionalHooksDir: "/custom/hooks",
+					ErrorOnFailure:     true,
+					ShowOutput:         true,
+				}
 
-				resetRestoreFlags()
-				flags := SystemRestoreCmd.Flags()
-				flags.Set(common.OutputFlagName, "true")
-				flags.Set(restoreFileFlag, `C:\temp\backup.zip`)
+				mockSys.On("Restore", expectedConfig).Return(nil).Once()
 
-				actual := createSystemRestorePsCommand(SystemRestoreCmd)
+				err := runSystemRestore(SystemRestoreCmd, nil)
 
-				Expect(actual).To(Equal(expected))
+				Expect(err).ToNot(HaveOccurred())
+				mockSys.AssertExpectations(GinkgoT())
 			})
 		})
 
-		When("error-on-failure flag is enabled", func() {
-			It("adds -ErrorOnFailure to restore command", func() {
-				const staticPart = `\lib\scripts\windows\host\system\restore\Start-SystemRestore.ps1`
-				const args = ` -BackupFile 'C:\temp\backup.zip' -ErrorOnFailure`
+		When("provider Restore returns an error", func() {
+			It("returns the error", func() {
+				testFile := filepath.Join("test", "dir", "backup.zip")
+				SystemRestoreCmd.Flags().Set(restoreFileFlag, testFile)
 
-				expected := utils.FormatScriptFilePath(
-					utils.InstallDir()+staticPart,
-				) + args
+				expectedErr := errors.New("restore failed")
+				mockSys.On("Restore", mock.Anything).Return(expectedErr).Once()
 
-				resetRestoreFlags()
-				flags := SystemRestoreCmd.Flags()
-				flags.Set(restoreFileFlag, `C:\temp\backup.zip`)
-				flags.Set(errorOnFailureFlag, "true")
+				err := runSystemRestore(SystemRestoreCmd, nil)
 
-				actual := createSystemRestorePsCommand(SystemRestoreCmd)
-
-				Expect(actual).To(Equal(expected))
-			})
-		})
-
-		When("additional hooks directory is provided", func() {
-			It("adds -AdditionalHooksDir to restore command", func() {
-				const staticPart = `\lib\scripts\windows\host\system\restore\Start-SystemRestore.ps1`
-				const args = ` -BackupFile 'C:\temp\backup.zip' -AdditionalHooksDir 'hooksDir'`
-
-				expected := utils.FormatScriptFilePath(
-					utils.InstallDir()+staticPart,
-				) + args
-
-				resetRestoreFlags()
-				flags := SystemRestoreCmd.Flags()
-				flags.Set(restoreFileFlag, `C:\temp\backup.zip`)
-				flags.Set(common.AdditionalHooksDirFlagName, "hooksDir")
-
-				actual := createSystemRestorePsCommand(SystemRestoreCmd)
-
-				Expect(actual).To(Equal(expected))
-			})
-		})
-
-		When("all flags are enabled together", func() {
-			It("creates full restore command", func() {
-				const staticPart = `\lib\scripts\windows\host\system\restore\Start-SystemRestore.ps1`
-				const args = ` -ShowLogs -BackupFile 'C:\temp\backup.zip' -ErrorOnFailure -AdditionalHooksDir 'hooksDir'`
-
-				expected := utils.FormatScriptFilePath(
-					utils.InstallDir()+staticPart,
-				) + args
-
-				resetRestoreFlags()
-				flags := SystemRestoreCmd.Flags()
-				flags.Set(common.OutputFlagName, "true")
-				flags.Set(restoreFileFlag, `C:\temp\backup.zip`)
-				flags.Set(errorOnFailureFlag, "true")
-				flags.Set(common.AdditionalHooksDirFlagName, "hooksDir")
-
-				actual := createSystemRestorePsCommand(SystemRestoreCmd)
-
-				Expect(actual).To(Equal(expected))
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(expectedErr))
+				mockSys.AssertExpectations(GinkgoT())
 			})
 		})
 	})

@@ -236,6 +236,53 @@ var _ = Describe("Archive Utilities", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("absolute path"))
 		})
+
+		It("preserves literal backslashes in tar entry names on POSIX platforms", func() {
+			if runtime.GOOS == "windows" {
+				Skip("backslashes are path separators on Windows")
+			}
+			tarGzPath := filepath.Join(tempDir, "backslash.tar.gz")
+			destDir := filepath.Join(tempDir, "extracted")
+
+			tf, err := bos.Create(tarGzPath)
+			Expect(err).ToNot(HaveOccurred())
+			gw := gzip.NewWriter(tf)
+			tw := tar.NewWriter(gw)
+
+			literalContent := []byte("literal-backslash")
+			Expect(tw.WriteHeader(&tar.Header{
+				Name:     `logs\2024.txt`,
+				Typeflag: tar.TypeReg,
+				Size:     int64(len(literalContent)),
+				Mode:     0644,
+			})).To(Succeed())
+			_, err = tw.Write(literalContent)
+			Expect(err).ToNot(HaveOccurred())
+
+			nestedContent := []byte("nested-slash")
+			Expect(tw.WriteHeader(&tar.Header{
+				Name:     "logs/2024.txt",
+				Typeflag: tar.TypeReg,
+				Size:     int64(len(nestedContent)),
+				Mode:     0644,
+			})).To(Succeed())
+			_, err = tw.Write(nestedContent)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(tw.Close()).To(Succeed())
+			Expect(gw.Close()).To(Succeed())
+			Expect(tf.Close()).To(Succeed())
+
+			Expect(os.ExtractTarGz(tarGzPath, destDir)).To(Succeed())
+
+			gotLiteral, err := bos.ReadFile(filepath.Join(destDir, `logs\2024.txt`))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(gotLiteral)).To(Equal("literal-backslash"))
+
+			gotNested, err := bos.ReadFile(filepath.Join(destDir, "logs", "2024.txt"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(gotNested)).To(Equal("nested-slash"))
+		})
 	})
 
 	Describe("ExtractTarGz symlinked directories", func() {

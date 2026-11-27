@@ -147,9 +147,12 @@ if [[ -n "$exclude_tags" ]]; then
   done
 fi
 
-# Start with the portable core suite for the native Linux-only test. The
-# suite is labelled sanity and skips Windows workloads when LinuxOnly is set.
-suites=(./test/e2e/cluster/core)
+# Start with the portable core suite and Linux system restore suite. Both
+# suites are labelled sanity and skip Windows workloads when LinuxOnly is set.
+suites=(
+  ./test/e2e/cluster/core
+  ./test/e2e/cli/cmd/system/setuprequired/systemrunning/restore
+)
 
 ginkgo_args=(--label-filter "$label_filter" --output-dir "$test_result_path" --json-report "linux-acceptance-report.json")
 if [[ "$verbose" == true ]]; then

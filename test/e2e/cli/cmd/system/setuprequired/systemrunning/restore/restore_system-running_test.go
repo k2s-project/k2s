@@ -231,6 +231,9 @@ var _ = Describe("'k2s system restore' - persistent volumes", Ordered, Label("pv
 			// Then clean up any orphaned PVs (use --wait=false to avoid hanging)
 			pvName := fmt.Sprintf("test-restore-pv-%s", randomSeed)
 			suite.Kubectl().Exec(ctx, "delete", "pv", pvName, "--ignore-not-found=true", "--wait=false")
+			if runtime.GOOS == "linux" {
+				_ = os.RemoveAll(fmt.Sprintf("/var/lib/k2s/volumes/k2s-test-pv-%s", randomSeed))
+			}
 		})
 	})
 
@@ -251,7 +254,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: /tmp/k2s-test-pv-%s
+    path: /var/lib/k2s/volumes/k2s-test-pv-%s
     type: DirectoryOrCreate
   nodeAffinity:
     required:
@@ -303,7 +306,7 @@ spec:
   containers:
   - name: writer
     image: busybox:1.36
-    command: ["sh", "-c", "echo '%s' > /data/restore-test.txt && sleep 600"]
+    command: ["sh", "-c", "sleep 600"]
     volumeMounts:
     - name: data
       mountPath: /data
@@ -312,16 +315,20 @@ spec:
     persistentVolumeClaim:
       claimName: %s
   restartPolicy: Never
-`, podName, testNamespace, testDataContent, pvcName)
+`, podName, testNamespace, pvcName)
 
 		applyYaml(ctx, suite, podYaml)
 
 		Eventually(func(ctx context.Context) string {
 			output, _ := suite.Kubectl().Exec(ctx, "get", "pod", podName, "-n", testNamespace, "-o", "jsonpath={.status.phase}")
 			return output
-		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Or(Equal("Running"), Equal("Succeeded")))
+		}).WithContext(ctx).WithTimeout(60 * time.Second).WithPolling(time.Second).Should(Equal("Running"))
 
-		time.Sleep(1 * time.Second) // Allow the writer to finish the initial write.
+		// Seed the marker via exec rather than the Pod's startup command so that
+		// recreating the Pod cannot regenerate the marker without PV restore.
+		_, seedExitCode := suite.Kubectl().Exec(ctx, "exec", podName, "-n", testNamespace, "--",
+			"sh", "-c", fmt.Sprintf("printf '%%s\\n' '%s' > /data/restore-test.txt", testDataContent))
+		Expect(seedExitCode).To(Equal(0), "failed to seed test marker file in PV before backup")
 
 		GinkgoWriter.Println("Creating backup for PV restore test at:", pvRestoreBackup)
 		// Use --skip-images since we're testing PV restore, not image backup
@@ -628,7 +635,7 @@ data:
 	})
 })
 
-var _ = Describe("'k2s system restore' - Linux host capabilities", Ordered, Label("linux-only"), func() {
+var _ = Describe("'k2s system restore' - Linux host capabilities", Ordered, Label("linux-only", "sanity"), func() {
 	BeforeEach(func() {
 		if runtime.GOOS != "linux" || !suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
 			Skip("Linux host only")
@@ -813,6 +820,9 @@ cp "$backup_dir/e2e-hook.txt" %q
 			cleanupBackupFile(ctx, backupFile)
 			suite.Kubectl().Exec(ctx, "delete", "namespace", testNamespace, "--ignore-not-found=true", "--timeout=60s")
 			suite.Kubectl().Exec(ctx, "delete", "pv", pvName, "--ignore-not-found=true", "--wait=false")
+			if runtime.GOOS == "linux" {
+				_ = os.RemoveAll(fmt.Sprintf("/var/lib/k2s/volumes/k2s-test-quiesce-pv-%s", randomSeed))
+			}
 		})
 
 		pvYaml := fmt.Sprintf(`
@@ -826,7 +836,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: /tmp/k2s-test-quiesce-pv-%s
+    path: /var/lib/k2s/volumes/k2s-test-quiesce-pv-%s
     type: DirectoryOrCreate
   nodeAffinity:
     required:

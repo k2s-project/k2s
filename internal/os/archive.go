@@ -30,7 +30,7 @@ func ExtractZip(srcZip, destDir string) error {
 	}
 
 	for _, f := range reader.File {
-		cleanDestPath, err := archiveEntryPath(cleanDestDir, f.Name)
+		cleanDestPath, err := zipEntryPath(cleanDestDir, f.Name)
 		if err != nil {
 			return fmt.Errorf("illegal file path in zip archive (Zip-Slip attempt): %s", f.Name)
 		}
@@ -64,8 +64,15 @@ func ExtractZip(srcZip, destDir string) error {
 	return nil
 }
 
-func archiveEntryPath(root, name string) (string, error) {
-	name = filepath.FromSlash(strings.ReplaceAll(name, `\`, "/"))
+func zipEntryPath(root, name string) (string, error) {
+	return validateLocalArchivePath(root, filepath.FromSlash(strings.ReplaceAll(name, `\`, "/")))
+}
+
+func tarEntryPath(root, name string) (string, error) {
+	return validateLocalArchivePath(root, filepath.FromSlash(name))
+}
+
+func validateLocalArchivePath(root, name string) (string, error) {
 	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("archive path is not local")
 	}
@@ -139,7 +146,7 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 			return fmt.Errorf("failed reading tar stream from '%s': %w", srcTarGz, err)
 		}
 
-		cleanDestPath, err := archiveEntryPath(cleanDestDir, hdr.Name)
+		cleanDestPath, err := tarEntryPath(cleanDestDir, hdr.Name)
 		if err != nil {
 			return fmt.Errorf("illegal file path in tar archive (Tar-Slip attempt): %s", hdr.Name)
 		}
@@ -190,7 +197,7 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 				return fmt.Errorf("failed to close file '%s': %w", cleanDestPath, err)
 			}
 		case tar.TypeSymlink:
-			if filepath.IsAbs(hdr.Linkname) || filepath.VolumeName(hdr.Linkname) != "" || strings.HasPrefix(hdr.Linkname, "\\") {
+			if filepath.IsAbs(hdr.Linkname) || filepath.VolumeName(hdr.Linkname) != "" || strings.HasPrefix(hdr.Linkname, "/") || strings.HasPrefix(hdr.Linkname, "\\") {
 				return fmt.Errorf("illegal symlink target in tar archive (absolute path): %s -> %s", hdr.Name, hdr.Linkname)
 			}
 			if strings.Contains(hdr.Linkname, "\\") || !filepath.IsLocal(hdr.Linkname) {
@@ -201,7 +208,7 @@ func ExtractTarGz(srcTarGz, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("illegal symlink target in tar archive (Tar-Slip attempt): %s -> %s", hdr.Name, hdr.Linkname)
 			}
-			if _, err := archiveEntryPath(cleanDestDir, filepath.Join(linkDirRelative, hdr.Linkname)); err != nil {
+			if _, err := tarEntryPath(cleanDestDir, filepath.Join(linkDirRelative, hdr.Linkname)); err != nil {
 				return fmt.Errorf("illegal symlink target in tar archive (Tar-Slip attempt): %s -> %s", hdr.Name, hdr.Linkname)
 			}
 			if err := bos.MkdirAll(linkDir, 0755); err != nil {

@@ -217,6 +217,22 @@ Addon-managed PVs are excluded from system backup (they're handled by addon-spec
 !!! tip "Large PVs"
     Backing up large persistent volumes can significantly increase backup time and size. Consider using `--skip-pvs` if you have external PV backup solutions or if PV data is not critical.
 
+### Allowed Host-Path Roots on Linux Hosts
+
+On Linux hosts, both `k2s system backup` and `k2s system restore` restrict host-path and local persistent volumes to trusted root directories to prevent reading or overwriting arbitrary host paths:
+
+- `/mnt`
+- `/srv`
+- `/var/lib/k2s/volumes`
+- `/registry`
+
+If your cluster stores persistent volumes under additional host directories, extend the allowlist using the `K2S_RESTORE_PV_ROOTS` environment variable (comma-separated absolute paths, excluding protected system directories such as `/etc`, `/usr`, `/var/lib/kubelet`, `/var/lib/etcd`):
+
+```console
+K2S_RESTORE_PV_ROOTS="/data/k2s-volumes,/storage/pvs" k2s system backup -f backup.zip
+K2S_RESTORE_PV_ROOTS="/data/k2s-volumes,/storage/pvs" k2s system restore -f backup.zip
+```
+
 ## Container Images Backup
 
 ### What Gets Backed Up

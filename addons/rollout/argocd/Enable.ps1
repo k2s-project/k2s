@@ -139,7 +139,20 @@ if ($Ingress -ne 'none') {
     Enable-IngressAddon -Ingress:$Ingress
 }
 
-&"$PSScriptRoot\Update.ps1"
+try {
+    &"$PSScriptRoot\Update.ps1"
+}
+catch {
+    $errMsg = "rollout addon could not be updated successfully: $($_.Exception.Message)"
+    if ($EncodeStructuredOutput -eq $true) {
+        $err = New-Error -Code (Get-ErrCodeAddonEnableFailed) -Message $errMsg
+        Send-ToCli -MessageType $MessageType -Message @{Error = $err }
+        return
+    }
+
+    Write-Log $errMsg -Error
+    exit 1
+}
 
 Write-Log 'Installation of rollout addon finished.' -Console
 

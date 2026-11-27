@@ -125,3 +125,165 @@ function Write-UsageForUser {
  In this case, the rollout dashboard will be accessible on the following URL: https://localhost:8080/rollout
 "@ -split "`r`n" | ForEach-Object { Write-Log $_ -Console }
 }
+
+function Get-SafeJsonProperty {
+    param(
+        [Parameter(Mandatory = $false)]
+        $Object,
+        [Parameter(Mandatory = $true)]
+        [string] $PropertyName
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+
+    $prop = $Object.PSObject.Properties[$PropertyName]
+    if ($null -eq $prop) {
+        return $null
+    }
+
+    return $prop.Value
+}
+
+function Update-RolloutServiceMesh {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string] $Namespace = 'rollout',
+
+        [Parameter(Mandatory = $false)]
+        [switch] $ForceRestart
+    )
+
+    $enhancedSecurityEnabled = Test-LinkerdServiceAvailability
+
+    $currentInject = $null
+    $currentSkipOutbound = $null
+    $annotationsInspected = $false
+
+    $nsAnnotations = $null
+    $nsResult = Invoke-Kubectl -Params 'get', 'namespace', $Namespace, '-o', 'json'
+    if ($nsResult.Success -and -not [string]::IsNullOrWhiteSpace(($nsResult.Output -join "`n"))) {
+        try {
+            $nsObj = ($nsResult.Output -join "`n") | ConvertFrom-Json
+            $metadata = Get-SafeJsonProperty -Object $nsObj -PropertyName 'metadata'
+            $nsAnnotations = Get-SafeJsonProperty -Object $metadata -PropertyName 'annotations'
+            $currentInject = Get-SafeJsonProperty -Object $nsAnnotations -PropertyName 'linkerd.io/inject'
+            $currentSkipOutbound = Get-SafeJsonProperty -Object $nsAnnotations -PropertyName 'config.linkerd.io/skip-outbound-ports'
+            $annotationsInspected = $true
+        }
+        catch {
+            Write-Log "[Rollout] Failed to parse namespace '$Namespace' JSON: $($_.Exception.Message)"
+        }
+    }
+
+    # marker persisted on the namespace until all workload restarts succeeded, so a partially failed run is retried
+    $restartPendingAnnotation = 'k2s.io/rollout-restart-pending'
+    $restartPending = $null -ne (Get-SafeJsonProperty -Object $nsAnnotations -PropertyName $restartPendingAnnotation)
+
+    $needsRestart = $ForceRestart.IsPresent -or -not $annotationsInspected -or $restartPending
+    $argoServerPatched = $false
+
+    if ($enhancedSecurityEnabled) {
+        if (-not $annotationsInspected -or $currentInject -ne 'enabled' -or $currentSkipOutbound -ne '8181') {
+            Write-Log '[Rollout] Updating rollout addon to be part of service mesh'
+            $r1 = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, 'linkerd.io/inject=enabled', '--overwrite'
+            $r1.Output | Write-Log
+            if (-not $r1.Success) { Write-Log "[Rollout] Warning: failed to set linkerd.io/inject annotation on namespace '$Namespace'" }
+
+            $r2 = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, 'config.linkerd.io/skip-outbound-ports=8181', '--overwrite'
+            $r2.Output | Write-Log
+            if (-not $r2.Success) { Write-Log "[Rollout] Warning: failed to set config.linkerd.io/skip-outbound-ports annotation on namespace '$Namespace'" }
+
+            $needsRestart = $true
+        }
+        else {
+            Write-Log "[Rollout] Namespace '$Namespace' is already part of service mesh; skipping workload restart"
+        }
+
+        if (Test-NginxGatewayAvailability) {
+            $serverNeedsPatch = $true
+            $serverResult = Invoke-Kubectl -Params 'get', 'deployment', 'argocd-server', '-n', $Namespace, '-o', 'json'
+            if ($serverResult.Success -and -not [string]::IsNullOrWhiteSpace(($serverResult.Output -join "`n"))) {
+                try {
+                    $serverObj = ($serverResult.Output -join "`n") | ConvertFrom-Json
+                    $spec = Get-SafeJsonProperty -Object $serverObj -PropertyName 'spec'
+                    $template = Get-SafeJsonProperty -Object $spec -PropertyName 'template'
+                    $templateMeta = Get-SafeJsonProperty -Object $template -PropertyName 'metadata'
+                    $podAnnotations = Get-SafeJsonProperty -Object $templateMeta -PropertyName 'annotations'
+                    $serverInject = Get-SafeJsonProperty -Object $podAnnotations -PropertyName 'linkerd.io/inject'
+                    $serverSkipInbound = Get-SafeJsonProperty -Object $podAnnotations -PropertyName 'config.linkerd.io/skip-inbound-ports'
+                    if ($serverInject -eq 'enabled' -and $serverSkipInbound -eq '8080') {
+                        $serverNeedsPatch = $false
+                    }
+                }
+                catch {
+                    Write-Log "[Rollout] Failed to parse deployment 'argocd-server' JSON: $($_.Exception.Message)"
+                }
+            }
+
+            if ($serverNeedsPatch) {
+                Write-Log '[Rollout] Configuring Linkerd to skip inbound port 8080 for nginx-gw BackendTLSPolicy' -Console
+                $annotations = '{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"linkerd.io/inject\":\"enabled\",\"config.linkerd.io/skip-inbound-ports\":\"8080\"}}}}}'
+                $patchRes = Invoke-Kubectl -Params 'patch', 'deployment', 'argocd-server', '-n', $Namespace, '-p', $annotations
+                $patchRes.Output | Write-Log
+                if (-not $patchRes.Success) { Write-Log "[Rollout] Warning: failed to patch deployment 'argocd-server' in namespace '$Namespace'" }
+                $argoServerPatched = $true
+            }
+        }
+    }
+    else {
+        if (-not $annotationsInspected -or $null -ne $currentInject -or $null -ne $currentSkipOutbound) {
+            Write-Log '[Rollout] Updating rollout addon to not be part of service mesh'
+            $r1 = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, 'linkerd.io/inject-'
+            $r1.Output | Write-Log
+            if (-not $r1.Success) { Write-Log "[Rollout] Warning: failed to remove linkerd.io/inject annotation from namespace '$Namespace'" }
+
+            $r2 = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, 'config.linkerd.io/skip-outbound-ports-'
+            $r2.Output | Write-Log
+            if (-not $r2.Success) { Write-Log "[Rollout] Warning: failed to remove config.linkerd.io/skip-outbound-ports annotation from namespace '$Namespace'" }
+
+            $needsRestart = $true
+        }
+        else {
+            Write-Log "[Rollout] Namespace '$Namespace' is already excluded from service mesh; skipping workload restart"
+        }
+    }
+
+    if ($needsRestart) {
+        $markerSet = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, "$restartPendingAnnotation=true", '--overwrite'
+        if (-not $markerSet.Success) { Write-Log "[Rollout] Warning: failed to set restart-pending marker on namespace '$Namespace'" }
+
+        $restartFailed = $false
+        $rd = Invoke-Kubectl -Params 'rollout', 'restart', 'deployment', '-n', $Namespace
+        $rd.Output | Write-Log
+        if (-not $rd.Success) {
+            $restartFailed = $true
+            Write-Log "[Rollout] Warning: failed to restart deployments in namespace '$Namespace'"
+        }
+
+        $rs = Invoke-Kubectl -Params 'rollout', 'restart', 'statefulset', '-n', $Namespace
+        $rs.Output | Write-Log
+        if (-not $rs.Success) {
+            $restartFailed = $true
+            Write-Log "[Rollout] Warning: failed to restart statefulsets in namespace '$Namespace'"
+        }
+
+        if ($restartFailed) {
+            if ($ForceRestart.IsPresent) {
+                throw "Failed to restart workloads in namespace '$Namespace'"
+            }
+        }
+        else {
+            $markerCleared = Invoke-Kubectl -Params 'annotate', 'namespace', $Namespace, "$restartPendingAnnotation-"
+            if (-not $markerCleared.Success) { Write-Log "[Rollout] Warning: failed to remove restart-pending marker from namespace '$Namespace'" }
+        }
+
+        (Invoke-Kubectl -Params 'rollout', 'status', 'deployment', '-n', $Namespace, '--timeout', '60s').Output | Write-Log
+        (Invoke-Kubectl -Params 'rollout', 'status', 'statefulset', '-n', $Namespace, '--timeout', '60s').Output | Write-Log
+    }
+    elseif ($argoServerPatched) {
+        (Invoke-Kubectl -Params 'rollout', 'status', 'deployment', 'argocd-server', '-n', $Namespace, '--timeout', '60s').Output | Write-Log
+    }
+}

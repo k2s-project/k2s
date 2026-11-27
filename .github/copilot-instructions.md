@@ -153,7 +153,7 @@ Each addon folder (`addons/<name>/`, optionally with implementation subfolders) 
 See `.github/workflows/`. Naming uses a category prefix (`build-`, `ci-`, `release-`, `repo-`) and the `name:` field mirrors it (e.g. `CI - Commitlint`).
 - `build-k2s-cli.yml`, `build-k2s-cli-pr.yml`, `build-vfprules-cli.yml` — Go builds.
 - `build-k2s-artifacts.yml` — offline package; `build-docs-next.yml` — MkDocs site.
-- `ci-unit-tests.yml` — unit tests; `ci-e2e-windows-cluster.yml`, `ci-e2e-linux-cluster.yml`, `ci-e2e-linux-cluster-node-arm64.yml`, `ci-e2e-linux-cluster-node-amd64.yml`, `ci-arm64-*`, `ci-amd64-node-package-build.yml` — cluster/node integration (one file per architecture; shared steps are composite actions in `.github/actions/`).
+- `ci-unit-tests.yml` — unit tests; `ci-e2e-windows-cluster.yml`, `ci-e2e-linux-cluster.yml`, `ci-e2e-linux-cluster-node-arm64.yml`, `ci-arm64-*` — cluster/node integration.
 - `ci-reuse-checks.yml` — SPDX/REUSE compliance; `ci-commitlint.yml` — conventional commits.
 - `release-version.yml`, `repo-*` — release and repository housekeeping.
 Mirror existing variables and caching patterns when modifying workflows.

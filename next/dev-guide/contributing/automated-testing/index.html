@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -495,6 +495,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -527,6 +529,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -540,6 +547,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -2283,6 +2318,17 @@ You're not viewing the latest release version.
 </li>
         
           <li class="md-nav__item">
+  <a href="#linux-worker-rename-acceptance-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux Worker Rename Acceptance Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#windows-workload-readiness-diagnostics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2367,6 +2413,17 @@ You're not viewing the latest release version.
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nightly-runs-of-the-e2e-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nightly Runs of the E2E Workflows
+      
+    </span>
+  </a>
   
 </li>
       
@@ -3142,6 +3199,17 @@ You're not viewing the latest release version.
 </li>
         
           <li class="md-nav__item">
+  <a href="#linux-worker-rename-acceptance-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux Worker Rename Acceptance Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#windows-workload-readiness-diagnostics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3226,6 +3294,17 @@ You're not viewing the latest release version.
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#nightly-runs-of-the-e2e-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nightly Runs of the E2E Workflows
+      
+    </span>
+  </a>
   
 </li>
       
@@ -3484,6 +3563,122 @@ three-second delay between failed attempts. This retries only the read-only
 query is reported as an <abbr title="Secure Shell">SSH</abbr> failure; hostname validation runs only after a
 successful query. The regression cases are in
 <code>common-setup.module.unit.tests.ps1</code> under the Windows Linux-node distro module.</p>
+<h3 id="linux-worker-rename-acceptance-tests">Linux Worker Rename Acceptance Tests</h3>
+<p>The shared <a href="https://github.com/k2s-project/k2s/blob/main/test/e2e/cluster/noderename/node_rename_test.go">node-rename suite</a>
+selects the Linux worker named <code>node-deb13</code> or <code>k2s-nodepkg-debian13</code> from <code>cluster.json</code>
+(the first of the two that is present), using the same
+cluster configuration reader as the other node suites. Argo or another fixture
+provisioner must add this worker with <code>k2s node add</code> before the suite runs.
+It can be either a bare-metal (<code>HOST</code>) or existing Hyper-V <abbr title="Virtual Machine">VM</abbr> (<code>VM-EXISTING</code>)
+worker; other workers are not renamed.
+The first migration renames that worker to the fixed name <code>node-db13-renamed</code>,
+without an <abbr title="Internet Protocol">IP</abbr> suffix, hostname argument or environment-variable opt-in.
+It combines metadata, reboot, workload, <abbr title="Server Message Block">SMB</abbr> persistence and partial-registration
+recovery checks rather than resetting the hostname between separate migrations.
+A second spec then renames the worker back to its original name without <code>--force</code>.
+This covers the plain rename and restores the fixture, so a repeat run needs no
+new worker. It runs only if the first migration passed.
+The suite is skipped when <code>cluster.json</code> is missing or lists no worker. Otherwise,
+missing, duplicate or unsupported fixture entries fail the test before <abbr title="Server Message Block">SMB</abbr>
+setup, as does an existing <code>node-db13-renamed</code> Kubernetes Node. If either rename
+fails, the worker is left as it is and the fixture provisioner must supply the
+fixture worker again.
+Windows-host rename E2E is deliberately excluded: changing that hostname requires
+a reboot of the machine running the suite.</p>
+<p>Run from an elevated PowerShell on a <strong>disposable Windows K2s installation</strong> with
+a freshly built <abbr title="Command-Line Interface">CLI</abbr> and Ready Linux workers. The stored <abbr title="Secure Shell">SSH</abbr> users must support
+noninteractive <code>sudo</code>, <code>hostnamectl</code>, <code>systemd-run</code>, <code>systemctl</code>, and the tools
+required by <code>k2s node rename</code>. Both the worker and control-plane Node must be Ready
+and schedulable. An initially cordoned worker fails the precondition before <abbr title="Server Message Block">SMB</abbr>
+setup: reads only from kubemaster do not establish storage access from the renamed
+worker. Each of the two migrations changes the remote <abbr title="Operating System">OS</abbr> hostname, <strong>reboots the
+Linux worker once</strong>, then drains it.
+After the first rename and initial storage checks, the suite also runs <strong><code>k2s stop</code>
+and <code>k2s start</code> for the whole cluster</strong>, not just the renamed worker.
+Reboot verification requires a changed kernel boot <abbr title="Identifier">ID</abbr>, recovered <abbr title="Secure Shell">SSH</abbr> and the
+expected hostname; an <abbr title="Secure Shell">SSH</abbr> disconnect alone is not considered proof of reboot.
+Draining can delete pod-local <code>emptyDir</code> data. Do not run against production workloads.</p>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">go</span> <span class="n">run</span> <span class="n">github</span><span class="p">.</span><span class="n">com</span><span class="p">/</span><span class="n">onsi</span><span class="p">/</span><span class="n">ginkgo</span><span class="p">/</span><span class="n">v2</span><span class="p">/</span><span class="n">ginkgo</span> <span class="p">-</span><span class="n">-label-filter</span><span class="p">=</span><span class="n">node-rename</span> <span class="p">-</span><span class="n">-timeout</span><span class="p">=</span><span class="n">180m</span> <span class="n">-v</span> <span class="p">.\</span><span class="n">test</span><span class="p">\</span><span class="n">e2e</span><span class="p">\</span><span class="n">cluster</span><span class="p">\</span><span class="n">noderename</span>
+</code></pre></div>
+<p>Argo can select the suite using the existing <code>node-rename</code> label. The suite is
+also labeled <code>disruptive</code>: selecting it performs real hostname changes and reboots, including
+when run without a label filter. Do not run it concurrently with other lifecycle
+suites or processes modifying <code>cluster.json</code>.
+The suite enables <code>k2s addons enable storage smb -t linux</code> when <abbr title="Server Message Block">SMB</abbr> is disabled.
+<abbr title="Server Message Block">SMB</abbr> status is retried for up to two minutes while CSI readiness stabilizes; a
+persistent failure still fails the test and requires inspecting Pod events.
+An existing Linux-hosted <abbr title="Server Message Block">SMB</abbr> addon is reused; an existing Windows-hosted addon or
+conflicting storage implementation is not silently replaced. The suite needs an
+<abbr title="Server Message Block">SMB</abbr> StorageClass that dynamically provisions separate PV subdirectories.
+The reader/writer image is <code>docker.io/curlimages/curl:8.5.0</code> with <code>IfNotPresent</code>;
+pre-cache this image and addon assets for offline execution. The suite is labeled
+<code>internet-required</code> because uncached images/addon assets may require downloads.
+Only the separate synthetic partial-registration Pod uses <code>imagePullPolicy: Never</code>.</p>
+<p>Coverage includes original PodCIDR/PodCIDRs, custom labels,
+annotations and taints, preservation of the initially schedulable state,
+lowercase normalization, a valid
+new kubelet certificate, and retained identities of unrelated Nodes. Partial
+registration checks reject a bound user Pod without mutation, then verify
+explicit <code>--force</code> recovery and recreation with a different Node UID. The rename
+back covers a normal migration without <code>--force</code>: it checks the original PodCIDRs,
+scheduling state, custom labels and taints, the kubelet certificate, the hostname,
+the original <code>cluster.json</code> content and the identities of unrelated Nodes.
+It does not repeat the <abbr title="Server Message Block">SMB</abbr> or stop/start checks.
+Negative cases cover missing
+flags, equal names, hostname mismatch, missing old Node, control-plane Node,
+unmanaged Node and unsupported managed Node type. The unsupported-type case
+temporarily appends a synthetic descriptor entry and restores the original file;
+it never changes a real worker's type.
+Deleting that synthetic Node also waits for its targeted DaemonSet Pods to
+disappear, explicitly deleting only DaemonSet-owned Pods bound or exclusively
+affined to that fixture name. This prevents a pending CSI Pod for a nonexistent
+Node from breaking the next migration's <abbr title="Server Message Block">SMB</abbr> status check. Existing orphaned Pods
+from older runs are not deleted automatically.</p>
+<p>Before the reboot, a writer on the old worker creates a unique marker on an
+isolated RWX <abbr title="Server Message Block">SMB</abbr> PVC. A three-replica Deployment mounts it read-only and verifies
+the marker through readiness probes, initially spreading across the worker and
+control plane. After migration, the suite requires replacement Pod UIDs, three
+Running/Ready replicas on the renamed Node/control plane, and exact reads of the
+original marker from every reader. PVC/PV UIDs, the PV name and CSI volume handle
+must remain unchanged. At least one newly created reader must run on the renamed
+worker and successfully read the original file from inside its container.
+The test cannot pass with all readers on kubemaster.</p>
+<p>Logs display writer and reader Pod names, UIDs, Node names and phases before and
+after migration, together with PVC/PV names and UIDs. For each post-rename
+<code>kubectl exec ... cat</code> read, the test verifies the exact Pod UID, Node placement
+and original PVC reference, then prints <code>READ OK</code> with the Node, Pod, PVC, file
+and actual content. A final <code>VERIFIED</code> message counts successful reads from newly
+created Pods on the renamed Node and confirms unchanged PVC/PV identities.</p>
+<p>Before cleanup, the stop/start check verifies that K2s actually stops and returns
+to a running state. It then waits for all Nodes to be Ready with their existing
+UIDs, PodCIDRs, scheduling states and custom metadata intact. The old Node must
+not reappear, and <code>cluster.json</code> must still contain the renamed identity.
+The existing three-reader workload and original PVC are kept through this cycle;
+the suite repeats its in-container <abbr title="Server Message Block">SMB</abbr> reads, including a reader on the renamed
+worker, without rewriting the marker. If stop/start fails while K2s is down, a
+deferred cleanup attempts to start it before <abbr title="Application Programming Interface">API</abbr>-dependent resource cleanup;
+recovery failures remain test failures.</p>
+<p>The suite watches actual Node <abbr title="Application Programming Interface">API</abbr> events for cordoning, the completed-drain
+marker, replacement readiness and old-Node deletion, in that order. It also checks
+the command's cordon/drain log ordering. Reboot-created partial registrations are
+reused as fixtures when present; otherwise the recovery check creates one.</p>
+<p>Cleanup deletes test workloads, PVCs, their dynamically provisioned PVs and
+test-only StorageClasses, and removes test labels, annotations and taints.
+If the suite enabled <abbr title="Server Message Block">SMB</abbr>, it disables the addon with <code>-k</code> to retain pre-existing
+share-folder data; an already-enabled Linux <abbr title="Server Message Block">SMB</abbr> addon is left enabled.
+After the first migration it restores the scheduling state from before the
+test. The rename back then <strong>reverts the <abbr title="Operating System">OS</abbr> hostname, Kubernetes Node name and
+<code>cluster.json</code> entry</strong>, so after a fully successful run the worker has its
+original name again. On migration failure, cleanup leaves rename recovery
+markers and cordoning state intact for inspection
+and does not automatically retry the rename. Cleanup failures fail the test and
+require inspecting the reported Node/service state; they are not hidden.
+The framework's keep-resources option does not disable test-resource cleanup.
+The per-worker test steps report the actual Node type and name exercised.
+Passing on one worker type does not establish integration coverage for the other.</p>
+<p>The fixture helpers can be tested without a cluster or hostname changes:</p>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestSMBReaderPlacement|TestSyntheticNodeDaemonPod|TestRestartedNodes|TestRenameObserverLifecycle'</span>
+</code></pre></div>
 <h3 id="windows-workload-readiness-diagnostics">Windows Workload Readiness Diagnostics</h3>
 <p>If the core acceptance suite exhausts its Windows <abbr title="Hypertext Transfer Protocol">HTTP</abbr> readiness retries, it
 collects evidence without changing the readiness criteria. The suite probes
@@ -3515,7 +3710,7 @@ change network state. Evidence appears under <code>NODE-NET DIAG</code> in test 
 <p>When running the <a href="#main-script-execute_all_testsps1">Main Script: execute_all_tests.ps1</a> for the first time, those prerequisites are installed automatically in the correct version.</p>
 </div>
 <h2 id="windows-cluster-github-actions-workflow">Windows Cluster GitHub Actions Workflow</h2>
-<p>The <strong><abbr title="Continuous Integration">CI</abbr> - Windows Cluster</strong> workflow (<code>.github/workflows/ci-windows-cluster.yml</code>)
+<p>The <strong><abbr title="Continuous Integration">CI</abbr> - E2E Windows Cluster</strong> workflow (<code>.github/workflows/ci-e2e-windows-cluster.yml</code>)
 builds all ten Windows executables, runs <code>k2s install</code>, verifies that both the
 Linux control plane and Windows worker are Ready, and runs the existing
 <code>test/e2e/cluster/core</code> acceptance suite. The suite deploys Linux and Windows
@@ -3544,8 +3739,8 @@ no public Kubernetes <abbr title="Application Programming Interface">API</abbr> 
 <p>On KubeVirt, expose VMX/SVM to the Windows guest and retain the already-tested
 nested Hyper-V configuration in the base image. On an outer Hyper-V host,
 configure the powered-off runner <abbr title="Virtual Machine">VM</abbr> there, not inside the job:</p>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">Set-VMProcessor</span> <span class="n">-VMName</span> <span class="s1">'&lt;runner-vm&gt;'</span> <span class="n">-ExposeVirtualizationExtensions</span> <span class="nv">$true</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">Set-VMMemory</span> <span class="n">-VMName</span> <span class="s1">'&lt;runner-vm&gt;'</span> <span class="n">-DynamicMemoryEnabled</span> <span class="nv">$false</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">Set-VMProcessor</span> <span class="n">-VMName</span> <span class="s1">'&lt;runner-vm&gt;'</span> <span class="n">-ExposeVirtualizationExtensions</span> <span class="nv">$true</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">Set-VMMemory</span> <span class="n">-VMName</span> <span class="s1">'&lt;runner-vm&gt;'</span> <span class="n">-DynamicMemoryEnabled</span> <span class="nv">$false</span>
 </code></pre></div>
 <p>For Azure or another cloud, select a <abbr title="Virtual Machine">VM</abbr> family/size and security configuration
 that explicitly supports nested Hyper-V; enabling Windows features alone does
@@ -3554,16 +3749,16 @@ firmware. The workflow creates, starts and removes a diskless probe <abbr title=
 verify actual <abbr title="Virtual Machine">VM</abbr> startup, rather than relying only on <abbr title="Central Processing Unit">CPU</abbr> flags.</p>
 <p>Prepare the base image with these features in elevated Windows PowerShell,
 then <strong>reboot before generating/starting the JIT runner</strong>:</p>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">Enable-WindowsOptionalFeature</span> <span class="n">-Online</span> <span class="n">-FeatureName</span> <span class="p">@(</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="s1">'Microsoft-Hyper-V'</span><span class="p">,</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="s1">'Microsoft-Hyper-V-Management-PowerShell'</span><span class="p">,</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="s1">'Containers'</span><span class="p">,</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="s1">'VirtualMachinePlatform'</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">)</span> <span class="n">-All</span> <span class="n">-NoRestart</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c"># On Windows 11, also enable the complete client Hyper-V feature set.</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="nb">Enable-WindowsOptionalFeature</span> <span class="n">-Online</span> <span class="n">-FeatureName</span> <span class="s1">'Microsoft-Hyper-V-All'</span> <span class="n">-All</span> <span class="n">-NoRestart</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="nb">Set-ExecutionPolicy</span> <span class="n">RemoteSigned</span> <span class="n">-Force</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="nb">Restart-Computer</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">Enable-WindowsOptionalFeature</span> <span class="n">-Online</span> <span class="n">-FeatureName</span> <span class="p">@(</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="s1">'Microsoft-Hyper-V'</span><span class="p">,</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s1">'Microsoft-Hyper-V-Management-PowerShell'</span><span class="p">,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s1">'Containers'</span><span class="p">,</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s1">'VirtualMachinePlatform'</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span> <span class="n">-All</span> <span class="n">-NoRestart</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c"># On Windows 11, also enable the complete client Hyper-V feature set.</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="nb">Enable-WindowsOptionalFeature</span> <span class="n">-Online</span> <span class="n">-FeatureName</span> <span class="s1">'Microsoft-Hyper-V-All'</span> <span class="n">-All</span> <span class="n">-NoRestart</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="nb">Set-ExecutionPolicy</span> <span class="n">RemoteSigned</span> <span class="n">-Force</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nb">Restart-Computer</span>
 </code></pre></div>
 <p>Install the Microsoft Visual C++ v14 <strong>x64</strong> redistributable, <code>curl.exe</code></p>
 <blockquote>
@@ -3619,10 +3814,17 @@ The runner's <code>.env</code>, JIT config and diagnostic credentials must remai
 <h3 id="dispatch-results-and-runner-disposal">Dispatch, Results and Runner Disposal</h3>
 <p>Create the <code>k2s-windows-e2e</code> GitHub environment with required reviewers and
 deployment branch restrictions, and restrict the runner group to trusted
-repositories/workflows. Under <strong>Actions &gt; <abbr title="Continuous Integration">CI</abbr> - Windows Cluster &gt; Run workflow</strong>,
+repositories/workflows. Under <strong>Actions &gt; <abbr title="Continuous Integration">CI</abbr> - E2E Windows Cluster &gt; Run workflow</strong>,
 select a reviewed branch. To test a <abbr title="Pull Request">PR</abbr>, dispatch its reviewed head branch
 within this repository; do not execute untrusted fork code on this runner.
 There are deliberately no <code>pull_request</code> or <code>pull_request_target</code> triggers.
+For unattended scheduled runs, also create a <code>k2s-windows-e2e-nightly</code>
+environment with deployment access restricted to the repository's default
+branch and no required reviewers. Copy the <code>K2S_HTTP_PROXY</code> and <code>K2S_NO_PROXY</code>
+environment variables from <code>k2s-windows-e2e</code> if they are configured there.
+Only a scheduled run on the default branch selects this environment; manual
+dispatches, including those on the default branch, continue to require approval
+through <code>k2s-windows-e2e</code>.
 Runs share the <code>k2s-win11-runner</code> concurrency group and do not cancel an active
 installation. Other workflows targeting this same support-side pool/shared
 reporting PVC must use the same group, or the dispatcher must enforce a
@@ -3644,7 +3846,7 @@ The workflow delegates prerequisite checks, the nested Hyper-V startup probe
 and source staging to <code>.github/scripts/windows-cluster-preflight.ps1</code>.
 The workflow uses the documented Windows <code>.\bin\bgow</code> shortcut to build all
 Go executables before:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="go">C:\k2s\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="go">C:\k2s\k2s.exe install --master-cpus 6 --master-memory 6GB --master-disk 50GB --output</span>
 </code></pre></div>
 <p>Ginkgo is invoked through <code>go run</code> at the version pinned in <code>go.mod</code>, with one
 process and <code>--fail-on-empty</code>. JUnit results, failure-only Kubernetes/Hyper-V
@@ -3677,6 +3879,28 @@ actually uses (including reading existing claims and any token-cache Secret),
 without exposing those permissions or credentials to the Windows guest.
 Mount the per-job JIT Secret in each Argo pod that actually copies/uses it;
 mounts in a caller pod are not automatically inherited by referenced templates.</p>
+<h2 id="nightly-runs-of-the-e2e-workflows">Nightly Runs of the E2E Workflows</h2>
+<p>The <strong><abbr title="Continuous Integration">CI</abbr> - E2E Nightly</strong> workflow (<code>.github/workflows/ci-e2e-nightly.yml</code>) runs every night at <code>0 22 * * *</code> UTC
+(23:00 CET, 00:00 CEST; GitHub cron has no time zone) and can also be started manually. It calls
+<code>ci-e2e-windows-cluster.yml</code>, <code>ci-e2e-linux-cluster.yml</code> and <code>ci-e2e-linux-cluster-node-arm64.yml</code> through
+<code>workflow_call</code>, core suite only (<code>addon: none</code>), and repeats each of them three times to expose flaky results.</p>
+<ul>
+<li>The three workflows run in parallel with each other. The repetitions of one workflow run one after another
+  (<code>max-parallel: 1</code>): the Windows workflow takes one runner <abbr title="Virtual Machine">VM</abbr> from the K2s <abbr title="Continuous Integration">CI</abbr> cluster, and its concurrency group
+  keeps only one pending run, so parallel repetitions would be cancelled.</li>
+<li>A failed repetition does not stop the following ones (<code>fail-fast: false</code>).</li>
+<li>One Windows repetition is limited to 180 minutes (<code>windows_timeout_minutes</code>), so a hung run cannot block the
+  repetitions after it. Adjust the value when measured run times require it.</li>
+<li>In nightly mode (<code>nightly: true</code>) a GitHub-hosted Linux runner without <code>/dev/kvm</code> fails the repetition with
+  <code>NO_KVM</code> instead of re-dispatching the workflow. A re-dispatched run would start outside the nightly, and the
+  original run would end green without testing anything.</li>
+<li>Scheduled workflows run only from the default branch. To try the nightly manually, start it with
+  <code>workflow_dispatch</code> and choose fewer repetitions or a single workflow.</li>
+</ul>
+<p>The morning e-mail of the K2s <abbr title="Continuous Integration">CI</abbr> (<code>ci/email</code> in <code>k2s-support</code>) reports the results of the nightly per workflow
+(passed, failed, flaky, <code>NO_KVM</code>) next to the Argo workflow statistics. It identifies the jobs by their names,
+<code>Windows (run N)</code>, <code>Linux (run N)</code> and <code>Linux arm64 node (run N)</code>; keep these names unchanged or adapt the e-mail
+script together with them.</p>
 <h2 id="main-script-execute_all_testsps1">Main Script: execute_all_tests.ps1</h2>
 <p>The main entry point for automated testing is the script <code>execute_all_tests.ps1</code>, whether being executed locally or in <abbr title="Continuous Integration">CI</abbr>/<abbr title="Continuous Delivery/Deployment (even though delivery and deployment might be different activities)">CD</abbr> workflows. It is not mandatory, but recommended to use this script instead of running <em>Pester</em> or <em>Ginkgo</em> commands directly due to the following features of the <code>execute_all_tests.ps1</code> script:</p>
 <ul>
@@ -3688,7 +3912,7 @@ mounts in a caller pod are not automatically inherited by referenced templates.<
 </ul>
 <div class="admonition example">
 <p class="admonition-title">Example</p>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">&lt;</span><span class="n">repo</span><span class="p">&gt;\</span><span class="n">test</span><span class="p">\</span><span class="n">execute_all_tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-Tags</span> <span class="n">unit</span> <span class="n">-ExcludeGoTests</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">&lt;</span><span class="n">repo</span><span class="p">&gt;\</span><span class="n">test</span><span class="p">\</span><span class="n">execute_all_tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-Tags</span> <span class="n">unit</span> <span class="n">-ExcludeGoTests</span>
 </code></pre></div>
 </div>
 <p>The preceding example would execute all <em>PowerShell</em>-based tests tagged with <code>unit</code>.</p>
@@ -3708,12 +3932,12 @@ See <a href="../tags-labels/#commonly-used-tags">Commonly Used Tags</a> for comm
 <p><a href="https://github.com/pester/Pester" target="_blank" rel="noopener">Pester</a> comes pre-installed on Win 10 or later.</p>
 </div>
 <p>To check the installed version, run:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">Import-Module</span> <span class="n">Pester</span> <span class="n">-Passthru</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">Import-Module</span> <span class="n">Pester</span> <span class="n">-Passthru</span>
 </code></pre></div></p>
 <p>This output will be similar to:
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>ModuleType Version    Name    ExportedCommands
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>---------- -------    ----    ----------------
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Script     3.4.0      Pester  {AfterAll, AfterEach, Assert-MockCalled, Assert-VerifiableMocks...}
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>ModuleType Version    Name    ExportedCommands
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>---------- -------    ----    ----------------
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>Script     3.4.0      Pester  {AfterAll, AfterEach, Assert-MockCalled, Assert-VerifiableMocks...}
 </code></pre></div></p>
 <div class="admonition tip">
 <p class="admonition-title">Tip</p>
@@ -3721,31 +3945,31 @@ See <a href="../tags-labels/#commonly-used-tags">Commonly Used Tags</a> for comm
 </div>
 <h3 id="update-pester">Update Pester</h3>
 <p>If Pester was not installed explicitly yet (i.e., the version shipped with Windows is installed), run:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">Install-Module</span> <span class="n">Pester</span> <span class="n">-Force</span> <span class="n">-SkipPublisherCheck</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nb">Install-Module</span> <span class="n">Pester</span> <span class="n">-Force</span> <span class="n">-SkipPublisherCheck</span>
 </code></pre></div></p>
 <p>For subsequent updates, run:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">Update-Module</span> <span class="n">-Name</span> <span class="n">Pester</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nb">Update-Module</span> <span class="n">-Name</span> <span class="n">Pester</span>
 </code></pre></div></p>
 <h3 id="run-pester">Run Pester</h3>
 <p>To start test discovery and execution, run:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nb">Invoke-Pester</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">tests</span><span class="p">.</span><span class="n">ps1</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nb">Invoke-Pester</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">tests</span><span class="p">.</span><span class="n">ps1</span>
 </code></pre></div></p>
 <div class="admonition info">
 <p class="admonition-title">Info</p>
 <p>Pester discovers test files via naming convention <strong>*.[T|t]ests.ps1</strong></p>
 </div>
 <p>To see detailed output, run:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nb">Invoke-Pester</span> <span class="n">-Output</span> <span class="n">Detailed</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nb">Invoke-Pester</span> <span class="n">-Output</span> <span class="n">Detailed</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span>
 </code></pre></div>
 To include/exclude tests by tags, run:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nb">Invoke-Pester</span> <span class="n">-Tag</span> <span class="s2">"acceptance"</span> <span class="n">-ExcludeTag</span> <span class="s2">"slow"</span><span class="p">,</span> <span class="s2">"linuxOnly"</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nb">Invoke-Pester</span> <span class="n">-Tag</span> <span class="s2">"acceptance"</span> <span class="n">-ExcludeTag</span> <span class="s2">"slow"</span><span class="p">,</span> <span class="s2">"linuxOnly"</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span>
 </code></pre></div></p>
 <h4 id="code-coverage">Code Coverage</h4>
 <p>To calculate the code coverage of a test run, additionally specify the file(s) under test:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nb">Invoke-Pester</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-CodeCoverage</span> <span class="p">.\&lt;</span><span class="n">file-under-test</span><span class="p">&gt;.</span><span class="n">ps1</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">Invoke-Pester</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-CodeCoverage</span> <span class="p">.\&lt;</span><span class="n">file-under-test</span><span class="p">&gt;.</span><span class="n">ps1</span>
 </code></pre></div></p>
 <p>To export the code coverage results as <a href="https://www.jacoco.org/" target="_blank" rel="noopener">JaCoCo</a> XML file, specify the output file:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nb">Invoke-Pester</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-CodeCoverage</span> <span class="p">.\&lt;</span><span class="n">file-under-test</span><span class="p">&gt;.</span><span class="n">ps1</span> <span class="n">-CodeCoverageOutputFile</span> <span class="p">&lt;</span><span class="n">some</span> <span class="n">dir</span><span class="p">&gt;\</span><span class="n">coverage</span><span class="p">.</span><span class="n">xml</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nb">Invoke-Pester</span> <span class="p">.\&lt;</span><span class="n">test</span> <span class="n">file</span><span class="p">&gt;.</span><span class="n">Tests</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-CodeCoverage</span> <span class="p">.\&lt;</span><span class="n">file-under-test</span><span class="p">&gt;.</span><span class="n">ps1</span> <span class="n">-CodeCoverageOutputFile</span> <span class="p">&lt;</span><span class="n">some</span> <span class="n">dir</span><span class="p">&gt;\</span><span class="n">coverage</span><span class="p">.</span><span class="n">xml</span>
 </code></pre></div></p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -3754,32 +3978,32 @@ To include/exclude tests by tags, run:
 <h3 id="log-output-redirection">Log Output Redirection</h3>
 <p>When executing <em>K2s</em> scripts inside <em>Pester</em> test functions, it is recommended to execute these scripts in a separate <em>PowerShell</em> session, so that the called scripts still log to the <em>K2s</em> log files due to the current logging implementation.</p>
 <h4 id="dont">Don't</h4>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c"># ...</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="nv">$enableScript</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\Enable.ps1"</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="c"># ...</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">It</span> <span class="s1">'does not log to log file :-('</span> <span class="p">{</span>
-<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="nv">$output</span> <span class="p">=</span> <span class="p">$(&amp;</span><span class="nv">$enableScript</span> <span class="n">-ShowLogs</span><span class="p">)</span> <span class="p">*&gt;&amp;</span><span class="n">1</span> <span class="c"># output redirect, but no log file entries</span>
-<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>    <span class="c"># ...</span>
-<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="p">}</span>
-<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="c"># ...</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c"># ...</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="nv">$enableScript</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\Enable.ps1"</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="c"># ...</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="n">It</span> <span class="s1">'does not log to log file :-('</span> <span class="p">{</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    <span class="nv">$output</span> <span class="p">=</span> <span class="p">$(&amp;</span><span class="nv">$enableScript</span> <span class="n">-ShowLogs</span><span class="p">)</span> <span class="p">*&gt;&amp;</span><span class="n">1</span> <span class="c"># output redirect, but no log file entries</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    <span class="c"># ...</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="p">}</span>
+<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="c"># ...</span>
 </code></pre></div>
 <h4 id="do">Do</h4>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c"># ...</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="nv">$enableScript</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\Enable.ps1"</span>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="c"># ...</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="n">It</span> <span class="s1">'logs to log file :-)'</span> <span class="p">{</span>
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>    <span class="nv">$output</span> <span class="p">=</span> <span class="n">powershell</span> <span class="n">-Command</span> <span class="s2">"$enableScript -ShowLogs"</span> <span class="p">*&gt;&amp;</span><span class="n">1</span> <span class="c"># output redirect and log file entries</span>
-<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>    <span class="c"># ...</span>
-<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="p">}</span>
-<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="c"># ...</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c"># ...</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="nv">$enableScript</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\Enable.ps1"</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="c"># ...</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="n">It</span> <span class="s1">'logs to log file :-)'</span> <span class="p">{</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    <span class="nv">$output</span> <span class="p">=</span> <span class="n">powershell</span> <span class="n">-Command</span> <span class="s2">"$enableScript -ShowLogs"</span> <span class="p">*&gt;&amp;</span><span class="n">1</span> <span class="c"># output redirect and log file entries</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>    <span class="c"># ...</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="p">}</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="c"># ...</span>
 </code></pre></div>
 <h3 id="suppress-code-analysis">Suppress Code Analysis</h3>
 <p><em>Pester</em> requires a certain test code structure that can lead to code analyzer warnings, e.g. in this case:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="n">BeforeAll</span> <span class="p">{</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>    <span class="nv">$module</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\setupinfo.module.psm1"</span>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    <span class="nv">$moduleName</span> <span class="p">=</span> <span class="p">(</span><span class="nb">Import-Module</span> <span class="nv">$module</span> <span class="n">-PassThru</span> <span class="n">-Force</span><span class="p">).</span><span class="n">Name</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="p">}</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">BeforeAll</span> <span class="p">{</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>    <span class="nv">$module</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\setupinfo.module.psm1"</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>    <span class="nv">$moduleName</span> <span class="p">=</span> <span class="p">(</span><span class="nb">Import-Module</span> <span class="nv">$module</span> <span class="n">-PassThru</span> <span class="n">-Force</span><span class="p">).</span><span class="n">Name</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="p">}</span>
 </code></pre></div>
 The analyzer would complain:</p>
 <div class="admonition quote">
@@ -3787,19 +4011,19 @@ The analyzer would complain:</p>
 <p>The variable 'moduleName' is assigned but never used. <em>PSScriptAnalyzer(PSUseDeclaredVarsMoreThanAssignments)</em></p>
 </div>
 <p>To mitigate this, suppress this warning like the following:
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="n">BeforeAll</span> <span class="p">{</span>
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>    <span class="nv">$module</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\setupinfo.module.psm1"</span>
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="p">[</span><span class="n">Diagnostics</span><span class="p">.</span><span class="n">CodeAnalysis</span><span class="p">.</span><span class="n">SuppressMessageAttribute</span><span class="p">(</span><span class="s1">'UseDeclaredVarsMoreThanAssignments'</span><span class="p">,</span> <span class="s1">''</span><span class="p">,</span> <span class="n">Justification</span> <span class="p">=</span> <span class="s1">'Pester Test'</span><span class="p">)]</span>
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    <span class="nv">$moduleName</span> <span class="p">=</span> <span class="p">(</span><span class="nb">Import-Module</span> <span class="nv">$module</span> <span class="n">-PassThru</span> <span class="n">-Force</span><span class="p">).</span><span class="n">Name</span>
-<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="p">}</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">BeforeAll</span> <span class="p">{</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="nv">$module</span> <span class="p">=</span> <span class="s2">"$PSScriptRoot\setupinfo.module.psm1"</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="p">[</span><span class="n">Diagnostics</span><span class="p">.</span><span class="n">CodeAnalysis</span><span class="p">.</span><span class="n">SuppressMessageAttribute</span><span class="p">(</span><span class="s1">'UseDeclaredVarsMoreThanAssignments'</span><span class="p">,</span> <span class="s1">''</span><span class="p">,</span> <span class="n">Justification</span> <span class="p">=</span> <span class="s1">'Pester Test'</span><span class="p">)]</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>    <span class="nv">$moduleName</span> <span class="p">=</span> <span class="p">(</span><span class="nb">Import-Module</span> <span class="nv">$module</span> <span class="n">-PassThru</span> <span class="n">-Force</span><span class="p">).</span><span class="n">Name</span>
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="p">}</span>
 </code></pre></div></p>
 <h2 id="automated-testing-with-ginkgogomega">Automated Testing with Ginkgo/Gomega</h2>
 <h3 id="log-output-redirection_1">Log Output Redirection</h3>
 <p>For diagnostic logging, <em>k2s</em> <abbr title="Command-Line Interface">CLI</abbr> uses <a href="https://pkg.go.dev/log/slog" target="_blank" rel="noopener">slog</a>. To redirect the log output to <em>Ginkgo</em>, set the <em>Ginkgo</em> logger as follows (<em>Ginkgo</em> uses <a href="https://github.com/go-logr/logr/" target="_blank" rel="noopener">logr</a> internally):
-<div class="highlight"><span class="filename">Go</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kd">var</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BeforeSuite</span><span class="p">(</span><span class="kd">func</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="w">    </span><span class="nx">slog</span><span class="p">.</span><span class="nx">SetDefault</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">logr</span><span class="p">.</span><span class="nx">ToSlogHandler</span><span class="p">(</span><span class="nx">GinkgoLogr</span><span class="p">)))</span>
-<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="p">})</span>
+<div class="highlight"><span class="filename">Go</span><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="kd">var</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BeforeSuite</span><span class="p">(</span><span class="kd">func</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">    </span><span class="nx">slog</span><span class="p">.</span><span class="nx">SetDefault</span><span class="p">(</span><span class="nx">slog</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span><span class="nx">logr</span><span class="p">.</span><span class="nx">ToSlogHandler</span><span class="p">(</span><span class="nx">GinkgoLogr</span><span class="p">)))</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="p">})</span>
 </code></pre></div></p>
 <p>This enables control over <em>slog</em> output, i.e. the output can be enabled when running <em>Ginkgo</em> in verbose mode (<code>ginkog -v</code>) and be omitted in non-verbose mode.</p>
 <h3 id="k2s-acceptance-testing"><em>K2s</em> Acceptance Testing</h3>
@@ -3820,11 +4044,11 @@ The analyzer would complain:</p>
 <ul>
 <li><a href="#main-script-execute_all_testsps1">Main Script: execute_all_tests.ps1</a> - Recommended, provides most flexibility</li>
 <li>Running <em>Ginkgo</em>:
-    <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">ginkgo &lt;dir-with-test-specs&gt;</span>
+    <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="go">ginkgo &lt;dir-with-test-specs&gt;</span>
 </code></pre></div></li>
 <li>Running <code>go test</code>:
-    <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="go">cd &lt;dir-with-test-specs&gt;</span>
-<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="go">go test </span>
+    <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="go">cd &lt;dir-with-test-specs&gt;</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="go">go test </span>
 </code></pre></div></li>
 </ul>
 <div class="admonition tip">
@@ -3916,14 +4140,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -495,6 +495,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -527,6 +529,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -540,6 +547,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -3005,7 +3040,7 @@ If you have not installed <em>K2s</em> yet, then your <code>PATH</code> is not u
 </code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>On Linux, the <abbr title="Command-Line Interface">CLI</abbr> uses native Go APIs (kubeadm, kubectl, libvirt/KVM, <abbr title="Secure Shell">SSH</abbr>) instead of PowerShell. The platform-specific logic is encapsulated in the <a href="../../architecture/#provider-architecture">Provider Architecture</a>.</p>
+<p>On Linux, the <abbr title="Command-Line Interface">CLI</abbr> does not use PowerShell: cluster lifecycle operations are dispatched to Bash scripts under <code>lib/scripts/linux/debian/</code> (using the modules in <code>lib/modules/linux/</code>), while status, addon, and health-check operations run natively in Go. The platform-specific logic is encapsulated in the <a href="../../architecture/#provider-architecture">Provider Architecture</a>.</p>
 </div>
 <h2 id="building-natively-on-linux-no-powershell">Building Natively on Linux (no PowerShell)</h2>
 <p>On a Linux developer machine you can build the Linux executables without PowerShell using the <code>build.sh</code> script (or the <code>Makefile</code> wrapper) in the repository root. Both mirror the same Go build flags and version metadata as <a href="https://github.com/k2s-project/k2s/blob/main/smallsetup/common/BuildGoExe.ps1" target="_blank" rel="noopener">BuildGoExe.ps1</a>.</p>
@@ -3102,14 +3137,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

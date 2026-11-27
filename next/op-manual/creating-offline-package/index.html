@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -1182,6 +1217,28 @@ You're not viewing the latest release version.
   
     <nav class="md-nav" aria-label="Node Package for Offline Node Add">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#node-package-on-a-linux-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Package on a Linux Host
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#arm64-node-package" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        arm64 Node Package
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#gpu-enabled-node-package" class="md-nav__link">
@@ -2944,6 +3001,28 @@ You're not viewing the latest release version.
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#node-package-on-a-linux-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Package on a Linux Host
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#arm64-node-package" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        arm64 Node Package
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#gpu-enabled-node-package" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3105,9 +3184,24 @@ SPDX-License-Identifier: Apache-2.0
 <p>The node package is intended for extending an existing cluster with a Linux worker node. It is separate from the full offline installation package used for installing <em>K2s</em> itself.</p>
 </div>
 <p>See <a href="../extending-k2s-cluster/">Extending K2s cluster</a> for the complete node onboarding workflow.</p>
+<h3 id="node-package-on-a-linux-host">Node Package on a Linux Host</h3>
+<p>On a Linux host <em>(experimental)</em>, <code>k2s system package --node-package</code> builds the package natively with the host's own <code>apt</code>, so the package matches the build host:</p>
+<ul>
+<li>Run the command with <code>sudo</code>.</li>
+<li><code>--os</code> must match the host's Debian release (for example <code>debian13</code> on a Debian 13 host) and <code>--arch</code> the host's architecture. There is no cross-build.</li>
+<li>The host needs <code>skopeo</code>, <code>dpkg-deb</code> and <code>apt-get</code>. <code>skopeo</code> is not installed by <em>K2s</em>; install it with <code>sudo apt-get install skopeo</code>. The command checks these tools before it downloads anything.</li>
+<li>Without <code>--proxy</code>, packages and images are downloaded through the local cluster proxy <code>http://172.19.1.1:8181</code> (it uses the proxy given at <code>k2s install</code>), like on a Windows host; <em>K2s</em> must be running. A build host without a <em>K2s</em> installation, such as an arm64 build host, downloads directly and needs network access to the package repositories and container registries.</li>
+</ul>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="go">sudo k2s system package --node-package --os debian13 --target-dir /tmp/out --name debian13-node.zip</span>
+</code></pre></div>
+<h3 id="arm64-node-package">arm64 Node Package</h3>
+<p>To build an arm64 node package, run <code>k2s system package --node-package --arch arm64</code> <strong>directly on a Linux arm64 host</strong> with <code>sudo</code> (see <a href="#node-package-on-a-linux-host">Node Package on a Linux Host</a>) — not on the Windows K2s host that builds the amd64 packages above:</p>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="go">sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip</span>
+</code></pre></div>
+<p>Only Debian 13 arm64 is tested/validated today; <code>--os debian12 --arch arm64</code> runs the same code path but is untested. The package has the same layout as the amd64 package: <code>packages/</code> with the <code>.deb</code> files and <code>images/</code> with the Kubernetes, flannel and (with <code>--include-gpu</code>) NVIDIA container images as OCI archives.</p>
 <h3 id="gpu-enabled-node-package">GPU-Enabled Node Package</h3>
 <p>To add a Linux worker node <strong>with GPU support</strong> in an air-gapped environment, include the NVIDIA Container Toolkit packages in the node package:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="go">k2s system package --node-package --os debian13 --include-gpu --target-dir C:\output --name debian13-node-gpu.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="go">k2s system package --node-package --os debian13 --include-gpu --target-dir C:\output --name debian13-node-gpu.zip</span>
 </code></pre></div>
 <p>The <code>--include-gpu</code> flag downloads and bundles:</p>
 <table>
@@ -3137,7 +3231,7 @@ SPDX-License-Identifier: Apache-2.0
 </tbody>
 </table>
 <p>When using a GPU-enabled node package:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package C:\output\debian13-node-gpu.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="go">k2s node add --ip-addr &lt;IPAddressOfNewNode&gt; --username &lt;UserNameForRemoteConnection&gt; --node-package C:\output\debian13-node-gpu.zip</span>
 </code></pre></div>
 <p>K2s automatically detects if the target node has an NVIDIA GPU and configures GPU support:</p>
 <ul>
@@ -3153,32 +3247,33 @@ SPDX-License-Identifier: Apache-2.0
 <p>To enable addons without an internet connection being available, the required binaries can be exported to an offline package as well.</p>
 <h3 id="addons-export">Addons Export</h3>
 <p>To inspect all export options, run:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="go">k2s addons export -h</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="go">k2s addons export -h</span>
 </code></pre></div></p>
 <p>Either specify one or more addons to export:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt;</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt;</span>
 </code></pre></div></p>
 <p>Or export all addons:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="go">k2s addons export -d &lt;export-output-directory&gt;</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="go">k2s addons export -d &lt;export-output-directory&gt;</span>
 </code></pre></div></p>
 <p>To export without container images (produces a lighter artifact):
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt; --omit-images</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt; --omit-images</span>
 </code></pre></div></p>
 <p>To export without packages (Debian, Linux, and Windows packages):
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt; --omit-packages</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt; --omit-packages</span>
 </code></pre></div></p>
 <p>Both flags can be combined to export only configuration, manifests, and scripts:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt; --omit-images --omit-packages</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="go">k2s addons export registry -d &lt;export-output-directory&gt; --omit-images --omit-packages</span>
 </code></pre></div></p>
+<p>On a Linux host <em>(experimental)</em>, the export skips Windows container images and Windows packages, and package downloads run on the host itself (see <a href="../../user-guide/k2s-cli/#addons-export">addons export</a>).</p>
 <h3 id="addons-import">Addons Import</h3>
-<p>To inspect all export options, run:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="go">k2s addons import -h</span>
+<p>To inspect all import options, run:
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">k2s addons import -h</span>
 </code></pre></div></p>
 <p>Either specify one or more addons to import from the offline package:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="go">k2s addons import registry -f &lt;directory-containing-addons-archive&gt;\addons.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="go">k2s addons import registry -f &lt;directory-containing-addons-archive&gt;\K2s-&lt;version&gt;-addons-registry.oci.tar</span>
 </code></pre></div></p>
 <p>Or import all addons from the offline package:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">k2s addons import -f &lt;directory-containing-addons-archive&gt;\addons.zip</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="go">k2s addons import -f &lt;directory-containing-addons-archive&gt;\K2s-&lt;version&gt;-addons-all.oci.tar</span>
 </code></pre></div></p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -3276,14 +3371,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

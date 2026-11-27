@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -3512,6 +3547,10 @@ SPDX-License-Identifier: Apache-2.0
 <p class="admonition-title">Driver Installation</p>
 <p>K2s does <strong>not</strong> install NVIDIA kernel drivers. Install them using your distribution's package manager or NVIDIA's official installer <strong>before</strong> running <code>k2s node add</code>.</p>
 </div>
+<div class="admonition note">
+<p class="admonition-title">Linux host (experimental)</p>
+<p>External GPU workers are supported on a Windows host only. On a Linux host, <code>k2s node add</code> does not configure GPU support yet; a node with an NVIDIA GPU joins as a regular worker.</p>
+</div>
 <h3 id="online-workflow-internet-available">Online Workflow (Internet Available)</h3>
 <p>When the target machine has internet access, GPU support is <strong>automatically detected and configured</strong>:</p>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="go">k2s node add --ip-addr 192.168.1.50 --username admin</span>
@@ -3616,6 +3655,10 @@ SPDX-License-Identifier: Apache-2.0
 <td><strong>Hyper-V requirement</strong></td>
 <td>GPU-PV (Hyper-V path) requires Windows 10 version 20H1 (build 19041) or later and a GPU with a WDDM 2.9+ driver.</td>
 </tr>
+<tr>
+<td><strong>Linux host</strong></td>
+<td>External GPU workers are not configured on a Linux host <em>(experimental)</em> yet.</td>
+</tr>
 </tbody>
 </table>
 <hr />
@@ -3705,14 +3748,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

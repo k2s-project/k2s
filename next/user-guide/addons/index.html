@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -3996,7 +4031,7 @@ SPDX-License-Identifier: Apache-2.0
 </tr>
 <tr>
 <td><strong>gpu-node</strong></td>
-<td>GPU access for the control plane node</td>
+<td>GPU access for the control plane or selected Linux worker nodes</td>
 </tr>
 <tr>
 <td><strong>ingress</strong></td>
@@ -4085,6 +4120,12 @@ SPDX-License-Identifier: Apache-2.0
 </thead>
 <tbody>
 <tr>
+<td><code>--infra-node-selector</code></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Hard node selector for ingress infrastructure and compatible shared services</td>
+</tr>
+<tr>
 <td><code>--omitCertMgr</code></td>
 <td>boolean</td>
 <td><code>false</code></td>
@@ -4112,6 +4153,13 @@ SPDX-License-Identifier: Apache-2.0
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>--infra-node-selector</code></td>
+<td></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Constrain Headlamp infrastructure to nodes matching all label requirements</td>
+</tr>
 <tr>
 <td><code>--ingress</code></td>
 <td></td>
@@ -4143,11 +4191,25 @@ SPDX-License-Identifier: Apache-2.0
 </thead>
 <tbody>
 <tr>
+<td><code>--infra-node-selector</code></td>
+<td></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Hard node selector for central monitoring services, excluding node exporters</td>
+</tr>
+<tr>
 <td><code>--ingress</code></td>
 <td><code>-i</code></td>
 <td>string</td>
 <td><code>none</code></td>
 <td>Ingress controller for the monitoring dashboard (<code>none</code>, <code>nginx</code>, <code>nginx-gw</code>, <code>traefik</code>)</td>
+</tr>
+<tr>
+<td><code>--omitGrafana</code></td>
+<td></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Omit Grafana web <abbr title="User Interface">UI</abbr>; deploy only Prometheus, Alertmanager, and exporters</td>
 </tr>
 </tbody>
 </table>
@@ -4165,11 +4227,32 @@ SPDX-License-Identifier: Apache-2.0
 </thead>
 <tbody>
 <tr>
+<td><code>--infra-node-selector</code></td>
+<td></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Hard node selector for OpenSearch services, excluding Fluent Bit node agents</td>
+</tr>
+<tr>
 <td><code>--ingress</code></td>
 <td></td>
 <td>string</td>
 <td><code>none</code></td>
 <td>Ingress controller for log dashboards (<code>none</code>, <code>nginx</code>, <code>nginx-gw</code>, <code>traefik</code>)</td>
+</tr>
+<tr>
+<td><code>--omitOpensearch</code></td>
+<td></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Deploy only Fluent-bit; omit OpenSearch and OpenSearch Dashboards</td>
+</tr>
+<tr>
+<td><code>--snode</code></td>
+<td><code>-s</code></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Node to use for persistent volume storage (defaults to control-plane)</td>
 </tr>
 </tbody>
 </table>
@@ -4186,11 +4269,25 @@ SPDX-License-Identifier: Apache-2.0
 </thead>
 <tbody>
 <tr>
+<td><code>--infra-node-selector</code></td>
+<td></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Hard node selector for registry infrastructure compatible with its storage node</td>
+</tr>
+<tr>
 <td><code>--ingress</code></td>
 <td><code>-i</code></td>
 <td>string</td>
 <td><code>nginx</code></td>
 <td>Ingress controller for the registry (<code>nginx</code>, <code>nginx-gw</code>, <code>traefik</code>)</td>
+</tr>
+<tr>
+<td><code>--snode</code></td>
+<td><code>-s</code></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Node to use for persistent volume storage (defaults to control-plane)</td>
 </tr>
 </tbody>
 </table>
@@ -4307,6 +4404,13 @@ see <a href="#omitting-images-during-import">Omitting Images During Import</a>.<
 <td><code>none</code></td>
 <td>Ingress controller for the ArgoCD dashboard (<code>none</code>, <code>nginx</code>, <code>nginx-gw</code>, <code>traefik</code>)</td>
 </tr>
+<tr>
+<td><code>--addon-sync</code></td>
+<td></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Deploy addon-sync infrastructure for GitOps addon delivery from OCI registry</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Flux <abbr title="Continuous Delivery/Deployment (even though delivery and deployment might be different activities)">CD</abbr>:</strong></p>
@@ -4327,6 +4431,13 @@ see <a href="#omitting-images-during-import">Omitting Images During Import</a>.<
 <td>string</td>
 <td><code>none</code></td>
 <td>Ingress controller for the webhook receiver (<code>none</code>, <code>nginx</code>, <code>nginx-gw</code>, <code>traefik</code>)</td>
+</tr>
+<tr>
+<td><code>--addon-sync</code></td>
+<td></td>
+<td>boolean</td>
+<td><code>true</code></td>
+<td>Deploy addon-sync infrastructure for GitOps addon delivery from OCI registry</td>
 </tr>
 </tbody>
 </table>
@@ -4404,6 +4515,26 @@ see <a href="#omitting-images-during-import">Omitting Images During Import</a>.<
 </ul>
 <p>Cluster host and OSD sizing are read from <code>addons/storage/ceph/config/ceph-config.json</code>.</p>
 <p>Ceph enable commands:</p>
+<table>
+<thead>
+<tr>
+<th>Enable Flag</th>
+<th>Short</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--setupWindowsNode</code></td>
+<td><code>-w</code></td>
+<td>boolean</td>
+<td><code>false</code></td>
+<td>Configure Ceph <abbr title="Server Message Block">SMB</abbr> access (mgr/smb + <abbr title="Server Message Block">SMB</abbr> CSI) so Windows pods can consume CephFS</td>
+</tr>
+</tbody>
+</table>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="gp"># </span>Linux<span class="w"> </span>CephFS<span class="w"> </span>only
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="go">k2s addons enable storage ceph</span>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
@@ -4427,13 +4558,13 @@ see <a href="#omitting-images-during-import">Omitting Images During Import</a>.<
 <td><code>-f</code></td>
 <td>boolean</td>
 <td><code>false</code></td>
-<td>Disable without confirmation prompt</td>
+<td>Skip the confirmation prompt before permanently deleting Ceph cluster data</td>
 </tr>
 </tbody>
 </table>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>Disabling Ceph always tears down the provisioned Ceph cluster, including OSD resources and Ceph-backed PVs from this setup. Ceph data is permanently lost after disable.</p>
+<p>Disabling Ceph deletes PVCs using the configured CephFS and Ceph <abbr title="Server Message Block">SMB</abbr> StorageClasses, then tears down the provisioned Ceph cluster. All data in the Ceph cluster is permanently lost. Using <code>-f</code> skips the confirmation prompt.</p>
 </div>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="go">k2s addons disable storage ceph</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="go">k2s addons disable storage ceph -f</span>
@@ -4553,17 +4684,45 @@ see <a href="#omitting-images-during-import">Omitting Images During Import</a>.<
 <td><code>1</code></td>
 <td>Number of virtual GPU slots per physical GPU. <code>1</code> = exclusive access. Set <code>&gt;1</code> to share the GPU across multiple pods simultaneously via CUDA time-slicing (max <code>16</code>).</td>
 </tr>
+<tr>
+<td><code>--node</code></td>
+<td><code>-n</code></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Comma-separated list of cluster nodes to label as GPU nodes for this addon run</td>
+</tr>
 </tbody>
 </table>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="go">k2s addons enable gpu-node</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="go">k2s addons enable gpu-node --time-slices 4</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="go">k2s addons enable gpu-node --node my-gpu-worker</span>
 </code></pre></div>
 <p>Installs the NVIDIA Container Toolkit on the Linux <abbr title="Virtual Machine">VM</abbr> and deploys the NVIDIA Device Plugin DaemonSet. For Hyper-V setups, also configures GPU-PV passthrough and installs the WSL2 kernel. For WSL2 setups, the GPU libraries are already available via the shared dxcore stack.</p>
 <p>See <a href="../gpu-node/">GPU Node</a> for full usage details including how to write GPU pod specs, time-slicing, offline workflow, and known limitations.</p>
 <h3 id="autoscaling">autoscaling</h3>
 <p>No <abbr title="Command-Line Interface">CLI</abbr> flags. Installs <a href="https://keda.sh" target="_blank" rel="noopener">KEDA</a> (Kubernetes Event-Driven Autoscaling) for horizontally scaling workloads based on external events or triggers.</p>
 <h3 id="metrics">metrics</h3>
-<p>No <abbr title="Command-Line Interface">CLI</abbr> flags. Installs the Kubernetes <strong>metrics server</strong>, enabling <code>kubectl top nodes</code>, <code>kubectl top pods</code>, and Horizontal Pod Autoscaler (HPA) support.</p>
+<table>
+<thead>
+<tr>
+<th>Enable Flag</th>
+<th>Short</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--infra-node-selector</code></td>
+<td></td>
+<td>string</td>
+<td>(empty)</td>
+<td>Constrain the metrics-server Pod to nodes matching all label requirements</td>
+</tr>
+</tbody>
+</table>
+<p>Installs the Kubernetes <strong>metrics server</strong>, enabling <code>kubectl top nodes</code>, <code>kubectl top pods</code>, and Horizontal Pod Autoscaler (HPA) support.</p>
 <h2 id="managing-addons">Managing Addons</h2>
 <h3 id="listing-addons">Listing Addons</h3>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="go">k2s addons ls</span>
@@ -4576,7 +4735,7 @@ see <a href="#omitting-images-during-import">Omitting Images During Import</a>.<
 <a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="go">k2s addons enable ingress nginx</span>
 <a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
 <a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="gp"># </span>Enable<span class="w"> </span>with<span class="w"> </span>flags
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="go">k2s addons enable dashboard --ingress</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="go">k2s addons enable dashboard --ingress nginx</span>
 </code></pre></div>
 <h3 id="disabling-an-addon">Disabling an Addon</h3>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="go">k2s addons disable dashboard</span>
@@ -4873,14 +5032,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

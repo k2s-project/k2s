@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -3266,7 +3301,7 @@ SPDX-License-Identifier: Apache-2.0
 <p>Supported upgrade path:
 - Standard path: upgrade only from <code>MINOR-1</code> to the next <code>MINOR</code> within the same <code>MAJOR</code> (e.g. <code>1.4.x</code> → <code>1.5.y</code>).
 - Skipping multiple minor versions: perform sequential upgrades through each intermediate minor release.
-- Using <code>--force</code> (or <code>-f</code> if supported): attempts a direct upgrade between any two versions, but only a subset of combinations are continuously tested.</p>
+- Using <code>--force</code> (or <code>-f</code>): attempts a direct upgrade between any two versions, but only a subset of combinations are continuously tested.</p>
 <p>Recommendation: If the currently installed version is several minor releases behind, back up persistent data (application volumes, etc.) before proceeding or use a staging environment to validate.</p>
 <p>Upgrade support is available starting from <em>K2s</em> <code>v1.1.0</code>.</p>
 <figure>
@@ -3306,6 +3341,18 @@ SPDX-License-Identifier: Apache-2.0
 <tr>
 <td><code>-p &lt;http-proxy&gt;</code></td>
 <td>Use the specified <abbr title="Hypertext Transfer Protocol">HTTP</abbr> proxy for any required network access during the upgrade.</td>
+</tr>
+<tr>
+<td><code>-s</code></td>
+<td>Skip takeover of Kubernetes resources (<code>--skip-resources</code>).</td>
+</tr>
+<tr>
+<td><code>-i</code></td>
+<td>Skip takeover of container images (<code>--skip-images</code>).</td>
+</tr>
+<tr>
+<td><code>-b &lt;dir&gt;</code></td>
+<td>Backup directory (<code>--backup-dir</code>).</td>
 </tr>
 <tr>
 <td><code>--force</code></td>
@@ -3348,12 +3395,14 @@ SPDX-License-Identifier: Apache-2.0
 <p>Internally the following high‑level steps are performed:
 1. Export all existing workloads (cluster‑scoped resources and namespaced resources).
 2. Capture the list of currently enabled addons.
-3. Uninstall the existing cluster components.
-4. Install the new version from the extracted package.
-5. Import previously exported workloads.
-6. Re-enable previously enabled addons.
-7. Verify workload health (basic readiness checks).
-8. Final cluster availability validation.</p>
+3. Back up the data of all persistent volumes. Only <code>local</code> and <code>hostPath</code> volumes can be backed up. If the persistent volumes cannot be listed, a volume has another type (for example <code>nfs</code> or <code>csi</code>), or any volume cannot be backed up, the upgrade stops before the existing cluster is uninstalled and logs the names and types of the affected volumes.
+4. Uninstall the existing cluster components.
+5. Install the new version from the extracted package.
+6. Restore the persistent volume data and import previously exported workloads.
+7. Re-enable previously enabled addons.
+8. Verify workload health (basic readiness checks).
+9. Final cluster availability validation.</p>
+<p>The backup directory is deleted only after a successful upgrade in which everything was restored. It is kept if a persistent volume or another backed-up resource could not be restored (including a missing or empty persistent volume backup), if the upgrade was rolled back, or if the rollback failed.</p>
 <h3 id="rollback-considerations">Rollback Considerations</h3>
 <p>If the new installation fails during a full upgrade, K2s attempts to reinstall the previous version with the staged previous effective configuration. If that rollback also fails:</p>
 <ul>
@@ -3644,14 +3693,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

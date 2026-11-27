@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -495,6 +495,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -527,6 +529,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -540,6 +547,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -3047,6 +3082,7 @@ SPDX-License-Identifier: Apache-2.0
 <p>Linux host support is experimental. Some features may be incomplete or change without notice.</p>
 </div>
 <p>On a Linux host the control plane runs natively (no <abbr title="Virtual Machine">VM</abbr>). An optional Windows <abbr title="Virtual Machine">VM</abbr> is provisioned via libvirt/KVM for mixed-<abbr title="Operating System">OS</abbr> workloads. Networking uses standard Linux routing and iptables — L2Bridge, DNSProxy, VFPRules are Windows-specific components and are not used.</p>
+<p><code>k2s addons export</code> and <code>k2s addons import</code> are implemented by the Bash scripts <code>Export-Addon.sh</code> and <code>Import-Addon.sh</code> in <code>lib/scripts/linux/debian/host/addon/</code>, the counterparts of <code>addons/Export.ps1</code> and <code>addons/Import.ps1</code>; they share the OCI format helpers of <code>lib/modules/linux/cluster/addon-oci.sh</code>, and the <abbr title="Command-Line Interface">CLI</abbr> only passes the command line on. Windows hosts keep using the PowerShell scripts; on Linux-only installations they skip the Windows images on export and import, and the Windows packages on export.</p>
 <h2 id="image-commands"><em>Image Commands</em></h2>
 <p>Container image lifecycle operations (<code>build</code>, <code>clean</code>, <code>export</code>, <code>import</code>, <code>ls</code>, <code>pull</code>, <code>push</code>, <code>rm</code>, <code>tag</code>, <code>registry add</code>, <code>registry rm</code>, <code>registry ls</code>) are supported across all active hosting variants:
 - <strong>Windows host</strong>: Delegated to PowerShell automation managing the host Windows node and remote Linux <abbr title="Virtual Machine">VM</abbr>.
@@ -3148,14 +3184,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

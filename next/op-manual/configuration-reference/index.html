@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -1388,6 +1423,17 @@ You're not viewing the latest release version.
     <span class="md-ellipsis">
       
         Configuration Directories
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ssh-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SSH Key
       
     </span>
   </a>
@@ -3252,6 +3298,17 @@ You're not viewing the latest release version.
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#ssh-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SSH Key
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3651,7 +3708,7 @@ SPDX-License-Identifier: Apache-2.0
 <p>The effective snapshot is stored next to <code>setup.json</code> as <code>effective-install-config.json</code>. It contains the resolved embedded defaults, user configuration, and <abbr title="Command-Line Interface">CLI</abbr> overrides. K2s writes it atomically with restricted access, does not log its contents, and keeps it separate from <code>cfg\config.json</code>.</p>
 <hr />
 <h2 id="cluster-configuration-clusterjson">Cluster Configuration (cluster.json)</h2>
-<p>Multi-node cluster topology is stored in <code>C:\ProgramData\K2s\cluster.json</code>. This file tracks every node in the cluster.</p>
+<p>Multi-node cluster topology is stored in <code>cluster.json</code> in the K2s configuration directory: <code>C:\ProgramData\K2s\cluster.json</code> on a Windows host, <code>/var/lib/k2s/cluster.json</code> on a Linux host <em>(experimental)</em>. This file tracks the nodes added with <code>k2s node add</code>.</p>
 <h3 id="node-properties">Node Properties</h3>
 <table>
 <thead>
@@ -3715,9 +3772,10 @@ SPDX-License-Identifier: Apache-2.0
 </table>
 <p><strong>Node types:</strong></p>
 <ul>
-<li><code>HOST</code> — the local Windows host machine acting as a worker node</li>
-<li><code>VM-EXISTING</code> — a pre-existing <abbr title="Virtual Machine">VM</abbr> or bare-metal machine joined to the cluster</li>
+<li><code>HOST</code> — a physical machine or a <abbr title="Virtual Machine">VM</abbr> outside of K2s (bare-metal target), reached over <abbr title="Secure Shell">SSH</abbr></li>
+<li><code>VM-EXISTING</code> — an existing Hyper-V <abbr title="Virtual Machine">VM</abbr> on the Windows host, attached to KubeSwitch (Windows host only)</li>
 </ul>
+<p>On a Linux host, added nodes are always of type <code>HOST</code>, role <code>worker</code> and <abbr title="Operating System">OS</abbr> <code>linux</code>.</p>
 <p>Use <code>k2s node add</code> / <code>k2s node remove</code> to manage nodes rather than editing this file directly.</p>
 <hr />
 <h2 id="network-configuration-configjson">Network Configuration (config.json)</h2>
@@ -3930,6 +3988,35 @@ SPDX-License-Identifier: Apache-2.0
 </tr>
 </tbody>
 </table>
+<h3 id="ssh-key"><abbr title="Secure Shell">SSH</abbr> Key</h3>
+<p>The K2s <abbr title="Secure Shell">SSH</abbr> key pair is used to access the control plane and additional nodes. It is stored in the sub directory <code>sshKey.subDir</code> of <code>configDir.ssh</code> (default <code>~/.ssh/k2s</code>), so the key always follows the configured <abbr title="Secure Shell">SSH</abbr> directory. The file names are read from this section on all host platforms.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sshKey.subDir</code></td>
+<td><code>k2s</code></td>
+<td>Sub directory of <code>configDir.ssh</code> that contains the K2s <abbr title="Secure Shell">SSH</abbr> key pair; <code>~</code> in <code>configDir.ssh</code> is replaced by the home directory of the user running <em>K2s</em> (<code>/root</code> when using <code>sudo</code> on a Linux host)</td>
+</tr>
+<tr>
+<td><code>sshKey.fileName.windows</code></td>
+<td><code>id_rsa</code></td>
+<td>Private key file name on <em>Windows</em> hosts (RSA); the public key has the suffix <code>.pub</code></td>
+</tr>
+<tr>
+<td><code>sshKey.fileName.linux</code></td>
+<td><code>id_ed25519</code></td>
+<td>Private key file name on <em>Linux</em> hosts (ed25519); the public key has the suffix <code>.pub</code></td>
+</tr>
+</tbody>
+</table>
+<p>The key pair is created during <code>k2s install</code> and deleted by <code>k2s uninstall</code>.</p>
 <hr />
 <h2 id="containerd-configuration">Containerd Configuration</h2>
 <p>The containerd template at <code>cfg\containerd\config.toml.template</code> is processed during installation with placeholder substitution:</p>
@@ -4243,14 +4330,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

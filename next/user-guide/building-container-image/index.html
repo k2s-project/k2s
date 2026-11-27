@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -1037,10 +1072,10 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
-  <a href="#k2s-build-internals" class="md-nav__link">
+  <a href="#k2s-image-build-internals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        k2s build Internals
+        k2s image build Internals
       
     </span>
   </a>
@@ -2997,10 +3032,10 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
-  <a href="#k2s-build-internals" class="md-nav__link">
+  <a href="#k2s-image-build-internals" class="md-nav__link">
     <span class="md-ellipsis">
       
-        k2s build Internals
+        k2s image build Internals
       
     </span>
   </a>
@@ -3178,9 +3213,9 @@ SPDX-License-Identifier: Apache-2.0
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="w">      </span><span class="nt">nodeSelector</span><span class="p">:</span>
 <a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">        </span><span class="nt">kubernetes.io/os</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">linux</span>
 </code></pre></div></p>
-<h2 id="k2s-build-internals"><code>k2s build</code> Internals</h2>
-<p>Under the hood of <code>k2s build</code> is the <em>PowerShell</em> script <a href="https://github.com/k2s-project/k2s/blob/main/lib/scripts/windows/host/image/Build-Image.ps1" target="_blank" rel="noopener">Build-Image.ps1</a> (and its batch-wrapper, both part of the <em>K2s</em> setup) to automate the container build. A container image will be created in your local repository.</p>
-<p>In general, <code>k2s build</code> supports <em>Linux</em> (default) as well as <em>Windows</em> containers.
+<h2 id="k2s-image-build-internals"><code>k2s image build</code> Internals</h2>
+<p>Under the hood of <code>k2s image build</code> is the <em>PowerShell</em> script <a href="https://github.com/k2s-project/k2s/blob/main/lib/scripts/windows/host/image/Build-Image.ps1" target="_blank" rel="noopener">Build-Image.ps1</a> (and its batch-wrapper, both part of the <em>K2s</em> setup) to automate the container build. A container image will be created in your local repository.</p>
+<p>In general, <code>k2s image build</code> supports <em>Linux</em> (default) as well as <em>Windows</em> containers.
 There are also two types of a <em>Dockerfile</em> supported:</p>
 <ul>
 <li><code>Dockerfile</code> - The entire build chain is executed as part of the image build process resulting in a container image.</li>
@@ -3265,14 +3300,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

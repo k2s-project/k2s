@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -1893,10 +1928,10 @@ You're not viewing the latest release version.
 </li>
         
           <li class="md-nav__item">
-  <a href="#strict-restore-fail-on-any-conflict" class="md-nav__link">
+  <a href="#strict-restore-fail-on-any-error" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Strict Restore (Fail on Any Conflict)
+        Strict Restore (Fail on Any Error)
       
     </span>
   </a>
@@ -3851,10 +3886,10 @@ You're not viewing the latest release version.
 </li>
         
           <li class="md-nav__item">
-  <a href="#strict-restore-fail-on-any-conflict" class="md-nav__link">
+  <a href="#strict-restore-fail-on-any-error" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Strict Restore (Fail on Any Conflict)
+        Strict Restore (Fail on Any Error)
       
     </span>
   </a>
@@ -4465,21 +4500,27 @@ SPDX-License-Identifier: Apache-2.0
 <td>Yes</td>
 </tr>
 <tr>
-<td><code>--error-on-conflict</code></td>
+<td><code>--error-on-failure</code></td>
 <td><code>-e</code></td>
-<td>Fail if resource conflicts occur (default: warnings only)</td>
+<td>Fail if errors occur while restoring resources (default: warnings only)</td>
 <td>No</td>
 </tr>
 <tr>
-<td><code>--output-style</code></td>
+<td><code>--additional-hooks-dir</code></td>
+<td></td>
+<td>Directory with additional custom hook scripts</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>--output</code></td>
 <td><code>-o</code></td>
-<td>Output style (standard, verbose, structured)</td>
+<td>Show command output in terminal</td>
 <td>No</td>
 </tr>
 <tr>
-<td><code>--show-logs</code></td>
+<td><code>--verbosity</code></td>
 <td><code>-v</code></td>
-<td>Show detailed logs during restore</td>
+<td>Log level verbosity (<code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>)</td>
 <td>No</td>
 </tr>
 <tr>
@@ -4494,11 +4535,11 @@ SPDX-License-Identifier: Apache-2.0
 <h4 id="standard-restore">Standard Restore</h4>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="go">k2s system restore -f c:\backups\k2s-backup.zip</span>
 </code></pre></div>
-<h4 id="strict-restore-fail-on-any-conflict">Strict Restore (Fail on Any Conflict)</h4>
+<h4 id="strict-restore-fail-on-any-error">Strict Restore (Fail on Any Error)</h4>
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="go">k2s system restore -f c:\backups\k2s-backup.zip -e</span>
 </code></pre></div>
 <h4 id="verbose-restore-with-detailed-logs">Verbose Restore with Detailed Logs</h4>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">k2s system restore -f c:\backups\k2s-backup.zip -o -v</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="go">k2s system restore -f c:\backups\k2s-backup.zip -o -v debug</span>
 </code></pre></div>
 <h2 id="restore-behavior">Restore Behavior</h2>
 <h3 id="resource-conflicts">Resource Conflicts</h3>
@@ -4566,7 +4607,7 @@ SPDX-License-Identifier: Apache-2.0
 <h2 id="integration-with-system-upgrade">Integration with System Upgrade</h2>
 <p>The <code>k2s system upgrade</code> command automatically integrates backup/restore:</p>
 <h3 id="upgrade-workflow">Upgrade Workflow</h3>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="go">k2s system upgrade -v &lt;new-version&gt;</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="go">k2s system upgrade</span>
 </code></pre></div>
 <p><strong>Internal Sequence</strong>:</p>
 <ol>
@@ -4578,10 +4619,10 @@ SPDX-License-Identifier: Apache-2.0
 <li><strong>Post-upgrade validation</strong>: Verify cluster health</li>
 </ol>
 <h3 id="upgrade-with-custom-backup-options">Upgrade with Custom Backup Options</h3>
-<p>The upgrade command supports backup-related flags:</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="go">k2s system upgrade -v 1.7.0 --skip-images --skip-pvs</span>
+<p>The upgrade command supports flags that control what is taken over from the old cluster:</p>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="go">k2s system upgrade --skip-images --skip-resources</span>
 </code></pre></div>
-<p>These flags are passed to the internal <code>k2s system backup</code> call.</p>
+<p><code>--skip-images</code> (<code>-i</code>) skips the takeover of container images and <code>--skip-resources</code> (<code>-s</code>) skips the takeover of Kubernetes resources.</p>
 <h2 id="error-handling">Error Handling</h2>
 <h3 id="backup-errors">Backup Errors</h3>
 <p>The backup process implements strict error handling:</p>
@@ -4755,14 +4796,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

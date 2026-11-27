@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -2711,6 +2746,17 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
+  <a href="#running-health-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running Health Checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#disruption-in-networking" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2925,6 +2971,17 @@ You're not viewing the latest release version.
 </li>
       
         <li class="md-nav__item">
+  <a href="#running-health-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running Health Checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#disruption-in-networking" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3064,6 +3121,43 @@ SPDX-License-Identifier: Apache-2.0
 <p>To inspect the full <em>K2s</em> system status, run:
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="go">k2s status -o wide</span>
 </code></pre></div></p>
+<h2 id="running-health-checks">Running Health Checks</h2>
+<p>To check the host and the cluster for known causes of problems, run:
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">k2s system check</span>
+</code></pre></div></p>
+<p>Each check prints <code>pass</code>, <code>warn</code>, <code>fail</code> or <code>skip</code> (when it does not apply to the setup) together with a hint on how to fix the problem. The command does not change anything on the system and exits with a non-zero exit code if at least one check fails, so it can also be used in scripts. Use <code>k2s system check -o json</code> for machine-readable output.</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Host</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>host-disk-space</code></td>
+<td><em>Windows</em>, <em>Linux</em></td>
+<td>Fails below 10 GiB and warns below 20 GiB of free space on the drives used by <em>K2s</em> (see <a href="../known-issues/#disk-pressure">Disk Pressure</a>)</td>
+</tr>
+<tr>
+<td><code>apipa-address</code></td>
+<td><em>Windows</em></td>
+<td>Warns if an active network adapter has an <abbr title="Automatic Private IP Addressing">APIPA</abbr> address (<code>169.254.x.x</code>) (see <a href="../known-issues/#microsoft-apipa-link-local-address">Microsoft <abbr title="Automatic Private IP Addressing">APIPA</abbr> / Link-Local Address</a>); skipped for <em>Linux</em>-only and build-only setups</td>
+</tr>
+<tr>
+<td><code>hyperv-vmms</code></td>
+<td><em>Windows</em></td>
+<td>Fails if the <em>Hyper-V</em> Virtual Machine Management service is not running; skipped for <em><abbr title="Windows Subsystem for Linux">WSL</abbr></em> setups</td>
+</tr>
+<tr>
+<td><code>cluster-certificates</code></td>
+<td><em>Windows</em>, <em>Linux</em></td>
+<td>Fails if the cluster <abbr title="Certificate Authority">CA</abbr>, the client certificate in the kubeconfig or the <abbr title="Application Programming Interface">API</abbr> server certificate has expired and warns if one expires within 30 days (renew them with <a href="../../user-guide/k2s-cli/#system-certificate-renew"><code>k2s system certificate renew --force</code></a>); skipped for build-only setups</td>
+</tr>
+</tbody>
+</table>
+<p>The <abbr title="Application Programming Interface">API</abbr> server certificate can only be checked while the cluster is running.</p>
 <h2 id="disruption-in-networking">Disruption in networking</h2>
 <p>When there is no internet access on the host machine or when container images cannot be pulled, it is recommended to restart the cluster networking in the following scenarios:</p>
 <ul>
@@ -3072,15 +3166,15 @@ SPDX-License-Identifier: Apache-2.0
 <li>After booting the host machine from hibernation, or following a reboot or shutdown.</li>
 <li>The VPN on the host machine is turned on or off (e.g., Zscaler).</li>
 </ul>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="go">k2s stop</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="go">k2s start</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="go">k2s stop</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="go">k2s start</span>
 </code></pre></div>
 <h2 id="log-files">Log Files</h2>
 <p>To analyze the log files, browse the directory <code>&lt;install-drive&gt;\var\log</code>. The main log file is <code>k2s.log</code>.</p>
 <p>The log root is configurable; see <a href="../../op-manual/log-folder/">Configuring the K2s Log Folder</a> for how to relocate it.</p>
 <h2 id="dumping-k2s-debug-information">Dumping <em>K2s</em> Debug Information</h2>
 <p>To dump <em>K2s</em> system information, run:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="go">k2s system dump</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="go">k2s system dump</span>
 </code></pre></div></p>
 <p>The dump collects logs, configuration, and cluster state into a zip file at <code>C:\var\log\k2s-dump-&lt;hostname&gt;-&lt;datetime&gt;.zip</code>.</p>
 <h2 id="network-diagnostics-dump">Network Diagnostics Dump</h2>
@@ -3089,14 +3183,14 @@ SPDX-License-Identifier: Apache-2.0
 <p>For deep network troubleshooting, capture packet traces on the Windows host:</p>
 <ol>
 <li>Navigate to the debug directory:
-   <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="go">cd &lt;installation-folder&gt;\smallsetup\debug</span>
+   <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="go">cd &lt;installation-folder&gt;\smallsetup\debug</span>
 </code></pre></div></li>
 <li>Start capturing:
-   <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="go">.\startpacketcapture.cmd</span>
+   <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="go">.\startpacketcapture.cmd</span>
 </code></pre></div></li>
 <li>Reproduce the issue.</li>
 <li>Stop capturing:
-   <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="go">.\stoppacketcapture.cmd</span>
+   <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="go">.\stoppacketcapture.cmd</span>
 </code></pre></div></li>
 <li>Analyse the trace file at <code>C:\server.etl</code> using <a href="https://www.microsoft.com/en-us/download/details.aspx?id=4865" target="_blank" rel="noopener">Microsoft Network Monitor</a> or <a href="https://www.wireshark.org" target="_blank" rel="noopener">Wireshark</a> (with an ETL conversion tool).</li>
 </ol>
@@ -3130,10 +3224,10 @@ SPDX-License-Identifier: Apache-2.0
 </table>
 <h3 id="usage">Usage</h3>
 <p>Run from an elevated PowerShell prompt:</p>
-<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">cd </span><span class="p">&lt;</span><span class="n">installation-folder</span><span class="p">&gt;\</span><span class="n">smallsetup</span><span class="p">\</span><span class="n">helpers</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="p">.\</span><span class="n">DebugFlannel</span><span class="p">.</span><span class="n">ps1</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="p">.\</span><span class="n">DebugKubelet</span><span class="p">.</span><span class="n">ps1</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="p">.\</span><span class="n">DebugProxy</span><span class="p">.</span><span class="n">ps1</span>
+<div class="highlight"><span class="filename">PowerShell</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">cd </span><span class="p">&lt;</span><span class="n">installation-folder</span><span class="p">&gt;\</span><span class="n">smallsetup</span><span class="p">\</span><span class="n">helpers</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="p">.\</span><span class="n">DebugFlannel</span><span class="p">.</span><span class="n">ps1</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="p">.\</span><span class="n">DebugKubelet</span><span class="p">.</span><span class="n">ps1</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="p">.\</span><span class="n">DebugProxy</span><span class="p">.</span><span class="n">ps1</span>
 </code></pre></div>
 <h2 id="network-repair-scripts">Network Repair Scripts</h2>
 <p>When networking issues persist after a restart, these helper scripts can restore connectivity:</p>
@@ -3168,15 +3262,15 @@ SPDX-License-Identifier: Apache-2.0
 <p><code>ResetSystem.ps1</code> is destructive — it resets the entire <em>K2s</em> system state. Use it only as a last resort.</p>
 </div>
 <p>Alternatively, use the <abbr title="Command-Line Interface">CLI</abbr> for a network reset (requires a reboot):</p>
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="go">k2s system reset network</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="go">k2s system reset network</span>
 </code></pre></div>
 <p>On Linux hosts, <code>k2s system reset network</code> performs the host-network cleanup path. It leaves the K2s runtime configuration in place; use <code>k2s system reset</code> when you also need to remove the installed Linux-only cluster state and persisted K2s install state.</p>
 <h2 id="listing-all-pvcs">Listing ALL PVCs</h2>
 <p>Get the list of all mounted volumes, their size and their namespace:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="go">kg pv</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="go">kg pv</span>
 </code></pre></div></p>
 <p>Get the list of all mounted volume claims and their current usage:
-<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="go">kg pvc -A</span>
+<div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="go">kg pvc -A</span>
 </code></pre></div></p>
 <!--
 SPDX-FileCopyrightText: © 2026 The K2s Authors
@@ -3257,14 +3351,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

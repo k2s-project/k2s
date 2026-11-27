@@ -26,7 +26,7 @@ SPDX-License-Identifier: Apache-2.0
       
       
       <link rel="icon" href="../../assets/logo.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.2">
     
     
       
@@ -493,6 +493,8 @@ You're not viewing the latest release version.
           
         
       
+        
+      
     
     
     
@@ -525,6 +527,11 @@ You're not viewing the latest release version.
 
             </a>
             
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
           </div>
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
@@ -538,6 +545,34 @@ You're not viewing the latest release version.
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/linux-host/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start (Linux Host)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
           </ul>
@@ -3242,7 +3277,7 @@ Please review the error message for all detected <code>k2s.exe</code> locations 
 <p>If you acquired <em>K2s</em> via <a href="../getting-k2s/#option-1-cloning-git-repository">Cloning the <em>Git</em> repository</a>, you might want to checkout a specific version first, e.g.:
 <div class="highlight"><span class="filename">Bash Session</span><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="go">git checkout tags/v1.4.0</span>
 </code></pre></div>
-Also make sure you have built the Go binaries (<code>.\bin\bgow</code> on <em>Windows</em>, <code>./bin/bgol</code> on <em>Linux</em>) as described in the <a href="../getting-k2s/#option-1-cloning-git-repository">cloning instructions</a>.</p>
+Also make sure you have built the Go binaries (<code>.\bin\bgow</code> on <em>Windows</em>, <code>bash ./build.sh</code> on <em>Linux</em>) as described in the <a href="../getting-k2s/#option-1-cloning-git-repository">cloning instructions</a>.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -3418,6 +3453,12 @@ Windows worker.</p>
 <a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="gp"># </span>Install<span class="w"> </span>the<span class="w"> </span>native<span class="w"> </span>control<span class="w"> </span>plane<span class="w"> </span>and<span class="w"> </span>a<span class="w"> </span>managed<span class="w"> </span>Windows<span class="w"> </span>worker<span class="w"> </span>from<span class="w"> </span>a<span class="w"> </span>prepared<span class="w"> </span>QCOW2<span class="w"> </span>image.
 <a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="go">sudo ./k2s install --worker-cpus 4 --worker-memory 8GB --worker-disk 64GB --windows-qcow2-path /path/to/WindowsWorker-Base.qcow2</span>
 </code></pre></div>
+<p>The installer requires <code>ssh</code> and <code>ssh-keygen</code> (Debian package <code>openssh-client</code>) and fails
+the prerequisite check before changing the host if it is missing. It creates the
+K2s <abbr title="Secure Shell">SSH</abbr> key pair <code>~/.ssh/k2s/id_ed25519</code> (<code>.pub</code>) of the user running <code>k2s</code>
+(<code>/root/.ssh/k2s</code> when using <code>sudo</code>) and removes it again on uninstall. The
+public key has to be authorized on machines that are added later as nodes, see
+<a href="../extending-k2s-cluster/">Extending a K2s Cluster</a>.</p>
 <p>The equivalent platform-first lifecycle entry point is
 <code>lib/scripts/linux/debian/linuxonly/Install.sh</code>. It validates root access,
 records the dispatch in <code>/var/log/k2s.log</code>, and invokes the same <code>k2s</code> <abbr title="Command-Line Interface">CLI</abbr>
@@ -3467,6 +3508,9 @@ configuration, the corresponding resource fields belong to the <code>worker</cod
 entry and <code>windowsQCOW2Path</code> supplies the prepared image location.</p>
 <p>The administrator invoking <code>sudo</code> receives the generated kubeconfig at
 <code>~/.kube/config</code> after a successful installation.</p>
+<p>Additional Debian 13 Linux workers (amd64 or arm64) can be added to the installed cluster with
+<code>sudo k2s node add</code>, online or from an offline node package. See
+<a href="../extending-k2s-cluster/">Extending a K2s Cluster</a> for the node and network requirements.</p>
 <h2 id="wsl-2-vs-hyper-v"><abbr title="Windows Subsystem for Linux">WSL</abbr> 2 vs. Hyper-V</h2>
 <p>The Linux control-plane <abbr title="Virtual Machine">VM</abbr> can be hosted in either Hyper-V (default) or <abbr title="Windows Subsystem for Linux">WSL</abbr> 2. The table below summarises the trade-offs:</p>
 <table>
@@ -3636,14 +3680,9 @@ SPDX-License-Identifier: Apache-2.0
       <div class="md-copyright">
   
     <div class="md-copyright__highlight">
-      Copyright k2s a Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.
+      <strong>Copyright K2s Series of LF Projects, LLC<br><br> For website terms of use, trademark policy and other project policies please see <a href="https://lfprojects.org/policies/">lfprojects.org/policies/</a>.</strong>
     </div>
   
-  
-    Made with
-    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
-      Material for MkDocs
-    </a>
   
 </div>
       

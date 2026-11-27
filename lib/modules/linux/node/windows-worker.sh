@@ -206,10 +206,11 @@ k2s_windows_worker_import_qcow2() {
 k2s_windows_worker_detect_boot_mode() {
   local disk="$1" partition_table boot_sector
   boot_sector=$(mktemp) || return 1
-  # A GPT header resides at LBA 1, while the MBR is at LBA 0. Copying 2 MiB
-  # gives sfdisk both headers without attaching an NBD device to this nested VM.
+  # Copying 2 MiB gives sfdisk the MBR and GPT header without attaching an NBD device.
+  # sfdisk rejects the GPT on this truncated copy and reports the protective MBR
+  # (type ee) as dos, so treat a protective MBR as GPT.
   qemu-img dd -f qcow2 "if=$disk" "of=$boot_sector" bs=1M count=2 >/dev/null 2>&1 || { rm -f "$boot_sector"; return 1; }
-  partition_table=$(sfdisk --json "$boot_sector" 2>/dev/null | jq -r '.partitiontable.label // empty')
+  partition_table=$(sfdisk --json "$boot_sector" 2>/dev/null | jq -r '.partitiontable | if .label == "dos" and any(.partitions[]?; .type == "ee") then "gpt" else .label // empty end')
   rm -f "$boot_sector"
   case "$partition_table" in
     dos)
@@ -305,9 +306,11 @@ k2s_windows_worker_wait_for_ssh() {
 # an hour of skew), which fails kubeadm join's TLS validation ("certificate ... is not yet
 # valid"). Rather than depend on QEMU/libvirt clock plumbing, set the guest's time directly
 # over the SSH channel we already have, using the Linux host's own (NTP-synced) clock as the
-# source of truth.
+# source of truth. The guest lags by at most the SSH round trip (mostly powershell.exe startup,
+# several seconds on a fresh guest). Up to 30 seconds are harmless: the Kubernetes certificate
+# signer backdates NotBefore by 5 minutes.
 k2s_windows_worker_sync_clock() {
-  local now_utc started_at finished_at elapsed_ms deadline=$((SECONDS + 300))
+  local now_utc started_at finished_at elapsed_ms max_lag_ms=30000 deadline=$((SECONDS + 300))
   # A single unprotected SSH call here is exactly as exposed to the worker's occasional
   # multi-minute connectivity blips (see k2s_windows_worker_wait_for_ssh) as any other; retry
   # instead of letting one transient hiccup abort the whole install.
@@ -317,11 +320,11 @@ k2s_windows_worker_sync_clock() {
     if k2s_windows_worker_ssh "powershell.exe -NoProfile -Command \"Set-TimeZone -Id 'UTC'; Set-Date -Date ([DateTimeOffset]::FromUnixTimeMilliseconds($started_at).UtcDateTime)\""; then
       finished_at=$(date -u +%s%3N) || return 1
       elapsed_ms=$((finished_at - started_at))
-      if (( elapsed_ms <= 5000 )); then
+      if (( elapsed_ms <= max_lag_ms )); then
         k2s_log INFO "Set the Windows worker's clock to UTC ($now_utc; SSH round trip ${elapsed_ms}ms)."
         return 0
       fi
-      k2s_log WARN "Windows worker clock sync took ${elapsed_ms}ms, exceeding the 5000ms skew bound; retrying with a fresh timestamp."
+      k2s_log WARN "Windows worker clock sync took ${elapsed_ms}ms, exceeding the ${max_lag_ms}ms skew bound; retrying with a fresh timestamp."
     else
       k2s_log WARN 'Setting the Windows worker clock failed; retrying.'
     fi
@@ -367,6 +370,14 @@ k2s_windows_worker_copy_runtime() {
   rm -f "$archive"
   (( result == 0 )) || return "$result"
   k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "New-Item -ItemType Directory -Path C:\k2s -Force | Out-Null; tar.exe -xf C:\ProgramData\K2s\k2s-runtime.tar -C C:\k2s; Remove-Item C:\ProgramData\K2s\k2s-runtime.tar -Force"'
+}
+
+# Mirrors the ZScaler import for Linux VMs (download-k8s-packages.sh); without it the
+# worker's Schannel curl rejects downloads that ZScaler intercepts.
+k2s_windows_worker_trust_zscaler_root() {
+  [[ "${K2S_DISABLE_ZSCALER_CERT_IMPORT:-false}" == true ]] && return 0
+  k2s_log INFO 'Adding the ZScaler Root CA certificate to the Windows worker trust store.'
+  k2s_windows_worker_ssh 'powershell.exe -NoProfile -Command "Import-Certificate -FilePath C:\k2s\lib\modules\windows\node\k2s.node.module\linuxnode\setup\certificate\ZScalerRootCA.crt -CertStoreLocation Cert:\LocalMachine\Root | Out-Null"'
 }
 
 # kubectl on the worker is invoked without --kubeconfig during the join. On a Windows
@@ -520,10 +531,17 @@ if (!(Test-Path \$effectiveInstallConfigPath)) {
 }
 Add-WindowsWorkerNodeOnWindowsHost @workerNodeParams
 
-# Mirror lib/scripts/windows/worker/windows-host/Install.ps1.
+# Mirror lib/scripts/control-plane/Install.ps1: pods use the cbr0 next hop as their first
+# nameserver, which Start-WindowsWorkerNodeOnWindowsHost adds to this dnsproxy. The host's
+# dnsproxy on the gateway already forwards cluster zones to CoreDNS.
+Invoke-DeployDnsProxyArtifacts (Get-WindowsArtifactsDirectory)
+Install-WinDnsProxy -ListenIpAddresses @('$worker_ip') -UpstreamIpAddressForCluster '$gateway' -UpstreamIpAddressesForNonCluster @('$gateway')
+
+# Mirror lib/scripts/windows/worker/windows-host/Install.ps1 for the local containerd only;
+# the host configures its own CRI-O mirrors.
 Write-Log 'Adding mirror registries'
 foreach (\$registry in (Get-MirrorRegistries)) {
-    Set-Registry -Name \$registry.registry -Https -SkipVerify -Mirror \$registry.mirror -Server \$registry.server
+    Set-ContainerdRegistry -Name \$registry.registry -Https -SkipVerify -Mirror \$registry.mirror -Server \$registry.server
 }
     'OK' | Set-Content -Path '$result_file' -Encoding ascii
 }
@@ -617,6 +635,11 @@ Set-EnvVars
 # running this script, while the script itself keeps going. Record the outcome so the
 # host can pick it up after reconnecting instead of depending on the SSH exit status.
 try {
+    # Mirror lib/scripts/control-plane/Start.ps1. Shutting the VM down skips
+    # Stop-WindowsWorkerNodeOnWindowsHost, so drop the cbr0 listen address it would remove;
+    # it cannot be bound until the l2 bridge exists and is added back afterwards.
+    Remove-WinDnsProxyListenAddress -IpAddress (Get-ConfiguredClusterCIDRNextHop -PodSubnetworkNumber '1')
+    Start-WinDnsProxy
     Start-WindowsWorkerNodeOnWindowsHost @workerNodeStartParams
     'OK' | Set-Content -Path '$result_file' -Encoding ascii
 }
@@ -720,6 +743,7 @@ k2s_windows_worker_provision() {
   k2s_windows_worker_wait_for_ssh || return $?
   k2s_windows_worker_sync_clock || return $?
   k2s_windows_worker_copy_runtime || return $?
+  k2s_windows_worker_trust_zscaler_root || return $?
   k2s_windows_worker_copy_kubeconfig || return $?
   k2s_log INFO 'Joining the Windows worker to the cluster. Output below comes from the worker.'
   k2s_windows_worker_join_cluster || { k2s_log ERROR 'Joining the Windows worker failed.'; k2s_windows_worker_collect_logs; return 1; }
@@ -738,7 +762,10 @@ k2s_windows_worker_start() {
 }
 k2s_windows_worker_stop() {
   local deadline=$((SECONDS + 120)) state
-  virsh domstate "$K2S_WINDOWS_WORKER_NAME" >/dev/null 2>&1 || return 0
+  state=$(virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null) || return 0
+  [[ "$state" == 'shut off' ]] && return 0
+  # Windows ignores the ACPI power button (virsh shutdown) without a logged-on user, so ask it over SSH first.
+  k2s_windows_worker_ssh 'shutdown.exe /s /t 0 /f' >/dev/null 2>&1 || true
   virsh shutdown "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true
   while :; do
     state=$(virsh domstate "$K2S_WINDOWS_WORKER_NAME" 2>/dev/null || true)

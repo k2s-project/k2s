@@ -78,9 +78,53 @@ k2s_crio_remove_registry() {
   fi
 }
 
+k2s_crictl() { crictl --runtime-endpoint unix:///var/run/crio/crio.sock "$@"; }
+
+# CRI-O runs every container under its own conmon outside crio.service, so stopping the
+# service leaves all pods running. Stop them through CRI-O first.
+# Self-contained (no logging) so that it can also run on remote nodes via declare -f.
+k2s_crio_stop_pods() {
+  local pod_id
+  command -v crictl >/dev/null 2>&1 && systemctl is-active --quiet crio || return 0
+  for pod_id in $(k2s_crictl pods -q 2>/dev/null); do
+    k2s_crictl stopp "$pod_id" >/dev/null 2>&1 || true
+  done
+}
+
 # Reloads systemd and restarts the CRI-O daemon
 k2s_crio_reload() {
   k2s_log INFO "Reloading systemd and restarting crio service"
   systemctl daemon-reload || return 1
   systemctl restart crio || return 1
+}
+
+# Lists the configured mirrors as "<registry> <mirror>" lines.
+k2s_crio_mirror_registries() {
+  jq -r '.smallsetup.mirrorRegistries // [] | .[] | "\(.registry) \(.mirror)"' "$K2S_INSTALL_DIR/cfg/config.json"
+}
+
+# Same drop-in as AddRegistryMirrors writes for the control-plane VM on a Windows host.
+k2s_crio_mirror_dropin() {
+  printf '[[registry]]\nlocation="%s"\ninsecure=true\n\n[[registry.mirror]]\nlocation="%s"\ninsecure=true\n' "$1" "$2"
+}
+
+k2s_crio_configure_mirror_registries() {
+  local mirrors registry mirror
+  mirrors=$(k2s_crio_mirror_registries) || return 1
+  [[ -n $mirrors ]] || return 0
+  mkdir -p "$K2S_CONTAINERS_REGISTRIES_DIR" || return 1
+  while read -r registry mirror; do
+    k2s_log INFO "Configuring CRI-O registry mirror '$mirror' for '$registry'."
+    k2s_crio_mirror_dropin "$registry" "$mirror" > "$K2S_CONTAINERS_REGISTRIES_DIR/${registry//:/}.conf" || return 1
+    chmod 644 "$K2S_CONTAINERS_REGISTRIES_DIR/${registry//:/}.conf"
+  done <<< "$mirrors"
+  systemctl try-restart crio
+}
+
+k2s_crio_remove_mirror_registries() {
+  local registry
+  while read -r registry _; do
+    [[ -n $registry ]] && rm -f "$K2S_CONTAINERS_REGISTRIES_DIR/${registry//:/}.conf"
+  done < <(k2s_crio_mirror_registries)
+  return 0
 }

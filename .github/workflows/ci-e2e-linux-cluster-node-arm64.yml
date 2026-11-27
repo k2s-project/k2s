@@ -6,14 +6,20 @@
 # - Job 'arm64-node-package' builds the arm64 node package (ci-arm64-node-package-build.yml, native arm64).
 # - Job 'install-add-and-check' (ubuntu-24.04, amd64) runs two Debian 13 guests on the runner:
 #     control plane: amd64, KVM, 4 GB RAM. K2s is installed with --linux-only (same setup as ci-e2e-linux-cluster.yml).
-#     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add' joins it.
+#     worker:        arm64, QEMU TCG (no KVM), 2 GB RAM. It gets no K2s; 'k2s node add --node-package' joins it.
 #   Both guests share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24.
-# - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64, flannel and kube-proxy run on it,
-#   and an arm64 workload runs there.
+# - The join is checked: the node is Ready, carries kubernetes.io/arch=arm64 and the worker role, flannel and
+#   kube-proxy run on it, an arm64 workload runs there, and 'k2s stop/start --node' work.
+# - 'k2s node remove' removes it (cluster, cluster.json, Kubernetes packages on the worker). Then the worker is added
+#   again online (without --node-package: it downloads its packages and pulls its images itself, the runner NATs the
+#   guests to the internet) and removed once more. Offline runs first because it fails faster.
 #
 # The arm64 package is built without GPU packages: the worker has no GPU and the test does not need them.
+#
+# Why the arm64 worker is emulated: both nodes must share a network, so they run as guests on one runner, and the
+# GitHub-hosted arm64 runners offer no KVM. The amd64 runner runs the control plane with KVM and the worker under TCG.
 
-name: CI - E2E Linux Cluster with arm64 Node
+name: CI - E2E Linux Cluster with arm64 Node (offline and online)
 
 on:
   workflow_dispatch:
@@ -76,6 +82,7 @@ jobs:
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
           K2S_NIGHTLY: ${{ inputs.nightly }}
         run: |
@@ -260,7 +267,7 @@ jobs:
           echo "Node package: $(basename "$zip_path") ($(du -h "$zip_path" | cut -f1))"
           cp_vm push "$zip_path" node-package.zip
 
-      - name: Add the arm64 worker with k2s node add
+      - name: Add the arm64 worker offline from the node package
         id: add
         if: ${{ steps.kvm.outputs.available == 'true' }}
         timeout-minutes: 120
@@ -270,7 +277,7 @@ jobs:
           cp_vm exec <<EOF
           set -euo pipefail
           cd ~/k2s
-          sudo ./k2s node add --ip-addr $WK_IP --username debian --node-package /home/debian/node-package.zip
+          sudo ./k2s node add --ip-addr $WK_IP --username debian --node-package /home/debian/node-package.zip --output
           EOF
 
       - name: Check the arm64 node joined and runs workloads
@@ -306,6 +313,134 @@ jobs:
           test "$(kube get pod arm64-smoke -o jsonpath='{.spec.nodeName}')" = "$arm_node"
           kube logs arm64-smoke | grep -qx aarch64 || { echo '::error::workload did not report aarch64'; exit 1; }
           echo "arm64 workload ran on $arm_node as aarch64"
+
+          test "$(kube get node "$arm_node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
+            || { echo "::error::$arm_node is not labeled kubernetes.io/role=worker"; exit 1; }
+          sudo jq -e --arg name "$arm_node" '.nodes | any(.Name == $name and .NodeType == "HOST")' /var/lib/k2s/cluster.json >/dev/null \
+            || { echo "::error::$arm_node has no HOST entry in /var/lib/k2s/cluster.json"; exit 1; }
+          kube delete pod arm64-smoke --wait=true
+          EOF
+
+      - name: Stop and start the arm64 worker with k2s stop/start --node
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          {
+            printf 'node=%q\n' "$WK_NAME"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          sudo ./k2s stop --node "$node" --output
+          for attempt in $(seq 1 36); do
+            ready="$(kube get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$ready" != True ]; then break; fi
+            sleep 5
+          done
+          test "$ready" != True || { echo "::error::$node is still Ready 3 minutes after k2s stop --node"; exit 1; }
+          sudo ./k2s start --node "$node" --output
+          kube wait --for=condition=Ready "node/$node" --timeout=900s
+          EOF
+          } | cp_vm exec
+
+      - name: Remove the offline-added arm64 worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          {
+            printf 'node=%q\n' "$WK_NAME"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          sudo ./k2s node remove --name "$node" --output
+          if sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get node "$node" >/dev/null 2>&1; then
+            echo "::error::$node is still part of the cluster"; exit 1
+          fi
+          if sudo jq -e --arg name "$node" '.nodes // [] | any(.Name == $name)' /var/lib/k2s/cluster.json >/dev/null; then
+            echo "::error::$node is still in /var/lib/k2s/cluster.json"; exit 1
+          fi
+          EOF
+          } | cp_vm exec
+
+      - name: Check the worker is cleaned up
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          wk_vm exec <<'EOF'
+          set -euo pipefail
+          for tool in kubelet kubeadm crio; do
+            if command -v "$tool" >/dev/null; then echo "::error::$tool is still installed on the worker"; exit 1; fi
+          done
+          for file in /etc/kubernetes/kubelet.conf /etc/apt/sources.list.d/kubernetes.list /etc/apt/sources.list.d/cri-o.list; do
+            test ! -e "$file" || { echo "::error::$file is still on the worker"; exit 1; }
+          done
+          EOF
+
+      - name: Re-add the arm64 worker online
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 120
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          {
+            printf 'node=%q\nworker_ip=%q\n' "$WK_NAME" "$WK_IP"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --output
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          kube wait --for=condition=Ready "node/$node" --timeout=900s
+          test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
+            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the online add"; exit 1; }
+          kube run arm64-online-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
+            --overrides="{\"spec\":{\"nodeSelector\":{\"kubernetes.io/hostname\":\"$node\"}}}" -- sh -c 'uname -m; sleep 5'
+          kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/arm64-online-smoke --timeout=900s
+          kube logs arm64-online-smoke | grep -qx aarch64 || { echo '::error::workload did not report aarch64'; exit 1; }
+          kube delete pod arm64-online-smoke --wait=true
+          EOF
+          } | cp_vm exec
+
+      - name: Remove the online-added arm64 worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          {
+            printf 'node=%q\n' "$WK_NAME"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          sudo ./k2s node remove --name "$node" --output
+          if sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl get node "$node" >/dev/null 2>&1; then
+            echo "::error::$node is still part of the cluster"; exit 1
+          fi
+          if sudo jq -e --arg name "$node" '.nodes // [] | any(.Name == $name)' /var/lib/k2s/cluster.json >/dev/null; then
+            echo "::error::$node is still in /var/lib/k2s/cluster.json"; exit 1
+          fi
+          EOF
+          } | cp_vm exec
+
+      - name: Check the worker is cleaned up
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source .github/scripts/linux-cluster-arm64-env.sh
+          wk_vm exec <<'EOF'
+          set -euo pipefail
+          for tool in kubelet kubeadm crio; do
+            if command -v "$tool" >/dev/null; then echo "::error::$tool is still installed on the worker"; exit 1; fi
+          done
+          for file in /etc/kubernetes/kubelet.conf /etc/apt/sources.list.d/kubernetes.list /etc/apt/sources.list.d/cri-o.list; do
+            test ! -e "$file" || { echo "::error::$file is still on the worker"; exit 1; }
+          done
           EOF
 
       - name: Collect diagnostics (control plane and worker)

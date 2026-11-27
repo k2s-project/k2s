@@ -128,7 +128,7 @@ The effective snapshot is stored next to `setup.json` as `effective-install-conf
 
 ## Cluster Configuration (cluster.json)
 
-Multi-node cluster topology is stored in `C:\ProgramData\K2s\cluster.json`. This file tracks every node in the cluster.
+Multi-node cluster topology is stored in `cluster.json` in the K2s configuration directory: `C:\ProgramData\K2s\cluster.json` on a Windows host, `/var/lib/k2s/cluster.json` on a Linux host *(experimental)*. This file tracks the nodes added with `k2s node add`.
 
 ### Node Properties
 
@@ -145,8 +145,10 @@ Multi-node cluster topology is stored in `C:\ProgramData\K2s\cluster.json`. This
 
 **Node types:**
 
-- `HOST` — the local Windows host machine acting as a worker node
-- `VM-EXISTING` — a pre-existing VM or bare-metal machine joined to the cluster
+- `HOST` — a physical machine or a VM outside of K2s (bare-metal target), reached over SSH
+- `VM-EXISTING` — an existing Hyper-V VM on the Windows host, attached to KubeSwitch (Windows host only)
+
+On a Linux host, added nodes are always of type `HOST`, role `worker` and OS `linux`.
 
 Use `k2s node add` / `k2s node remove` to manage nodes rather than editing this file directly.
 

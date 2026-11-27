@@ -67,6 +67,19 @@ var _ = Describe("node", func() {
 		}, SpecTimeout(time.Second*2))
 	})
 
+	DescribeTable("prints system-stopped message and exits with non-zero",
+		func(ctx context.Context, args ...string) {
+			output, _ := suite.K2sCli().ExpectedExitCode(cli.ExitCodeFailure).Exec(ctx, args...)
+
+			Expect(output).To(SatisfyAll(
+				ContainSubstring("WARNING"),
+				ContainSubstring("system is stopped"),
+			))
+		},
+		Entry("add", Label("add"), "node", "add", "--ip-addr", "192.0.2.10", "--username", "non-existent"),
+		Entry("remove", Label("remove"), "node", "remove", "--name", "non-existent"),
+	)
+
 	Describe("connect", Label("connect"), func() {
 		It("runs into a defined timeout", func(ctx context.Context) {
 			output, _ := suite.K2sCli().ExpectedExitCode(cli.ExitCodeFailure).Exec(ctx, "node", "connect", "-i", ipAddress, "-o", "--timeout", "1s", "-u", "test")

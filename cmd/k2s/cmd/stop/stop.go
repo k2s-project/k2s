@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -18,13 +17,10 @@ import (
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/status"
 
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
-
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	cc "github.com/k2s-project/k2s/internal/core/clusterconfig"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/provider"
-	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
 
 var StopK8sCmd = &cobra.Command{
@@ -130,10 +126,7 @@ func stopNodeByName(context *common.CmdContext, flags *pflag.FlagSet, nodeName s
 		return fmt.Errorf("node %q not found in additional node configuration", nodeName)
 	}
 
-	stopNodeCmd := buildNodeStopCmd(flags, node, true)
-	slog.Debug("PS command created", "command", stopNodeCmd)
-
-	return powershell.ExecutePs(stopNodeCmd, common.NewPtermWriter())
+	return context.Providers().Node.Stop(nodeStopConfig(flags, node, true))
 }
 
 func findNodeByName(nodes []cc.Node, nodeName string) (cc.Node, bool) {
@@ -163,11 +156,7 @@ func stopAdditionalNodes(context *common.CmdContext, flags *pflag.FlagSet) error
 	}
 
 	for _, node := range clusterConfig.Nodes {
-		startNodeCmd := buildNodeStopCmd(flags, node, false)
-
-		slog.Debug("PS command created", "command", startNodeCmd)
-
-		err = powershell.ExecutePs(startNodeCmd, common.NewPtermWriter())
+		err = context.Providers().Node.Stop(nodeStopConfig(flags, node, false))
 		if err != nil {
 			slog.Warn("Failure during stop of node", "node", node.Name, "err", err)
 		}
@@ -176,38 +165,18 @@ func stopAdditionalNodes(context *common.CmdContext, flags *pflag.FlagSet) error
 	return nil
 }
 
-func buildNodeStopCmd(flags *pflag.FlagSet, nodeConfig cc.Node, singleNode bool) string {
+func nodeStopConfig(flags *pflag.FlagSet, node cc.Node, singleNode bool) provider.NodeStopConfig {
 	outputFlag, _ := strconv.ParseBool(flags.Lookup(common.OutputFlagName).Value.String())
+	noWait, _ := strconv.ParseBool(flags.Lookup("no-wait").Value.String())
 
-	additionalHooksDir := flags.Lookup(common.AdditionalHooksDirFlagName).Value.String()
-
-	roleType := string(nodeConfig.Role)
-	OsType := string(nodeConfig.OS)
-
-	cmd := utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", roleType, OsType, "bare-metal", "Stop.ps1"))
-
-	if outputFlag {
-		cmd += " -ShowLogs"
+	return provider.NodeStopConfig{
+		NodeName:           node.Name,
+		Role:               string(node.Role),
+		OS:                 string(node.OS),
+		AdditionalHooksDir: flags.Lookup(common.AdditionalHooksDirFlagName).Value.String(),
+		SingleNode:         singleNode,
+		// Waiting for NotReady only applies to a single node ('k2s stop --node').
+		WaitForNotReady: singleNode && !noWait,
+		ShowOutput:      outputFlag,
 	}
-
-	if additionalHooksDir != "" {
-		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(additionalHooksDir)
-	}
-
-	if nodeConfig.Name != "" {
-		cmd += " -NodeName " + nodeConfig.Name
-	}
-
-	// -WaitForNotReady (service stop + readiness polling) only applies when
-	// targeting a specific node via --node. Full cluster stop does not need it.
-	if singleNode {
-		cmd += " -SingleNode"
-
-		noWait, _ := strconv.ParseBool(flags.Lookup("no-wait").Value.String())
-		if !noWait {
-			cmd += " -WaitForNotReady"
-		}
-	}
-
-	return cmd
 }

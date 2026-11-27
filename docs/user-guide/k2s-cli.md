@@ -579,7 +579,7 @@ k2s system package [flags]
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--target-dir` | `-d` | **Required.** Target directory |
-| `--name` | `-n` | **Required.** Package zip file name |
+| `--name` | `-n` | **Required.** Package zip file name; must end with `.zip` |
 | `--for-offline-installation` | | Create offline package |
 | `--delta-package` | | Create a delta package |
 | `--package-version-from` | | Base full-package zip (required with `--delta-package`) |
@@ -610,7 +610,7 @@ Example for node package with GPU support:
 k2s system package --node-package --os debian13 --include-gpu --target-dir "C:\out" --name "debian13-gpu.zip"
 ```
 
-Example for an arm64 node package, run on a Linux arm64 host:
+Example for an arm64 node package, run on a Linux arm64 host (prerequisites: [Node Package on a Linux Host](../op-manual/creating-offline-package.md#node-package-on-a-linux-host)):
 
 ```console
 sudo k2s system package --node-package --os debian13 --arch arm64 --target-dir /tmp/out --name debian13-node-arm64.zip
@@ -794,7 +794,7 @@ Currently, `node` commands document and support additional Linux worker nodes on
 
 ### node add
 
-Add a node to the cluster. Currently, this is documented for Linux worker nodes.
+Add a Linux worker node to the cluster over SSH. The node's OS and CPU architecture are detected automatically; an unsupported OS or architecture prints a warning and no node is added. The lowercased hostname of the node becomes its Kubernetes node name.
 
 ```console
 k2s node add [flags]

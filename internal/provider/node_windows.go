@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/output"
 	"github.com/k2s-project/k2s/internal/providers/powershell"
 )
@@ -57,8 +58,14 @@ func newWindowsNodeProvider(cfg ProviderConfig) *windowsNodeProvider {
 }
 
 func (p *windowsNodeProvider) Add(cfg NodeAddConfig) error {
+	isLocalVM, err := config.DetectLocalVM(cfg.IpAddress, p.installDir)
+	if err != nil {
+		return fmt.Errorf("failed to determine node type: %w", err)
+	}
+
 	scriptDir := "bare-metal"
-	if cfg.IsLocalVM {
+	if isLocalVM {
+		p.stdWriter.WriteStdOut("🖥️  Detected local Hyper-V VM on KubeSwitch network — using local-VM provisioning path")
 		scriptDir = filepath.Join("hyper-v-vm", "existing-vm")
 	}
 	psCmd := utils.FormatScriptFilePath(filepath.Join(p.installDir, "lib", "scripts", "windows", "worker", "linux", scriptDir, "Add.ps1"))
@@ -92,4 +99,54 @@ func (p *windowsNodeProvider) Remove(cfg NodeRemoveConfig) error {
 	}
 
 	return powershell.ExecutePs(psCmd+params, p.stdWriter)
+}
+
+func (p *windowsNodeProvider) Start(cfg NodeStartConfig) error {
+	return powershell.ExecutePs(buildNodeStartScript(p.installDir, cfg), p.stdWriter)
+}
+
+func (p *windowsNodeProvider) Stop(cfg NodeStopConfig) error {
+	return powershell.ExecutePs(buildNodeStopScript(p.installDir, cfg), p.stdWriter)
+}
+
+func buildNodeStartScript(installDir string, cfg NodeStartConfig) string {
+	cmd := utils.FormatScriptFilePath(filepath.Join(installDir, "lib", "scripts", "windows", cfg.Role, cfg.OS, "bare-metal", "Start.ps1"))
+
+	if cfg.ShowOutput {
+		cmd += " -ShowLogs"
+	}
+	if cfg.AdditionalHooksDir != "" {
+		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
+	}
+	if cfg.IpAddress != "" {
+		cmd += " -IpAddress " + cfg.IpAddress
+	}
+	if cfg.NodeName != "" {
+		cmd += " -NodeName " + cfg.NodeName
+	}
+	if cfg.SingleNode {
+		cmd += " -SingleNode"
+	}
+	return cmd
+}
+
+func buildNodeStopScript(installDir string, cfg NodeStopConfig) string {
+	cmd := utils.FormatScriptFilePath(filepath.Join(installDir, "lib", "scripts", "windows", cfg.Role, cfg.OS, "bare-metal", "Stop.ps1"))
+
+	if cfg.ShowOutput {
+		cmd += " -ShowLogs"
+	}
+	if cfg.AdditionalHooksDir != "" {
+		cmd += " -AdditionalHooksDir " + utils.EscapeWithSingleQuotes(cfg.AdditionalHooksDir)
+	}
+	if cfg.NodeName != "" {
+		cmd += " -NodeName " + cfg.NodeName
+	}
+	if cfg.SingleNode {
+		cmd += " -SingleNode"
+	}
+	if cfg.WaitForNotReady {
+		cmd += " -WaitForNotReady"
+	}
+	return cmd
 }

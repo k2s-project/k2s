@@ -70,7 +70,7 @@ On Linux, the CLI is a native Go binary with **no PowerShell dependency**:
 
 - **Cluster lifecycle** (install, start, stop, uninstall, system reset) is dispatched by the Go provider through `internal/linux/lifecycle` to root-only Bash entry scripts in `lib/scripts/linux/debian/linuxonly/`. These scripts source the Bash modules in `lib/modules/linux/`, which run `kubeadm`, configure CRI-O, and provision the Windows worker VM via `virsh`/libvirt with OVMF UEFI firmware and VirtIO drivers.
 - **Cluster status** (`k2s status`) stays Go-native (kubectl-based) to preserve its typed output contract.
-- **Worker node join** (`k2s node add`) runs `lib/scripts/linux/debian/worker/bare-metal/Add.sh` and requires an offline node package (`--node-package`).
+- **Worker node join** (`k2s node add`) runs `lib/scripts/linux/debian/worker/bare-metal/Add.sh`, offline from a node package (`--node-package`) or online (the node downloads its packages); `k2s node remove`, `k2s start` and `k2s stop` run `Remove.sh`, `Start.sh` and `Stop.sh` next to it for added nodes.
 - **Image operations** dispatch to Bash scripts in `lib/scripts/linux/debian/host/image/` (CRI-O tooling and Buildah).
 - **Addons, health checks, system backup/restore, and certificate operations** are implemented in Go.
 
@@ -140,7 +140,7 @@ The Go CLI uses a **provider pattern** to abstract all platform-specific operati
 │                                                          │
 │  ClusterProvider   — cluster lifecycle and status        │
 │  ImageProvider     — container images and registries     │
-│  NodeProvider      — worker node add, remove, rename     │
+│  NodeProvider      — node add/remove/rename/start/stop   │
 │  SystemProvider    — package, upgrade, backup, check ... │
 │  AddonProvider     — addon lifecycle and commands        │
 └──────────────┬────────────────────────────┬──────────────┘
@@ -166,7 +166,7 @@ The Go CLI uses a **provider pattern** to abstract all platform-specific operati
 | `provider.go` | `Registry` struct (holds all providers) and `ProviderConfig` |
 | `cluster.go` | `ClusterProvider` — Install, Uninstall, Start, Stop, Status |
 | `image.go` | `ImageProvider` — List, Pull, Remove, Build, Import, Export, Tag, Push, Clean, Repair, RegistryAdd, RegistryRemove |
-| `node.go` | `NodeProvider` — Add, Remove, Rename |
+| `node.go` | `NodeProvider` — Add, Remove, Rename, Start, Stop |
 | `system.go` | `SystemProvider` — Dump, Upgrade, Package, Reset, ResetNetwork, Compact, Backup, Restore, CertificateRenew, CertificateAutoRotation, Check |
 | `addon.go` | `AddonProvider` — Enable, Disable, List, Status, Export, Import, RunCommand |
 | `errors.go` | `ErrNotSupported` sentinel, `UnsupportedOperationError`, `NotSupportedError()` helper, `ProviderFailure` |
@@ -191,7 +191,7 @@ The following operations are **not yet available** on Linux hosts and return an 
 |------|-----------|
 | System | `upgrade`, `compact`, full offline `package`, node delta package |
 | Addons | `export`, `import` |
-| Nodes | `node rename`; `node add` without `--node-package` |
+| Nodes | `node rename` |
 | Images | `image repair` (Windows-only) |
 
 ### Adding a New Provider Domain
@@ -344,7 +344,7 @@ See [Security Features](../security/security-features.md) for details.
 | **Packaging** | `lib/scripts/windows/host/system/package/` | Full and delta package creation, image acquisition, signing, Debian diff, addon packaging. |
 | **Native Debian host lifecycle** | `lib/scripts/linux/debian/linuxonly/` | Root-only Debian 13 lifecycle entry points (Install, Start, Stop, Uninstall, ProvisionPackages). Invoked by the Linux cluster provider with an `--operation-file`. |
 | **Native Debian host operations** | `lib/scripts/linux/debian/host/` | Host entry points delegating to the `linuxonly/` lifecycle, plus image scripts (`host/image/`) used by the Linux image provider. |
-| **Native Debian worker nodes** | `lib/scripts/linux/debian/worker/bare-metal/` | `Add.sh` joins a Debian 13 (amd64/arm64) worker node from an offline node package; invoked by `k2s node add` on Linux hosts. |
+| **Native Debian worker nodes** | `lib/scripts/linux/debian/worker/bare-metal/` | `Add.sh` joins a Debian 13 (amd64/arm64) worker node (online or from an offline node package); `Remove.sh`, `Start.sh` and `Stop.sh` remove, start and stop it. Invoked by `k2s node add` / `k2s node remove` / `k2s start` / `k2s stop` on Linux hosts. |
 | **Native Linux modules** | `lib/modules/linux/{common,infra,cluster,node,networking,services}/` | Reusable Bash modules: logging, validation, paths, proxy, SSH, kubeadm lifecycle, CRI-O, Buildah, Debian packages, Windows worker VM, Linux worker-node join, DNS, systemd. |
 
 ---

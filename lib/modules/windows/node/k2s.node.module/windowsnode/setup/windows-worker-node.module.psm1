@@ -82,8 +82,6 @@ function Start-WindowsWorkerNodeOnWindowsHost {
     Add-WinDnsProxyListenAddress -IpAddress $clusterCIDRNextHop
 
     Update-NodeLabelsAndTaints -WorkerMachineName $env:computername
-
-    Set-KubeSwitchToPrivate
 }
 
 function Stop-WindowsWorkerNodeOnWindowsHost {

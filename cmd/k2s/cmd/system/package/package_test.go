@@ -1,9 +1,10 @@
-// SPDX-FileCopyrightText:  © 2024 The K2s Authors
+// SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
 
 package systempackage
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -178,6 +179,32 @@ var _ = Describe("package", func() {
 			Expect(cfg.IncludeGPU).To(BeTrue())
 			Expect(cfg.Proxy).To(Equal("http://proxy:3128"))
 		})
+	})
+
+	Describe("validateZipPackageFileName", func() {
+		DescribeTable("accepts .zip names (case-insensitive) and leaves empty names to required checks",
+			func(name string) {
+				Expect(validateZipPackageFileName(name)).To(Succeed())
+			},
+			Entry("lower case", "node.zip"),
+			Entry("upper case", "node.ZIP"),
+			Entry("empty", ""),
+		)
+
+		DescribeTable("rejects names without .zip extension with a warning failure and hint",
+			func(name string) {
+				err := validateZipPackageFileName(name)
+				var cmdFailure *common.CmdFailure
+				Expect(errors.As(err, &cmdFailure)).To(BeTrue())
+				Expect(cmdFailure.Severity).To(Equal(common.SeverityWarning))
+				Expect(cmdFailure.Code).To(Equal("invalid-package-name"))
+				Expect(cmdFailure.Message).To(ContainSubstring("must end with '.zip'"))
+				Expect(cmdFailure.Message).To(ContainSubstring(name + ".zip"))
+			},
+			Entry("no extension", "node"),
+			Entry("other extension", "node.tar"),
+			Entry("zip only in the middle", "node.zip.bak"),
+		)
 	})
 
 	Describe("ControlPlaneMemoryFlagUsage", func() {

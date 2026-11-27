@@ -152,8 +152,10 @@ k2s_install_cluster() {
   k2s_enable_host_ssh || return $?
   k2s_log INFO 'Configuring K2s HTTP proxy service.'
   k2s_proxy_install || return $?
+  k2s_proxy_config_write || return $?
   k2s_log INFO 'Provisioning Kubernetes and CRI-O packages.'
   k2s_packages_install || return $?
+  k2s_crio_configure_mirror_registries || return $?
   k2s_log INFO 'Initializing the Kubernetes control plane.'
   k2s_control_plane_install || return $?
   k2s_log INFO 'Binding kube-proxy to the configured KubeSwitch IPv4 address.'
@@ -217,7 +219,16 @@ k2s_start_cluster() {
   k2s_dns_start
   [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_start
 }
-k2s_stop_cluster() { [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_stop || true; k2s_dns_stop; systemctl stop kubelet 2>/dev/null || true; systemctl stop crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true; }
+
+k2s_stop_cluster() {
+  [[ "$K2S_LINUX_ONLY" == true ]] || k2s_windows_worker_stop || true
+  k2s_dns_stop
+  systemctl stop kubelet 2>/dev/null || true
+  k2s_log INFO 'Stopping all pods.'
+  k2s_crio_stop_pods
+  systemctl stop crio k2s-httpproxy k2s-proxy-network 2>/dev/null || true
+  k2s_wait_for_api_port_release || k2s_log WARN 'Port 6443 is still in use after stopping K2s.'
+}
 
 k2s_wait_for_api_port_release() {
   local deadline=$((SECONDS + 60))
@@ -236,14 +247,14 @@ k2s_stop_cluster_for_uninstall() {
   # Stop static-pod containers before CRI-O is disabled so kube-apiserver
   # releases port 6443 deterministically for the next installation.
   if command -v crictl >/dev/null 2>&1; then
-    for container_id in $(crictl --runtime-endpoint unix:///var/run/crio/crio.sock ps -q 2>/dev/null); do
-      crictl --runtime-endpoint unix:///var/run/crio/crio.sock stop "$container_id" 2>/dev/null || true
-      crictl --runtime-endpoint unix:///var/run/crio/crio.sock rm "$container_id" 2>/dev/null || true
+    for container_id in $(k2s_crictl ps -q 2>/dev/null); do
+      k2s_crictl stop "$container_id" 2>/dev/null || true
+      k2s_crictl rm "$container_id" 2>/dev/null || true
     done
     # Remove any residual pods/containers (etcd, apiserver, etc.) that would otherwise be
     # resumed on the next start and keep control-plane ports (6443/2379/2380/10257/10259) bound.
-    crictl --runtime-endpoint unix:///var/run/crio/crio.sock rm -fa 2>/dev/null || true
-    crictl --runtime-endpoint unix:///var/run/crio/crio.sock rmp -fa 2>/dev/null || true
+    k2s_crictl rm -fa 2>/dev/null || true
+    k2s_crictl rmp -fa 2>/dev/null || true
   fi
   systemctl disable --now crio 2>/dev/null || true
   systemctl stop k2s-httpproxy k2s-proxy-network 2>/dev/null || true
@@ -272,6 +283,7 @@ k2s_uninstall_cluster() {
   ip link delete cni0 2>/dev/null || true
   ip link delete flannel.1 2>/dev/null || true
   rm -f /etc/systemd/system/k2s-dnsproxy.service /etc/k2s/dnsproxy.yaml /etc/systemd/system/kubelet.service.d/20-k2s-logging.conf
+  k2s_crio_remove_mirror_registries
   k2s_proxy_cleanup || return $?
   [[ "$K2S_SKIP_PURGE" == true ]] || k2s_ssh_remove_key || true
   rm -rf "$K2S_CONFIG_DIR"

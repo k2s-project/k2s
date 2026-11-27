@@ -20,7 +20,31 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/k2s-project/k2s/internal/core/config"
 )
+
+// zipSource places the files under root into the zip under the given top-level prefix.
+type zipSource struct {
+	prefix string
+	root   string
+}
+
+type fileSnapshot struct {
+	path              string
+	content           []byte
+	mode              os.FileMode
+	uid               int
+	gid               int
+	linkTarget        string
+	linkTargetPath    string
+	linkTargetContent []byte
+	linkTargetMode    os.FileMode
+	linkTargetUID     int
+	linkTargetGID     int
+	linkTargetExists  bool
+	exists            bool
+}
 
 // gpuDebPackages mirrors the list downloaded by Get-NvidiaGpuDebPackagesFromInternet
 // in common-setup.module.psm1 (the Windows/Hyper-V build path).
@@ -30,6 +54,25 @@ var gpuDebPackages = []string{
 	"nvidia-container-toolkit-base",
 	"nvidia-container-runtime",
 	"nvidia-container-toolkit",
+}
+
+// nodePackageTools maps the host commands the node package build runs to their Debian packages.
+var nodePackageTools = []struct{ command, debPackage string }{
+	{"apt-get", "apt"},
+	{"dpkg-deb", "dpkg"},
+	{"skopeo", "skopeo"},
+}
+
+var hostAptFiles = []string{
+	"/etc/apt/apt.conf.d/10sandbox-for-k2s",
+	"/etc/apt/apt.conf.d/90k2s-proxy",
+	"/etc/apt/apt.conf.d/95k2s-proxy",
+	"/etc/apt/sources.list.d/kubernetes.list",
+	"/etc/apt/sources.list.d/cri-o.list",
+	"/etc/apt/sources.list.d/nvidia-container-toolkit.list",
+	"/usr/share/keyrings/kubernetes-apt-keyring.gpg",
+	"/usr/share/keyrings/cri-o-apt-keyring.gpg",
+	"/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
 }
 
 func lockAPTConfiguration(path string) (*os.File, error) {
@@ -68,14 +111,6 @@ func validateRequiredDebPackages(dir string, required []string) error {
 		return fmt.Errorf("required packages are missing from %s: %s", dir, strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-func runLogged(name string, args ...string) error {
-	fmt.Printf("[NodePkg] + %s %s\n", name, strings.Join(args, " "))
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func runLoggedWithEnv(ctx context.Context, env map[string]string, name string, args ...string) error {
@@ -192,6 +227,34 @@ func validateBuildHostOS(targetOS, osReleasePath string) error {
 	return nil
 }
 
+func requireNodePackageTools(lookPath func(string) (string, error)) error {
+	var missingCommands, missingPackages []string
+	for _, tool := range nodePackageTools {
+		if _, err := lookPath(tool.command); err != nil {
+			missingCommands = append(missingCommands, tool.command)
+			missingPackages = append(missingPackages, tool.debPackage)
+		}
+	}
+	if len(missingCommands) == 0 {
+		return nil
+	}
+	return fmt.Errorf("building a node package needs %s on this host; install it with 'sudo apt-get install %s'",
+		strings.Join(missingCommands, ", "), strings.Join(missingPackages, " "))
+}
+
+// defaultNodePackageProxy returns the K2s proxy, which forwards to the install proxy, like New-K2sNodePackage.ps1.
+// A build host without a K2s installation (e.g. an arm64 build host) downloads directly.
+func defaultNodePackageProxy(installDir, configDir string) (string, error) {
+	if _, err := config.ReadRuntimeConfig(configDir); err != nil {
+		return "", nil
+	}
+	kubeSwitch, err := config.ReadKubeSwitchConfig(installDir)
+	if err != nil {
+		return "", fmt.Errorf("could not determine the K2s proxy address: %w", err)
+	}
+	return "http://" + kubeSwitch.Address + ":8181", nil
+}
+
 func validateNodePackageProxy(proxy string) error {
 	if proxy == "" {
 		return nil
@@ -279,12 +342,6 @@ func downloadNvidiaGpuPackages(ctx context.Context, targetPath, proxy, aptConfig
 	return nil
 }
 
-// zipSource places the files under root into the zip under the given top-level prefix.
-type zipSource struct {
-	prefix string
-	root   string
-}
-
 // buildZip writes srcRoot (recursively, under a "packages" prefix) into a new zip file
 // at destZipPath. Callers are responsible for only exposing destZipPath to the rest of
 // the system once this returns successfully.
@@ -358,34 +415,6 @@ func zipDir(ctx context.Context, zw *zip.Writer, srcRoot, destPrefix string) err
 		_, err = io.Copy(w, f)
 		return err
 	})
-}
-
-var hostAptFiles = []string{
-	"/etc/apt/apt.conf.d/10sandbox-for-k2s",
-	"/etc/apt/apt.conf.d/90k2s-proxy",
-	"/etc/apt/apt.conf.d/95k2s-proxy",
-	"/etc/apt/sources.list.d/kubernetes.list",
-	"/etc/apt/sources.list.d/cri-o.list",
-	"/etc/apt/sources.list.d/nvidia-container-toolkit.list",
-	"/usr/share/keyrings/kubernetes-apt-keyring.gpg",
-	"/usr/share/keyrings/cri-o-apt-keyring.gpg",
-	"/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
-}
-
-type fileSnapshot struct {
-	path              string
-	content           []byte
-	mode              os.FileMode
-	uid               int
-	gid               int
-	linkTarget        string
-	linkTargetPath    string
-	linkTargetContent []byte
-	linkTargetMode    os.FileMode
-	linkTargetUID     int
-	linkTargetGID     int
-	linkTargetExists  bool
-	exists            bool
 }
 
 func snapshotFiles(paths []string) ([]fileSnapshot, error) {
@@ -554,6 +583,16 @@ func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildEr
 	osName := cfg.OS
 	arch := cfg.Architecture
 	includeGpu := cfg.IncludeGPU
+	if proxy == "" {
+		defaultProxy, err := defaultNodePackageProxy(p.installDir, p.configDir)
+		if err != nil {
+			return err
+		}
+		if defaultProxy != "" {
+			proxy = defaultProxy
+			fmt.Printf("[NodePkg] No proxy specified. Defaulting to K2s transparent proxy '%s'.\n", proxy)
+		}
+	}
 	if err := validateNodePackageProxy(proxy); err != nil {
 		return err
 	}
@@ -572,6 +611,9 @@ func (p *linuxSystemProvider) buildNodePackage(cfg SystemPackageConfig) (buildEr
 	}
 
 	if err := validateBuildHostOS(osName, "/etc/os-release"); err != nil {
+		return err
+	}
+	if err := requireNodePackageTools(exec.LookPath); err != nil {
 		return err
 	}
 

@@ -12,85 +12,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+
+	"github.com/k2s-project/k2s/internal/output"
+	"github.com/k2s-project/k2s/internal/providers/bash"
 )
 
 type linuxNodeProvider struct {
 	installDir string
+	configDir  string
+	stdWriter  output.StreamWriter
 }
+
+// Must match the K2S_NODE_EXIT_* constants in lib/modules/linux/node/worker-node.module.sh.
+const (
+	nodeScriptExitNotSupported  = 3
+	nodeScriptExitAlreadyExists = 4
+	nodeScriptExitNotFound      = 5
+)
 
 func newLinuxNodeProvider(cfg ProviderConfig) *linuxNodeProvider {
-	return &linuxNodeProvider{installDir: cfg.InstallDir}
-}
-
-// sshCmdToNode runs command on the target node (identified by user/ip) via SSH,
-// unlike sshCmd which always targets the fixed Windows worker VM.
-func sshCmdToNode(user, ip, command string) (string, error) {
-	cmd := exec.Command("ssh",
-		"-o", "StrictHostKeyChecking=yes",
-		"-o", "ConnectTimeout=10",
-	)
-	if identityFile := os.Getenv("K2S_SSH_IDENTITY_FILE"); identityFile != "" {
-		cmd.Args = append(cmd.Args, "-i", identityFile, "-o", "IdentitiesOnly=yes")
-	}
-	if knownHostsFile := os.Getenv("K2S_SSH_KNOWN_HOSTS_FILE"); knownHostsFile != "" {
-		cmd.Args = append(cmd.Args, "-o", "UserKnownHostsFile="+knownHostsFile)
-	}
-	cmd.Args = append(cmd.Args, fmt.Sprintf("%s@%s", user, ip), command)
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(exitErr.Stderr))
-		}
-		return string(out), fmt.Errorf("SSH command failed: %w: %s", err, string(out))
-	}
-	return string(out), nil
-}
-
-// normalizeArch maps 'uname -m' output to Go-style architecture names, matching the
-// normalization already used for the control-plane in install-cli-tools.sh.
-func normalizeArch(unameM string) string {
-	switch strings.TrimSpace(unameM) {
-	case "x86_64":
-		return "amd64"
-	case "aarch64":
-		return "arm64"
-	default:
-		return strings.TrimSpace(unameM)
-	}
-}
-
-func kubeadmJoinCommand(tokenCommand string) string {
-	return strings.TrimSpace(tokenCommand) + " --cri-socket unix:///run/crio/crio.sock"
-}
-
-// assertSupportedNodeArchitecture fails fast if the target node's architecture/distro
-// combination is not supported, before any provisioning is attempted. Only arm64 Debian
-// external nodes are supported in addition to amd64.
-func assertSupportedNodeArchitecture(user, ip string) error {
-	unameOut, err := sshCmdToNode(user, ip, "uname -m")
-	if err != nil {
-		return fmt.Errorf("failed to detect architecture on remote node: %w", err)
-	}
-	arch := normalizeArch(unameOut)
-	if arch == "amd64" {
-		return nil
-	}
-	if arch != "arm64" {
-		return fmt.Errorf("unsupported external node architecture '%s'; supported architectures are amd64 and arm64", arch)
-	}
-
-	osIDOut, err := sshCmdToNode(user, ip, ". /etc/os-release 2>/dev/null; echo \"$ID\"")
-	if err != nil {
-		return fmt.Errorf("failed to detect distribution on remote node: %w", err)
-	}
-	osID := strings.ToLower(strings.TrimSpace(osIDOut))
-	if osID != "debian" {
-		return fmt.Errorf("unsupported architecture/distro combination: arch '%s' is only supported on Debian-family distributions, detected OS ID '%s'", arch, osID)
-	}
-
-	return nil
+	return &linuxNodeProvider{installDir: cfg.InstallDir, configDir: cfg.ConfigDir, stdWriter: cfg.StdWriter}
 }
 
 func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
@@ -100,9 +41,8 @@ func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
 	return NotSupportedError("node rename", "worker identity repair is currently available only from a Windows K2s host")
 }
 
-// Add joins a Debian 13 worker node (amd64 or arm64) to the cluster that runs on this host. The
-// work is done by lib/scripts/linux/debian/worker/bare-metal/Add.sh, the Linux counterpart of the
-// Windows bare-metal Add.ps1. Only offline node packages are supported on this path.
+// Add joins a Debian 13 worker node (amd64 or arm64) to the cluster that runs on this host via
+// lib/scripts/linux/debian/worker/bare-metal/Add.sh; without a node package the node downloads its packages itself.
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	if cfg.IpAddress == "" {
 		return errors.New("--ip-addr is required to add a node")
@@ -110,44 +50,81 @@ func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {
 	if cfg.UserName == "" {
 		return errors.New("--username is required to add a node")
 	}
-	if cfg.NodePackagePath == "" {
-		return NotSupportedError("node add without --node-package", "the Linux host adds nodes from an offline node package; build one with 'k2s system package --node-package'")
-	}
-
-	script := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "worker", "bare-metal", "Add.sh")
-	if _, err := os.Stat(script); err != nil {
-		return fmt.Errorf("node add script not found: %w", err)
-	}
-
 	slog.Info("[Node] Adding node", "ip", cfg.IpAddress, "user", cfg.UserName, "package", cfg.NodePackagePath)
-	cmd := exec.Command("bash", script,
+	args := []string{
 		"--ip-address", cfg.IpAddress,
 		"--user", cfg.UserName,
-		"--node-package", cfg.NodePackagePath,
-		"--install-dir", p.installDir,
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("adding node %s failed: %w", cfg.IpAddress, err)
+	}
+	if cfg.NodePackagePath != "" {
+		args = append(args, "--node-package", cfg.NodePackagePath)
+	}
+	return p.runNodeScript("Add.sh", "adding node "+cfg.IpAddress, cfg.ShowOutput, args...)
+}
+
+func (p *linuxNodeProvider) Remove(cfg NodeRemoveConfig) error {
+	if cfg.NodeName == "" {
+		return errors.New("--name is required to remove a node")
+	}
+
+	slog.Info("[Node] Removing node", "name", cfg.NodeName)
+	return p.runNodeScript("Remove.sh", "removing node "+cfg.NodeName, cfg.ShowOutput, "--name", cfg.NodeName)
+}
+
+func (p *linuxNodeProvider) Start(cfg NodeStartConfig) error {
+	if err := requireLinuxWorker(cfg.Role, cfg.OS, "node start"); err != nil {
+		return err
+	}
+	slog.Info("[Node] Starting node", "name", cfg.NodeName)
+	return p.runNodeScript("Start.sh", "starting node "+cfg.NodeName, cfg.ShowOutput, "--name", cfg.NodeName)
+}
+
+func (p *linuxNodeProvider) Stop(cfg NodeStopConfig) error {
+	if err := requireLinuxWorker(cfg.Role, cfg.OS, "node stop"); err != nil {
+		return err
+	}
+	args := []string{"--name", cfg.NodeName}
+	if cfg.WaitForNotReady {
+		args = append(args, "--wait-for-not-ready")
+	}
+	slog.Info("[Node] Stopping node", "name", cfg.NodeName)
+	return p.runNodeScript("Stop.sh", "stopping node "+cfg.NodeName, cfg.ShowOutput, args...)
+}
+
+func requireLinuxWorker(role, nodeOS, operation string) error {
+	if role != "worker" || nodeOS != "linux" {
+		return NotSupportedError(operation, fmt.Sprintf("only Linux worker nodes can be added to a Linux host; found role '%s', OS '%s'", role, nodeOS))
 	}
 	return nil
 }
 
-func (p *linuxNodeProvider) Remove(cfg NodeRemoveConfig) error {
-	slog.Info("[Node] Removing node", "name", cfg.NodeName)
-
-	// Drain the node
-	if err := exec.Command("kubectl", "drain", cfg.NodeName, "--ignore-daemonsets", "--delete-emptydir-data", "--force").Run(); err != nil {
-		slog.Warn("[Node] Drain failed (continuing with removal)", "error", err)
+func (p *linuxNodeProvider) runNodeScript(name, operation string, showOutput bool, args ...string) error {
+	script := filepath.Join(p.installDir, "lib", "scripts", "linux", "debian", "worker", "bare-metal", name)
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("node script not found: %w", err)
 	}
 
-	// Delete the node from the cluster
-	if err := exec.Command("kubectl", "delete", "node", cfg.NodeName).Run(); err != nil {
-		return fmt.Errorf("failed to delete node '%s': %w", cfg.NodeName, err)
+	scriptOut := &scriptOutput{next: p.stdWriter}
+	err := bash.NewScript(script).
+		WithArgs(append(args, "--install-dir", p.installDir, "--config-dir", p.configDir)...).
+		WithShowLogs(showOutput).
+		WithStdWriter(scriptOut).
+		Exec()
+	if err == nil {
+		return nil
 	}
-
-	slog.Info("[Node] Node removed", "name", cfg.NodeName)
-	return nil
+	reason := scriptOut.lastError
+	if reason == "" {
+		reason = err.Error()
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		switch exitErr.ExitCode() {
+		case nodeScriptExitNotSupported:
+			return &ProviderFailure{Severity: SeverityWarning, Code: "node-os-not-supported", Message: reason}
+		case nodeScriptExitAlreadyExists:
+			return &ProviderFailure{Severity: SeverityWarning, Code: "node-already-exists", Message: reason}
+		case nodeScriptExitNotFound:
+			return &ProviderFailure{Severity: SeverityWarning, Code: "node-not-found", Message: reason}
+		}
+	}
+	return fmt.Errorf("%s failed: %s (see log file for more information)", operation, reason)
 }

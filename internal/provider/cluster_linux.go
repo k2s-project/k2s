@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -185,12 +186,7 @@ func gatherNodeStatus() ([]NodeStatus, error) {
 			},
 		}
 
-		for label := range n.Metadata.Labels {
-			if strings.HasPrefix(label, "node-role.kubernetes.io/") {
-				node.Role = strings.TrimPrefix(label, "node-role.kubernetes.io/")
-				break
-			}
-		}
+		node.Role = nodeRole(n.Metadata.Labels)
 
 		for _, cond := range n.Status.Conditions {
 			if cond.Type == "Ready" {
@@ -221,6 +217,27 @@ func gatherNodeStatus() ([]NodeStatus, error) {
 	}
 
 	return nodes, nil
+}
+
+// nodeRole follows Get-NodeRole on a Windows host: control-plane label, then kubernetes.io/role.
+func nodeRole(labels map[string]string) string {
+	if _, ok := labels["node-role.kubernetes.io/control-plane"]; ok {
+		return "control-plane"
+	}
+	if role := labels["kubernetes.io/role"]; role != "" {
+		return role
+	}
+	var roles []string
+	for label := range labels {
+		if role, ok := strings.CutPrefix(label, "node-role.kubernetes.io/"); ok && role != "" {
+			roles = append(roles, role)
+		}
+	}
+	slices.Sort(roles)
+	if len(roles) == 0 {
+		return ""
+	}
+	return roles[0]
 }
 
 type k8sPodListItems struct {

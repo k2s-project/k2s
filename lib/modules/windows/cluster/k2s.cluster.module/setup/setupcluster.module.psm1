@@ -1082,9 +1082,6 @@ function Initialize-KubernetesCluster {
     Write-Log "Current state of kubernetes nodes:`n"
     Start-Sleep 2
     &"$kubeToolsPath\kubectl.exe" get nodes -o wide
-
-    Write-Log "Collecting kubernetes images and storing them to $kubernetesImagesJson."
-    Write-KubernetesImagesIntoJson
 }
 
 function Uninstall-Cluster {

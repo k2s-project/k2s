@@ -5,16 +5,18 @@ package remove
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 
-	"github.com/pterm/pterm"
 	"github.com/k2s-project/k2s/cmd/k2s/cmd/common"
+	"github.com/k2s-project/k2s/cmd/k2s/cmd/status"
 	"github.com/k2s-project/k2s/cmd/k2s/utils"
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
 	"github.com/k2s-project/k2s/internal/definitions"
 	"github.com/k2s-project/k2s/internal/provider"
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -58,6 +60,15 @@ func removeNode(ccmd *cobra.Command, args []string) error {
 
 	if err := context.EnsureK2sK8sContext(runtimeConfig.ClusterConfig().Name()); err != nil {
 		return err
+	}
+
+	systemStatus, err := status.LoadStatus(context)
+	if err != nil {
+		return fmt.Errorf("could not determine system status: %w", err)
+	}
+
+	if !systemStatus.RunningState.IsRunning {
+		return common.CreateSystemNotRunningCmdFailure()
 	}
 
 	if runtimeConfig.InstallConfig().SetupName() != definitions.SetupNameK2s {

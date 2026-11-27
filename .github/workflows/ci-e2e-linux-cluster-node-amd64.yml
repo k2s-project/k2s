@@ -1,0 +1,241 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Linux-host cluster with an amd64 worker node added offline and online, on one GitHub-hosted runner.
+#
+# - Job 'amd64-node-package' builds the amd64 node package (ci-amd64-node-package-build.yml).
+# Two Debian 13 amd64 guests (KVM) share the runner's bridge, so the worker is in the control plane's subnet, 10.10.0.0/24:
+#   control plane: 4 GB RAM, K2s installed with --linux-only (same setup as ci-e2e-linux-cluster-node-arm64.yml).
+#   worker:        2 GB RAM, no K2s; 'k2s node add --node-package' joins it from the node package.
+# Checked: the node is Ready with the worker role and a cluster.json entry, flannel and kube-proxy run on it, a workload
+# runs there, 'k2s stop/start --node' work, and 'k2s node remove' removes it from the cluster, cluster.json and the worker.
+# Then the worker is added again online (without --node-package: it downloads its packages and pulls its images itself,
+# the runner NATs the guests to the internet) and removed once more. Offline runs first because it fails faster.
+# Steps shared with ci-e2e-linux-cluster-node-arm64.yml are composite actions in .github/actions/.
+
+name: CI - E2E Linux Cluster with amd64 Node (offline and online)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kvm_attempt:
+        description: 'Internal: attempt number when this run was re-dispatched to find a runner with KVM. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+  workflow_call:
+    inputs:
+      kvm_attempt:
+        description: 'Internal: attempt number. Leave at 1.'
+        type: number
+        required: false
+        default: 1
+      nightly:
+        description: 'Nightly mode: a runner without /dev/kvm fails the run (NO_KVM) instead of re-dispatching it.'
+        type: boolean
+        required: false
+        default: false
+      run:
+        description: 'Nightly repetition number used to distinguish artifacts.'
+        type: number
+        required: false
+        default: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k2s-linux-cluster-node-amd64
+  cancel-in-progress: false
+
+jobs:
+  amd64-node-package:
+    name: Build the amd64 node package
+    uses: ./.github/workflows/ci-amd64-node-package-build.yml
+    with:
+      include_gpu: false
+      run: ${{ inputs.run || 1 }}
+
+  install-add-and-check:
+    name: Control plane and amd64 worker (both KVM) on one runner
+    needs: amd64-node-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: write # re-dispatch this workflow when the runner has no usable /dev/kvm
+    defaults:
+      run:
+        shell: bash
+    env:
+      ENV_SCRIPT: .github/scripts/linux-cluster-amd64-env.sh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          persist-credentials: false
+
+      - name: Check KVM (re-dispatch on a new runner if missing)
+        id: kvm
+        uses: ./.github/actions/kvm-check
+        timeout-minutes: 5
+        with:
+          workflow: ci-e2e-linux-cluster-node-amd64.yml
+          attempt: ${{ inputs.kvm_attempt }}
+          nightly: ${{ inputs.nightly || false }}
+          token: ${{ github.token }}
+
+      - name: Build K2s and install the control plane
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-control-plane
+        timeout-minutes: 180
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
+
+      - name: Download the amd64 node package
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: actions/download-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: debian13-amd64-node-package-${{ inputs.run || 1 }}
+          path: ${{ runner.temp }}/node-package
+
+      - name: Start the worker guest (amd64, KVM, 2 GB) and authorize the K2s key
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-worker-guest
+        timeout-minutes: 30
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
+
+      - name: Copy the amd64 node package to the control plane
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          zip_path="$(find "$RUNNER_TEMP/node-package" -maxdepth 1 -name 'k2s-*-node-debian13-amd64.zip' | head -n 1)"
+          test -n "$zip_path" || { echo '::error::amd64 node package not found in the artifact'; exit 1; }
+          echo "Node package: $(basename "$zip_path") ($(du -h "$zip_path" | cut -f1))"
+          cp_vm push "$zip_path" node-package.zip
+
+      - name: Add the amd64 worker offline from the node package
+        id: add
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          {
+            printf 'worker_ip=%q\n' "$WK_IP"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --node-package /home/debian/node-package.zip --output
+          EOF
+          } | cp_vm exec
+
+      - name: Check the amd64 worker joined and runs workloads
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          {
+            printf 'node=%q\n' "$WK_NAME"
+            cat <<'EOF'
+          set -euo pipefail
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          kube wait --for=condition=Ready "node/$node" --timeout=600s
+          test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
+            || { echo "::error::$node is not labeled kubernetes.io/role=worker"; exit 1; }
+          sudo jq -e --arg name "$node" '.nodes | any(.Name == $name and .NodeType == "HOST")' /var/lib/k2s/cluster.json >/dev/null \
+            || { echo "::error::$node has no HOST entry in /var/lib/k2s/cluster.json"; exit 1; }
+
+          # Flannel and kube-proxy must run on the node for pod networking to work there.
+          running=0
+          for attempt in $(seq 1 40); do
+            running="$(kube get pods -A --field-selector "spec.nodeName=$node" --no-headers | awk '$4=="Running"' | wc -l)"
+            if [ "$running" -ge 2 ]; then break; fi
+            sleep 15
+          done
+          test "$running" -ge 2 || { echo "::error::expected flannel and kube-proxy running on $node, found $running running pods"; kube get pods -A -o wide; exit 1; }
+
+          # The node imported its images from the package: a workload must run there.
+          kube run amd64-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
+            --overrides="{\"spec\":{\"nodeSelector\":{\"kubernetes.io/hostname\":\"$node\"}}}" -- sh -c 'uname -m; sleep 5'
+          kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/amd64-smoke --timeout=600s
+          kube logs amd64-smoke | grep -qx x86_64 || { echo '::error::workload did not report x86_64'; exit 1; }
+          kube delete pod amd64-smoke --wait=true
+          EOF
+          } | cp_vm exec
+
+      - name: Stop and start the amd64 worker with k2s stop/start --node
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          {
+            printf 'node=%q\n' "$WK_NAME"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          sudo ./k2s stop --node "$node" --output
+          for attempt in $(seq 1 36); do
+            ready="$(kube get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$ready" != True ]; then break; fi
+            sleep 5
+          done
+          test "$ready" != True || { echo "::error::$node is still Ready 3 minutes after k2s stop --node"; exit 1; }
+          sudo ./k2s start --node "$node" --output
+          kube wait --for=condition=Ready "node/$node" --timeout=300s
+          EOF
+          } | cp_vm exec
+
+      - name: Remove the offline-added amd64 worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-node-remove
+        timeout-minutes: 30
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
+
+      - name: Re-add the amd64 worker online
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          source "$ENV_SCRIPT"
+          {
+            printf 'node=%q\nworker_ip=%q\n' "$WK_NAME" "$WK_IP"
+            cat <<'EOF'
+          set -euo pipefail
+          cd ~/k2s
+          sudo ./k2s node add --ip-addr "$worker_ip" --username debian --output
+          kube() { sudo env KUBECONFIG=/etc/kubernetes/admin.conf kubectl "$@"; }
+          kube wait --for=condition=Ready "node/$node" --timeout=600s
+          test "$(kube get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/role}')" = worker \
+            || { echo "::error::$node is not labeled kubernetes.io/role=worker after the online add"; exit 1; }
+          kube run amd64-online-smoke --image=docker.io/library/busybox:1.37 --restart=Never \
+            --overrides="{\"spec\":{\"nodeSelector\":{\"kubernetes.io/hostname\":\"$node\"}}}" -- sh -c 'uname -m; sleep 5'
+          kube wait --for=jsonpath='{.status.phase}'=Succeeded pod/amd64-online-smoke --timeout=600s
+          kube delete pod amd64-online-smoke --wait=true
+          EOF
+          } | cp_vm exec
+
+      - name: Remove the online-added amd64 worker
+        if: ${{ steps.kvm.outputs.available == 'true' }}
+        uses: ./.github/actions/linux-cluster-node-remove
+        timeout-minutes: 30
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
+
+      - name: Collect diagnostics, stop guests, upload
+        if: ${{ always() && steps.kvm.outputs.available == 'true' }}
+        continue-on-error: true
+        uses: ./.github/actions/linux-cluster-diagnostics
+        timeout-minutes: 20
+        with:
+          env-script: ${{ env.ENV_SCRIPT }}
+          artifact-name: linux-cluster-node-amd64-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.run || 1 }}

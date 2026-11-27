@@ -260,7 +260,8 @@ The installer requires `ssh` and `ssh-keygen` (Debian package `openssh-client`) 
 the prerequisite check before changing the host if it is missing. It creates the
 K2s SSH key pair `~/.ssh/k2s/id_ed25519` (`.pub`) of the user running `k2s`
 (`/root/.ssh/k2s` when using `sudo`) and removes it again on uninstall. The
-public key has to be authorized on machines that are added later as nodes.
+public key has to be authorized on machines that are added later as nodes, see
+[Extending a K2s Cluster](extending-k2s-cluster.md).
 
 The equivalent platform-first lifecycle entry point is
 `lib/scripts/linux/debian/linuxonly/Install.sh`. It validates root access,
@@ -319,6 +320,10 @@ entry and `windowsQCOW2Path` supplies the prepared image location.
 
 The administrator invoking `sudo` receives the generated kubeconfig at
 `~/.kube/config` after a successful installation.
+
+Additional Debian 13 Linux workers (amd64 or arm64) can be added to the installed cluster with
+`sudo k2s node add`, online or from an offline node package. See
+[Extending a K2s Cluster](extending-k2s-cluster.md) for the node and network requirements.
 
 ## WSL 2 vs. Hyper-V
 

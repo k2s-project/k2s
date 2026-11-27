@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds an amd64 Debian 13 node package natively on an amd64 runner (k2s-project/k2s#3045), e.g. for
+# ci-e2e-linux-cluster-node-amd64.yml. Not a PR check - workflow_dispatch and workflow_call only.
+#
+# The build host must be Debian 13 because APT resolves package dependencies from the
+# host's configured repositories and installed-package database.
+#
+# The build steps are shared with ci-arm64-node-package-build.yml (.github/actions/linux-node-package-build).
+name: CI - amd64 Node Package Build
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_gpu:
+        description: "Include NVIDIA Container Toolkit packages"
+        type: boolean
+        default: true
+  # Allows other workflows to reuse this build and its repetition-specific artifact.
+  workflow_call:
+    inputs:
+      include_gpu:
+        description: "Include NVIDIA Container Toolkit packages"
+        type: boolean
+        default: true
+      run:
+        description: "Nightly repetition number used to distinguish artifacts."
+        type: number
+        required: false
+        default: 1
+
+env:
+  GOVERSION: "1.27.4"
+
+jobs:
+  build-amd64-node-package:
+    name: Build debian13 amd64 node package
+    # GitHub-hosted amd64 VM. GitHub does not offer
+    # a Debian host image, so the job runs inside a Debian 13 (trixie) container: the k2s CLI
+    # checks /etc/os-release (ID=debian, VERSION_ID=13) and APT must resolve against Debian 13.
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
+    timeout-minutes: 60
+    steps:
+      # Runs before checkout: the Debian image has no git/unzip/sudo, and the k2s
+      # download scripts call `sudo` directly.
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git gnupg skopeo sudo unzip
+          # The k2s APT lock lives under /run/lock, which the Debian image may not create.
+          mkdir -p /run/lock
+
+      - uses: actions/checkout@v4
+        with:
+          # `git describe --tags` needs full history and tags.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: ./.github/actions/linux-node-package-build
+        with:
+          arch: amd64
+          include-gpu: ${{ inputs.include_gpu }}
+          go-version: ${{ env.GOVERSION }}
+          run: ${{ inputs.run || 1 }}

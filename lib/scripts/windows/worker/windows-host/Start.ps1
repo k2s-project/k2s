@@ -41,3 +41,6 @@ $workerNodeStartParams = @{
     PodSubnetworkNumber      = '1'
 }
 Start-WindowsWorkerNodeOnWindowsHost @workerNodeStartParams
+
+# The KubeSwitch is the Windows host's Hyper-V switch to the control-plane VM.
+Set-KubeSwitchToPrivate

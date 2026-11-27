@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -121,10 +120,6 @@ func proxyEnvironment(proxy string) map[string]string {
 // architecture. It fails if any image cannot be copied, because a package missing an image
 // would only fail later, on the node that joins with it.
 func exportNodePackageImages(ctx context.Context, imagesDir, kubeadmDeb, k8sVersion, arch, installDir, proxy string, includeGpu bool) error {
-	if _, err := exec.LookPath("skopeo"); err != nil {
-		return fmt.Errorf("skopeo is required to export container images into the node package (install it with 'apt-get install skopeo'): %w", err)
-	}
-
 	k8sRefs, err := kubeadmImageRefs(ctx, kubeadmDeb, k8sVersion)
 	if err != nil {
 		return err

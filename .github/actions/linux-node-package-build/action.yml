@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds a Debian 13 node package with 'k2s system package --node-package' on a runner of the target architecture
+# and uploads it as artifact 'debian13-<arch>-node-package-<run>'. Used by ci-<arch>-node-package-build.yml.
+# Expects a checkout with full history (git describe) inside a Debian 13 container with the build prerequisites.
+# The package has the same layout as the one built via New-K2sNodePackage.ps1 on Windows: packages/ plus images/
+# (OCI archives exported with skopeo). See internal/provider/node_package_linux.go and node_package_images_linux.go.
+
+name: Linux node package build
+description: Builds and uploads a Debian 13 node package for the runner's architecture.
+
+inputs:
+  arch:
+    description: Target architecture; must match the runner (amd64 or arm64).
+    required: true
+  include-gpu:
+    description: Include NVIDIA Container Toolkit packages ('true' or 'false').
+    required: false
+    default: 'false'
+  go-version:
+    description: Go version used to build the k2s CLI.
+    required: true
+  run:
+    description: Nightly repetition number used to distinguish artifacts.
+    required: false
+    default: '1'
+
+runs:
+  using: composite
+  steps:
+    # The checkout is owned by the runner user, but every step runs as root in the container.
+    # Without this, git refuses to read the repo, so `go build` fails stamping VCS info and
+    # `git describe` fails too. Must run before the Go build.
+    - name: Trust the checked-out workspace for git
+      shell: bash
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Set up node package workspace
+      shell: bash
+      run: echo "NODE_PACKAGE_ROOT=$RUNNER_TEMP/k2s-node-package-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache-dependency-path: "**/*.sum"
+
+    # Runs the unit tests for the native package builder's image export and zip layout on
+    # this host. The wider provider suite needs a real k2s install and is not run here.
+    - name: Unit tests for the node package builder
+      shell: bash
+      run: |
+        go test ./internal/provider -count=1 -run '^(TestParseKubeadmImageList|TestNvidiaImagesFromManifest|TestImageArchiveName|TestAppendUnique|TestProxyEnvironment|TestBuildZipSources)'
+
+    - name: Build the Linux k2s CLI
+      shell: bash
+      run: |
+        cd cmd/k2s
+        # No GOOS/GOARCH override: this binary runs directly on this runner (it execs
+        # local apt/dpkg/bash), so it must match the runner's own architecture.
+        go build -o /tmp/k2s-cli .
+
+    - name: Determine package version for naming
+      id: version
+      shell: bash
+      run: |
+        # Product version from the VERSION file, as in the package name built on Windows (k2s-<version>-node-...).
+        version="$(tr -d '\r\n[:space:]' < VERSION)"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Build the node package
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        INCLUDE_GPU: ${{ inputs.include-gpu }}
+        PACKAGE_NAME: k2s-${{ steps.version.outputs.version }}-node-debian13-${{ inputs.arch }}.zip
+      run: |
+        rm -rf "$NODE_PACKAGE_ROOT"
+        mkdir -p "$NODE_PACKAGE_ROOT/out"
+        gpu_flag=""
+        if [ "$INCLUDE_GPU" = "true" ]; then
+          gpu_flag="--include-gpu"
+        fi
+        sudo install -m 755 /tmp/k2s-cli "$GITHUB_WORKSPACE/k2s"
+        sudo "$GITHUB_WORKSPACE/k2s" system package --node-package --os debian13 --arch "$ARCH" $gpu_flag \
+          --target-dir "$NODE_PACKAGE_ROOT/out" \
+          --name "$PACKAGE_NAME"
+
+    - name: Verify package contents
+      shell: bash
+      env:
+        PACKAGE_NAME: k2s-${{ steps.version.outputs.version }}-node-debian13-${{ inputs.arch }}.zip
+      run: |
+        zip_path="$NODE_PACKAGE_ROOT/out/$PACKAGE_NAME"
+        mkdir -p "$NODE_PACKAGE_ROOT/extract"
+        unzip -q "$zip_path" -d "$NODE_PACKAGE_ROOT/extract"
+        find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' | while read -r deb; do
+          echo "=== $deb ==="
+          dpkg --info "$deb" | grep -E 'Package|Architecture'
+        done
+        [ -n "$(find "$NODE_PACKAGE_ROOT/extract" -name '*.deb' -print -quit)" ] || {
+          echo "::error::no .deb packages found in the built zip"
+          exit 1
+        }
+        # Same layout as the Windows-built package: packages/ plus images/.
+        images=$(find "$NODE_PACKAGE_ROOT/extract/images" -name '*.tar' 2>/dev/null | wc -l)
+        echo "container image archives: $images"
+        [ "$images" -gt 0 ] || {
+          echo "::error::no image archives found in the built zip"
+          exit 1
+        }
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: debian13-${{ inputs.arch }}-node-package-${{ inputs.run }}
+        path: ${{ env.NODE_PACKAGE_ROOT }}/out/*.zip
+        retention-days: 14

@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: © 2026 The K2s Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Starts the worker guest of the Linux-host e2e workflows and authorizes the K2s public key of the control plane
+# for its user, as 'k2s node add' requires. The env script defines cp_vm and wk_vm.
+
+name: Linux cluster worker guest
+description: Starts the worker guest and authorizes the K2s public key on it.
+
+inputs:
+  env-script:
+    description: Script that defines cp_vm and wk_vm, e.g. .github/scripts/linux-cluster-amd64-env.sh.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Start worker guest
+      shell: bash
+      env:
+        ENV_SCRIPT: ${{ inputs.env-script }}
+      run: |
+        set -euo pipefail
+        source "$ENV_SCRIPT"
+        wk_vm prepare
+        wk_vm start
+        wk_vm wait-ssh
+
+    - name: Authorize the K2s public key on the worker
+      shell: bash
+      env:
+        ENV_SCRIPT: ${{ inputs.env-script }}
+      run: |
+        set -euo pipefail
+        source "$ENV_SCRIPT"
+        # The K2s key pair lives on the control-plane guest and never leaves it: only the public half is copied.
+        pubkey_file="$RUNNER_TEMP/k2s-node.pub"
+        cp_vm exec <<'EOF' > "$pubkey_file"
+        set -euo pipefail
+        sudo test -f /root/.ssh/k2s/id_ed25519.pub
+        sudo cat /root/.ssh/k2s/id_ed25519.pub
+        EOF
+        grep -q '^ssh-ed25519 ' "$pubkey_file"
+        pubkey="$(cat "$pubkey_file")"
+        wk_vm exec <<EOF
+        set -euo pipefail
+        install -d -m 700 ~/.ssh
+        grep -qxF '$pubkey' ~/.ssh/authorized_keys 2>/dev/null || echo '$pubkey' >> ~/.ssh/authorized_keys
+        chmod 600 ~/.ssh/authorized_keys
+        EOF

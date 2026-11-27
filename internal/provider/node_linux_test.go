@@ -1,92 +1,417 @@
+//go:build linux
+
 // SPDX-FileCopyrightText:  © 2026 The K2s Authors
 // SPDX-License-Identifier: Apache-2.0
-
-//go:build linux
 
 package provider
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"testing"
+
+	"github.com/k2s-project/k2s/internal/core/clusterconfig"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-func TestSSHCmdToNodeRequiresKnownHostVerification(t *testing.T) {
-	dir := t.TempDir()
-	argsPath := filepath.Join(dir, "args")
-	sshPath := filepath.Join(dir, "ssh")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSH_ARGS_FILE\"\n"
-	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SSH_ARGS_FILE", argsPath)
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("K2S_SSH_IDENTITY_FILE", "/run/k2s/id_ed25519")
-	t.Setenv("K2S_SSH_KNOWN_HOSTS_FILE", "/run/k2s/known_hosts")
+var _ = Describe("linuxNodeProvider", Label("unit"), func() {
+	validAdd := NodeAddConfig{IpAddress: "10.10.0.20", UserName: "debian", NodePackagePath: "/tmp/node.zip"}
 
-	if _, err := sshCmdToNode("worker", "192.0.2.10", "true"); err != nil {
-		t.Fatal(err)
-	}
+	Describe("Add", func() {
+		It("requires IP address and user", func() {
+			p := &linuxNodeProvider{installDir: GinkgoT().TempDir()}
 
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), "StrictHostKeyChecking=yes") {
-		t.Fatalf("ssh args do not require host key verification: %s", args)
-	}
-	if strings.Contains(string(args), "StrictHostKeyChecking=no") ||
-		strings.Contains(string(args), "UserKnownHostsFile=/dev/null") {
-		t.Fatalf("ssh args disable host key verification: %s", args)
-	}
-	for _, expected := range []string{"-i\n/run/k2s/id_ed25519", "IdentitiesOnly=yes", "UserKnownHostsFile=/run/k2s/known_hosts"} {
-		if !strings.Contains(string(args), expected) {
-			t.Fatalf("ssh args do not include %q: %s", expected, args)
+			Expect(p.Add(NodeAddConfig{UserName: "debian", NodePackagePath: "/tmp/node.zip"})).To(MatchError(ContainSubstring("--ip-addr")))
+			Expect(p.Add(NodeAddConfig{IpAddress: "10.10.0.20", NodePackagePath: "/tmp/node.zip"})).To(MatchError(ContainSubstring("--username")))
+		})
+
+		It("runs Add.sh online when no node package is given", func() {
+			installDir := installFakeNodeScript("Add.sh", 0)
+			argsFile := filepath.Join(GinkgoT().TempDir(), "args")
+			script := filepath.Join(installDir, "lib", "scripts", "linux", "debian", "worker", "bare-metal", "Add.sh")
+			Expect(os.WriteFile(script, []byte(`printf '%s ' "$@" > "`+argsFile+`"`), 0o600)).To(Succeed())
+			p := &linuxNodeProvider{installDir: installDir, configDir: "/var/lib/k2s"}
+
+			Expect(p.Add(NodeAddConfig{IpAddress: "10.10.0.20", UserName: "debian"})).To(Succeed())
+
+			args, err := os.ReadFile(argsFile)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(strings.TrimSpace(string(args))).To(Equal("--ip-address 10.10.0.20 --user debian --install-dir " + installDir + " --config-dir /var/lib/k2s"))
+		})
+
+		It("fails when Add.sh is missing", func() {
+			p := &linuxNodeProvider{installDir: GinkgoT().TempDir()}
+
+			Expect(p.Add(validAdd)).To(MatchError(ContainSubstring("Add.sh")))
+		})
+
+		It("reports a script failure with the script's last error line", func() {
+			p := &linuxNodeProvider{installDir: installFakeNodeScript("Add.sh", 1)}
+
+			err := p.Add(validAdd)
+
+			var failure *ProviderFailure
+			Expect(errors.As(err, &failure)).To(BeFalse())
+			Expect(err).To(MatchError(And(ContainSubstring("10.10.0.20"), ContainSubstring("node rejected"), ContainSubstring("see log file"))))
+		})
+	})
+
+	DescribeTable("reports a rejected node as warning",
+		func(script string, exitCode int, code string, call func(*linuxNodeProvider) error) {
+			p := &linuxNodeProvider{installDir: installFakeNodeScript(script, exitCode)}
+
+			err := call(p)
+
+			var failure *ProviderFailure
+			Expect(errors.As(err, &failure)).To(BeTrue(), "got %v", err)
+			Expect(failure.Severity).To(Equal(SeverityWarning))
+			Expect(failure.Code).To(Equal(code))
+			Expect(failure.Message).To(Equal("node rejected"))
+		},
+		Entry("unsupported OS", "Add.sh", 3, "node-os-not-supported", func(p *linuxNodeProvider) error { return p.Add(validAdd) }),
+		Entry("already existing node", "Add.sh", 4, "node-already-exists", func(p *linuxNodeProvider) error { return p.Add(validAdd) }),
+		Entry("unknown node", "Remove.sh", 5, "node-not-found", func(p *linuxNodeProvider) error {
+			return p.Remove(NodeRemoveConfig{NodeName: "worker1"})
+		}),
+	)
+
+	Describe("Remove", func() {
+		It("requires a node name", func() {
+			p := &linuxNodeProvider{installDir: installFakeNodeScript("Remove.sh", 0)}
+
+			Expect(p.Remove(NodeRemoveConfig{})).To(MatchError(ContainSubstring("--name")))
+		})
+	})
+
+	Describe("Start and Stop", func() {
+		It("reject nodes that are not Linux workers", func() {
+			p := &linuxNodeProvider{installDir: installFakeNodeScript("Start.sh", 0)}
+
+			Expect(p.Start(NodeStartConfig{NodeName: "win1", Role: "worker", OS: "windows"})).To(MatchError(ErrNotSupported))
+			Expect(p.Stop(NodeStopConfig{NodeName: "cp1", Role: "control-plane", OS: "linux"})).To(MatchError(ErrNotSupported))
+		})
+
+		It("passes the NotReady wait to Stop.sh", func() {
+			installDir := installFakeNodeScript("Stop.sh", 0)
+			argsFile := filepath.Join(GinkgoT().TempDir(), "args")
+			script := filepath.Join(installDir, "lib", "scripts", "linux", "debian", "worker", "bare-metal", "Stop.sh")
+			Expect(os.WriteFile(script, []byte(`printf '%s ' "$@" > "`+argsFile+`"`), 0o600)).To(Succeed())
+			p := &linuxNodeProvider{installDir: installDir, configDir: "/var/lib/k2s"}
+
+			Expect(p.Stop(NodeStopConfig{NodeName: "worker1", Role: "worker", OS: "linux", WaitForNotReady: true})).To(Succeed())
+
+			args, err := os.ReadFile(argsFile)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(strings.TrimSpace(string(args))).To(Equal("--name worker1 --wait-for-not-ready --install-dir " + installDir + " --config-dir /var/lib/k2s"))
+		})
+	})
+})
+
+var _ = Describe("worker-node.module.sh", Label("unit"), func() {
+	var configDir string
+
+	BeforeEach(func() {
+		configDir = GinkgoT().TempDir()
+	})
+
+	It("adds cluster.json entries in the schema of clusterconfig", func() {
+		snippet := `k2s_node_configure debian 10.10.0.20 key && k2s_node_config_add "$1/cluster.json" worker1 &&
+k2s_node_configure admin 10.10.0.21 key && k2s_node_config_add "$1/cluster.json" worker2`
+
+		_, err := runNodeModuleFunction(nil, snippet, configDir)
+		Expect(err).ToNot(HaveOccurred())
+
+		cluster, err := clusterconfig.Read(configDir)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(cluster).ToNot(BeNil())
+		Expect(cluster.Nodes).To(Equal([]clusterconfig.Node{
+			{Name: "worker1", IpAddress: "10.10.0.20", Username: "debian", NodeType: clusterconfig.NodeTypeHost, Role: clusterconfig.RoleWorker, OS: clusterconfig.OsTypeLinux},
+			{Name: "worker2", IpAddress: "10.10.0.21", Username: "admin", NodeType: clusterconfig.NodeTypeHost, Role: clusterconfig.RoleWorker, OS: clusterconfig.OsTypeLinux},
+		}))
+	})
+
+	It("reads and removes a cluster.json entry and keeps the others", func() {
+		content := `{"nodes":[{"Name":"Worker1","IpAddress":"10.10.0.20","Username":"debian"},{"Name":"worker2","IpAddress":"10.10.0.21","Username":"admin"}]}`
+		Expect(os.WriteFile(filepath.Join(configDir, "cluster.json"), []byte(content), 0o600)).To(Succeed())
+
+		entry, err := runNodeModuleFunction(nil, `k2s_node_config_get "$1/cluster.json" worker1 && k2s_node_config_remove "$1/cluster.json" worker1`, configDir)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(entry).To(Equal("10.10.0.20 debian"))
+
+		cluster, err := clusterconfig.Read(configDir)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(cluster.Nodes).To(HaveLen(1))
+		Expect(cluster.Nodes[0].Name).To(Equal("worker2"))
+	})
+
+	It("writes the install proxy to proxy.conf and reads it back", func() {
+		snippet := `source "$K2S_INSTALL_DIR/lib/modules/linux/infra/proxy.sh"
+K2S_CONFIG_DIR="$1" K2S_PROXY='http://user:secret@proxy.example:3128' K2S_NO_PROXY='localhost,.svc' k2s_proxy_config_write
+stat -c %a "$1/proxy.conf"
+k2s_proxy_config_http "$1"
+k2s_proxy_config_http "$1/missing"
+k2s_proxy_config_no_proxy "$1"
+k2s_proxy_config_no_proxy "$1/missing"`
+
+		out, err := runNodeModuleFunction(nil, snippet, configDir)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(out).To(Equal("600\nhttp://user:secret@proxy.example:3128\nlocalhost,.svc"))
+		content, err := os.ReadFile(filepath.Join(configDir, "proxy.conf"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(string(content)).To(Equal("http_proxy=http://user:secret@proxy.example:3128\nhttps_proxy=http://user:secret@proxy.example:3128\nno_proxy=localhost,.svc\n"))
+	})
+
+	DescribeTable("k2s_node_no_proxy adds the local names and the host address to the configured list",
+		func(configured, hostIP, want string) {
+			out, err := runNodeModuleFunction(nil, `k2s_node_no_proxy "$1" "$2"`, configured, hostIP)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(out).To(Equal(want))
+		},
+		Entry("with configuration and host address", "registry.corp,localhost,172.20.0.0/16", "10.10.0.5",
+			"registry.corp,localhost,172.20.0.0/16,127.0.0.1,::1,.local,.cluster.local,.svc,10.10.0.5"),
+		Entry("without configuration and host address", "", "", "localhost,127.0.0.1,::1,.local,.cluster.local,.svc"),
+	)
+
+	DescribeTable("masks the credentials of a proxy URL in the output",
+		func(proxy, want string) {
+			out, err := runNodeModuleFunction(nil, `printf '%s\n' "proxy: $1" "other line" | k2s_node_mask_proxy "$1"`, proxy)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(out).To(Equal("proxy: " + want + "\nother line"))
+		},
+		Entry("with scheme", "http://user:secret@proxy.example:3128", "http://***@proxy.example:3128"),
+		Entry("without scheme", "user:secret@proxy.example:3128", "***@proxy.example:3128"),
+		Entry("without credentials", "http://proxy.example:3128", "http://proxy.example:3128"),
+	)
+
+	DescribeTable("rejects nodes that are known to the cluster or the configuration",
+		func(node string, wantExitCode int) {
+			Expect(os.WriteFile(filepath.Join(configDir, "cluster.json"), []byte(`{"nodes":[{"Name":"configured"}]}`), 0o600)).To(Succeed())
+			stubs := map[string]string{"kubectl": `printf '%s' 'control-plane joined'`}
+
+			_, err := runNodeModuleFunction(stubs, `k2s_node_check_not_in_cluster "$1" "$2/cluster.json"`, node, configDir)
+
+			Expect(exitCode(err)).To(Equal(wantExitCode), "got %v", err)
+		},
+		Entry("node in the cluster", "joined", 4),
+		Entry("node in cluster.json", "configured", 4),
+		Entry("new node", "new", 0),
+	)
+
+	Describe("k2s_node_host_ip", func() {
+		It("prints the host address for a directly connected node", func() {
+			stubs := map[string]string{"ip": `printf '%s\n' '10.10.0.20 dev eth0 src 10.10.0.5 uid 0'`}
+
+			hostIP, err := runNodeModuleFunction(stubs, `k2s_node_configure debian 10.10.0.20 key && k2s_node_host_ip`)
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(hostIP).To(Equal("10.10.0.5"))
+		})
+
+		It("rejects a node behind a router", func() {
+			stubs := map[string]string{"ip": `printf '%s\n' '10.20.0.20 via 10.10.0.1 dev eth0 src 10.10.0.5 uid 0'`}
+
+			_, err := runNodeModuleFunction(stubs, `k2s_node_configure debian 10.20.0.20 key && k2s_node_host_ip`)
+
+			Expect(err).To(MatchError(ContainSubstring("layer-2")))
+		})
+	})
+
+	It("labels an added node as worker", func() {
+		calls := filepath.Join(GinkgoT().TempDir(), "calls")
+		stubs := map[string]string{"kubectl": `printf '%s\n' "$*" >> "` + calls + `"`}
+
+		_, err := runNodeModuleFunction(stubs, `k2s_node_label_worker worker1`)
+
+		Expect(err).ToNot(HaveOccurred())
+		commands, err := os.ReadFile(calls)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(strings.TrimSpace(string(commands))).To(Equal("label node worker1 kubernetes.io/role=worker --overwrite"))
+	})
+
+	It("waits until the joined node is registered", func() {
+		counter := filepath.Join(GinkgoT().TempDir(), "count")
+		stubs := map[string]string{
+			"kubectl": `n=$(( $(cat "` + counter + `" 2>/dev/null || echo 0) + 1 )); echo "$n" > "` + counter + `"; [[ $n -lt 3 ]] || echo node/worker1`,
+			"sleep":   `:`,
+		}
+
+		_, err := runNodeModuleFunction(stubs, `k2s_node_wait_registered worker1 10 1`)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(os.ReadFile(counter)).To(BeEquivalentTo("3\n"))
+	})
+
+	It("fails when the joined node is not registered in time", func() {
+		stubs := map[string]string{"kubectl": `:`, "sleep": `:`}
+
+		_, err := runNodeModuleFunction(stubs, `k2s_node_wait_registered worker1 3 1`)
+
+		Expect(err).To(MatchError(ContainSubstring("was not registered in the cluster within 3 seconds")))
+	})
+
+	DescribeTable("k2s_node_flannel_backend reads the backend of kube-flannel-cfg",
+		func(netConf string, want string, wantErr bool) {
+			stubs := map[string]string{"kubectl": `printf '%s' '` + netConf + `'`}
+
+			backend, err := runNodeModuleFunction(stubs, `k2s_node_flannel_backend`)
+
+			Expect(err != nil).To(Equal(wantErr), "got %v", err)
+			Expect(backend).To(Equal(want))
+		},
+		Entry("vxlan", `{"Network":"172.20.0.0/16","Backend":{"Type":"vxlan"}}`, "vxlan", false),
+		Entry("host-gw", `{"Network":"172.20.0.0/16","Backend":{"Type":"host-gw"}}`, "host-gw", false),
+		Entry("no backend", `{"Network":"172.20.0.0/16"}`, "", true),
+	)
+
+	Describe("remote steps", func() {
+		var record string
+
+		BeforeEach(func() {
+			record = GinkgoT().TempDir()
+		})
+
+		sshStub := func() map[string]string {
+			return map[string]string{"ssh": `printf '%s\n' "$@" > "` + record + `/args"; cat > "` + record + `/stdin"`}
+		}
+
+		It("joins with a JoinConfiguration on stdin, not with the token in the command line", func() {
+			stubs := sshStub()
+			stubs["kubeadm"] = `echo 'kubeadm join 10.10.0.10:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:1234'`
+
+			_, err := runNodeModuleFunction(stubs, `k2s_node_configure debian 10.10.0.20 key && k2s_node_join`)
+
+			Expect(err).ToNot(HaveOccurred())
+			args, err := os.ReadFile(filepath.Join(record, "args"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(args)).To(And(ContainSubstring("debian@10.10.0.20"), ContainSubstring("kubeadm join --config"), Not(ContainSubstring("abcdef"))))
+			config, err := os.ReadFile(filepath.Join(record, "stdin"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(config)).To(And(
+				ContainSubstring("kind: JoinConfiguration"),
+				ContainSubstring(`apiServerEndpoint: "10.10.0.10:6443"`),
+				ContainSubstring(`token: "abcdef.0123456789abcdef"`),
+				ContainSubstring(`- "sha256:1234"`),
+				ContainSubstring("criSocket: unix:///run/crio/crio.sock"),
+				ContainSubstring(`value: "10.10.0.20"`),
+			))
+		})
+
+		It("installs the packages with the no-proxy list", func() {
+			_, err := runNodeModuleFunction(sshStub(), `k2s_node_configure debian 10.10.0.20 key && k2s_node_install_packages token http://proxy:3128 'localhost,.svc'`)
+
+			Expect(err).ToNot(HaveOccurred())
+			args, err := os.ReadFile(filepath.Join(record, "args"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(args)).To(ContainSubstring("http://proxy:3128 'token' false localhost\\,.svc false"))
+		})
+
+		It("stops kubelet, then the pods, then CRI-O", func() {
+			_, err := runNodeModuleFunction(sshStub(), `source "$K2S_INSTALL_DIR/lib/modules/linux/node/crio.sh"
+k2s_node_configure debian 10.10.0.20 key && k2s_node_stop_services`)
+			Expect(err).ToNot(HaveOccurred())
+
+			calls := filepath.Join(record, "calls")
+			stubDir := GinkgoT().TempDir()
+			for name, body := range map[string]string{
+				"systemctl": `printf '%s\n' "systemctl $*" >> "` + calls + `"`,
+				"crictl":    `printf '%s\n' "crictl $*" >> "` + calls + `"; [[ $3 != pods ]] || printf '%s\n' pod1 pod2`,
+			} {
+				Expect(os.WriteFile(filepath.Join(stubDir, name), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o700)).To(Succeed())
+			}
+			cmd := exec.Command("bash", filepath.Join(record, "stdin"))
+			cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			Expect(cmd.Run()).To(Succeed())
+
+			Expect(os.ReadFile(calls)).To(BeEquivalentTo(`systemctl stop kubelet
+systemctl is-active --quiet crio
+crictl --runtime-endpoint unix:///var/run/crio/crio.sock pods -q
+crictl --runtime-endpoint unix:///var/run/crio/crio.sock stopp pod1
+crictl --runtime-endpoint unix:///var/run/crio/crio.sock stopp pod2
+systemctl stop crio
+`))
+		})
+
+		It("resets the node with a valid script and the configured KubeSwitch and pod CIDRs", func() {
+			_, err := runNodeModuleFunction(sshStub(), `k2s_node_configure debian 10.10.0.20 key && k2s_node_reset`)
+
+			Expect(err).ToNot(HaveOccurred())
+			args, err := os.ReadFile(filepath.Join(record, "args"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(args)).To(ContainSubstring("sudo bash -s -- 172.19.1.0/24 172.20.0.0/16"))
+			script := filepath.Join(record, "stdin")
+			Expect(exec.Command("bash", "-n", script).Run()).To(Succeed())
+			content, err := os.ReadFile(script)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(content)).To(And(ContainSubstring("kubeadm reset --force"), ContainSubstring("dpkg -P")))
+		})
+	})
+
+	DescribeTable("k2s_node_remove_from_cluster",
+		func(kubectl string, wantErr bool, wantCommands string) {
+			calls := filepath.Join(GinkgoT().TempDir(), "calls")
+			stubs := map[string]string{"kubectl": `printf '%s ' "$1" >> "` + calls + `"` + "\n" + kubectl}
+
+			_, err := runNodeModuleFunction(stubs, `k2s_node_remove_from_cluster worker1`)
+
+			commands, _ := os.ReadFile(calls)
+			Expect(err != nil).To(Equal(wantErr), "got %v", err)
+			Expect(strings.TrimSpace(string(commands))).To(Equal(wantCommands))
+		},
+		Entry("skips a node that is not in the cluster", `:`, false, "get"),
+		Entry("fails when the node lookup fails", `[[ $1 != get ]] || exit 1`, true, "get"),
+		Entry("deletes the node when draining fails", `[[ $1 != get ]] || echo node/worker1; [[ $1 != drain ]] || exit 1`, false, "get drain delete"),
+		Entry("fails when deleting fails", `[[ $1 != get ]] || echo node/worker1; [[ $1 != delete ]] || exit 1`, true, "get drain delete"),
+	)
+})
+
+func installFakeNodeScript(name string, exitCode int) string {
+	installDir := GinkgoT().TempDir()
+	scriptDir := filepath.Join(installDir, "lib", "scripts", "linux", "debian", "worker", "bare-metal")
+	Expect(os.MkdirAll(scriptDir, 0o700)).To(Succeed())
+	script := "printf '%s\\n' 'first error' 'node rejected' >&2\nexit " + strconv.Itoa(exitCode) + "\n"
+	Expect(os.WriteFile(filepath.Join(scriptDir, name), []byte(script), 0o600)).To(Succeed())
+	return installDir
+}
+
+func runNodeModuleFunction(stubs map[string]string, snippet string, args ...string) (string, error) {
+	for _, tool := range []string{"bash", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			Skip(tool + " is not available")
 		}
 	}
+	stubDir := GinkgoT().TempDir()
+	for name, body := range stubs {
+		Expect(os.WriteFile(filepath.Join(stubDir, name), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o700)).To(Succeed())
+	}
+	script := "set -euo pipefail\nsource \"$K2S_INSTALL_DIR/lib/modules/linux/common/logging.sh\"\nsource \"$0\"\n" + snippet
+	module := filepath.Join(repositoryRoot, "lib/modules/linux/node/worker-node.module.sh")
+	cmd := exec.Command("bash", append([]string{"-c", script, module}, args...)...)
+	cmd.Env = append(os.Environ(), "PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"K2S_INSTALL_DIR="+repositoryRoot, "K2S_LOG_FILE="+filepath.Join(GinkgoT().TempDir(), "k2s.log"))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err != nil {
+		err = fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), err
 }
 
-func TestAssertSupportedNodeArchitecture(t *testing.T) {
-	dir := t.TempDir()
-	sshPath := filepath.Join(dir, "ssh")
-	script := "#!/bin/sh\ncase \"$*\" in *\"uname -m\"*) printf '%s\\n' \"$SSH_ARCH\";; *) printf '%s\\n' \"$SSH_OS\";; esac\n"
-	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+func exitCode(err error) int {
+	if err == nil {
+		return 0
 	}
-
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	tests := []struct {
-		name    string
-		arch    string
-		osID    string
-		wantErr bool
-	}{
-		{name: "amd64", arch: "x86_64", osID: "ubuntu", wantErr: false},
-		{name: "arm64 Debian", arch: "aarch64", osID: "debian", wantErr: false},
-		{name: "arm64 non-Debian", arch: "aarch64", osID: "ubuntu", wantErr: true},
-		{name: "unsupported arm", arch: "armv7l", osID: "debian", wantErr: true},
-		{name: "unsupported riscv", arch: "riscv64", osID: "debian", wantErr: true},
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return exitErr.ExitCode()
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("SSH_ARCH", tt.arch)
-			t.Setenv("SSH_OS", tt.osID)
-			err := assertSupportedNodeArchitecture("worker", "192.0.2.10")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("assertSupportedNodeArchitecture() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestKubeadmJoinCommandUsesCrioSocket(t *testing.T) {
-	command := kubeadmJoinCommand("  kubeadm join 192.0.2.1:6443 --token test  \n")
-	if !strings.HasPrefix(command, "kubeadm join 192.0.2.1:6443 --token test") {
-		t.Fatalf("join command was not trimmed: %q", command)
-	}
-	if !strings.HasSuffix(command, "--cri-socket unix:///run/crio/crio.sock") {
-		t.Fatalf("join command does not select the CRI-O socket: %q", command)
-	}
+	return -1
 }

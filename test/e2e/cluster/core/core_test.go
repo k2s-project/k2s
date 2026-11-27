@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -695,6 +696,14 @@ var _ = Describe("Cluster Core", func() {
 			Entry("kube-scheduler-HOSTNAME_PLACEHOLDER is available", "kube-scheduler-HOSTNAME_PLACEHOLDER"),
 			Entry("kube-apiserver-HOSTNAME_PLACEHOLDER is available", "kube-apiserver-HOSTNAME_PLACEHOLDER"),
 			Entry("kube-controller-manager-HOSTNAME_PLACEHOLDER is available", "kube-controller-manager-HOSTNAME_PLACEHOLDER"))
+
+		It("httpproxy Windows service is running and listening on port 8181", func(ctx SpecContext) {
+			if runtime.GOOS != "windows" || suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
+				Skip("Windows host with httpproxy service required")
+			}
+
+			expectCoreHttpProxyRunningAndOwned(ctx, suite.RootDir())
+		})
 	})
 
 	Describe("Communication", func() {
@@ -982,3 +991,102 @@ var _ = Describe("Cluster Core", func() {
 		})
 	})
 })
+
+const coreHttpProxyPort = 8181
+
+type coreHttpProxyListenerOwner struct {
+	LocalAddress    string `json:"LocalAddress"`
+	LocalPort       int    `json:"LocalPort"`
+	OwningProcess   int    `json:"OwningProcess"`
+	ParentProcessId int    `json:"ParentProcessId"`
+	ProcessName     string `json:"ProcessName"`
+	ExecutablePath  string `json:"ExecutablePath"`
+}
+
+type coreHttpProxyServiceStatus struct {
+	ServiceState     string          `json:"ServiceState"`
+	ServiceProcessId int             `json:"ServiceProcessId"`
+	Listeners        json.RawMessage `json:"Listeners"`
+}
+
+func expectCoreHttpProxyRunningAndOwned(ctx context.Context, rootDir string) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+$svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='httpproxy'" -ErrorAction Stop
+if ($null -eq $svc) {
+    throw 'Windows service httpproxy was not found'
+}
+$listeners = @(Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue)
+$owners = @()
+foreach ($listener in $listeners) {
+    $proc = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f [int]$listener.OwningProcess) -ErrorAction SilentlyContinue
+    $owners += [PSCustomObject]@{
+        LocalAddress    = [string]$listener.LocalAddress
+        LocalPort       = [int]$listener.LocalPort
+        OwningProcess   = [int]$listener.OwningProcess
+        ParentProcessId = if ($null -ne $proc) { [int]$proc.ParentProcessId } else { 0 }
+        ProcessName     = if ($null -ne $proc) { [string]$proc.Name } else { '' }
+        ExecutablePath  = if ($null -ne $proc) { [string]$proc.ExecutablePath } else { '' }
+    }
+}
+[PSCustomObject]@{
+    ServiceState     = [string]$svc.State
+    ServiceProcessId = [int]$svc.ProcessId
+    Listeners        = $owners
+} | ConvertTo-Json -Depth 4
+`, coreHttpProxyPort)
+
+	cmd := exec.CommandContext(cmdCtx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = time.Second
+
+	err := cmd.Run()
+	Expect(err).NotTo(HaveOccurred(), "failed to inspect httpproxy service and port %d listeners (stderr: %s)", coreHttpProxyPort, strings.TrimSpace(stderr.String()))
+
+	var status coreHttpProxyServiceStatus
+	Expect(json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &status)).To(Succeed(), "failed to parse httpproxy status JSON: %s", stdout.String())
+	Expect(status.ServiceState).To(Equal("Running"), "expected httpproxy Windows service to be Running")
+	Expect(status.ServiceProcessId).To(BeNumerically(">", 0), "expected httpproxy NSSM service to have a valid ProcessId")
+
+	listeners := parseCoreHttpProxyListeners(status.Listeners)
+	Expect(listeners).NotTo(BeEmpty(), "expected at least one TCP listener on port %d", coreHttpProxyPort)
+
+	expectedExePath := filepath.Join(rootDir, "bin", "httpproxy.exe")
+	for _, listener := range listeners {
+		Expect(listener.LocalPort).To(Equal(coreHttpProxyPort))
+		Expect(strings.ToLower(listener.ProcessName)).To(Equal("httpproxy.exe"),
+			"expected listener on %s:%d (PID %d) to belong to httpproxy.exe, got %q",
+			listener.LocalAddress, listener.LocalPort, listener.OwningProcess, listener.ProcessName)
+		Expect(listener.ParentProcessId).To(Equal(status.ServiceProcessId),
+			"expected httpproxy.exe (PID %d) to be owned by NSSM service PID %d, got ParentProcessId %d",
+			listener.OwningProcess, status.ServiceProcessId, listener.ParentProcessId)
+		if listener.ExecutablePath != "" {
+			Expect(strings.EqualFold(filepath.Clean(listener.ExecutablePath), filepath.Clean(expectedExePath))).To(BeTrue(),
+				"expected httpproxy.exe path %q, got %q", expectedExePath, listener.ExecutablePath)
+		}
+	}
+
+	conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", coreHttpProxyPort), 5*time.Second)
+	Expect(dialErr).NotTo(HaveOccurred(), "expected local TCP connection to 127.0.0.1:%d to succeed", coreHttpProxyPort)
+	_ = conn.Close()
+}
+
+func parseCoreHttpProxyListeners(raw json.RawMessage) []coreHttpProxyListenerOwner {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var list []coreHttpProxyListenerOwner
+		Expect(json.Unmarshal(trimmed, &list)).To(Succeed())
+		return list
+	}
+	var single coreHttpProxyListenerOwner
+	Expect(json.Unmarshal(trimmed, &single)).To(Succeed())
+	return []coreHttpProxyListenerOwner{single}
+}

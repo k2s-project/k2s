@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +111,116 @@ var _ = Describe("Proxy Tests", func() {
 				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 				Expect(backendCalled.Load()).To(BeFalse())
 			})
+		})
+
+		When("forward proxy has credentials", func() {
+			It("redacts credentials in startup log output", func() {
+				var logBuf bytes.Buffer
+				previousWriter := log.Writer()
+				log.SetOutput(&logBuf)
+				DeferCleanup(log.SetOutput, previousWriter)
+
+				forwardProxy = "http://alice:s3cr3tPass!@corporate.proxy.local:8080"
+				handler, err := newProxyHttpHandler(newConfig("10.0.0.0/8"))
+
+				Expect(err).ToNot(HaveOccurred())
+				Expect(handler).ToNot(BeNil())
+				Expect(logBuf.String()).To(ContainSubstring("http://[REDACTED]@corporate.proxy.local:8080"))
+				Expect(logBuf.String()).ToNot(ContainSubstring("alice"))
+				Expect(logBuf.String()).ToNot(ContainSubstring("s3cr3tPass!"))
+			})
+		})
+	})
+
+	Describe("redactProxyURL", func() {
+		It("redacts credentials in a valid URL", func() {
+			Expect(redactProxyURL("http://user:secret@proxy.example.com:8080/path?a=1")).To(
+				Equal("http://[REDACTED]@proxy.example.com:8080/path?a=1"),
+			)
+		})
+
+		It("redacts credentials containing special characters in password", func() {
+			Expect(redactProxyURL("https://user:p%40ss%3A123%21%2F@proxy.example.com:8443")).To(
+				Equal("https://[REDACTED]@proxy.example.com:8443"),
+			)
+			Expect(redactProxyURL("http://user:p@ss:word!@proxy.example.com:8080")).To(
+				Equal("http://[REDACTED]@proxy.example.com:8080"),
+			)
+		})
+
+		It("preserves a clean URL without credentials", func() {
+			clean := "http://proxy.example.com:8080/status?email=ops@example.com"
+			Expect(redactProxyURL(clean)).To(Equal(clean))
+		})
+
+		It("preserves an empty or whitespace-only string", func() {
+			Expect(redactProxyURL("")).To(Equal(""))
+			Expect(redactProxyURL("   ")).To(Equal("   "))
+		})
+
+		It("trims surrounding whitespace while redacting credentials", func() {
+			Expect(redactProxyURL("  http://alice:secret@proxy.example.com:8080  ")).To(
+				Equal("http://[REDACTED]@proxy.example.com:8080"),
+			)
+			Expect(redactProxyURL("  http://proxy.example.com:8080/status?email=ops@example.com  ")).To(
+				Equal("http://proxy.example.com:8080/status?email=ops@example.com"),
+			)
+		})
+
+		It("redacts IPv6, empty-password, username-only, and password-only URLs with scheme", func() {
+			Expect(redactProxyURL("http://user:secret@[::1]:8080")).To(
+				Equal("http://[REDACTED]@[::1]:8080"),
+			)
+			Expect(redactProxyURL("http://user:@proxy.example.com:8080")).To(
+				Equal("http://[REDACTED]@proxy.example.com:8080"),
+			)
+			Expect(redactProxyURL("http://user@proxy.example.com:8080")).To(
+				Equal("http://[REDACTED]@proxy.example.com:8080"),
+			)
+			Expect(redactProxyURL("http://:secret@proxy.example.com:8080")).To(
+				Equal("http://[REDACTED]@proxy.example.com:8080"),
+			)
+		})
+
+		It("redacts schemeless credentials without over-redacting query emails", func() {
+			Expect(redactProxyURL("user:secret@proxy.example.com:8080/path?email=a@b.com")).To(
+				Equal("[REDACTED]@proxy.example.com:8080/path?email=a@b.com"),
+			)
+			Expect(redactProxyURL(":secret@proxy.example.com:8080")).To(
+				Equal("[REDACTED]@proxy.example.com:8080"),
+			)
+			Expect(redactProxyURL("user@proxy.example.com:8080")).To(
+				Equal("[REDACTED]@proxy.example.com:8080"),
+			)
+			Expect(redactProxyURL("proxy.example.com:8080/path?email=a@b.com")).To(
+				Equal("proxy.example.com:8080/path?email=a@b.com"),
+			)
+		})
+
+		It("redacts protocol-relative URLs including malformed ones without over-redacting query emails", func() {
+			Expect(redactProxyURL("//user:secret@proxy.example.com:8080")).To(
+				Equal("//[REDACTED]@proxy.example.com:8080"),
+			)
+			Expect(redactProxyURL("//user:secret@proxy.example.com:badport/path?email=a@b.com")).To(
+				Equal("//[REDACTED]@proxy.example.com:badport/path?email=a@b.com"),
+			)
+			Expect(redactProxyURL("//proxy.example.com:badport/path?email=a@b.com")).To(
+				Equal("//proxy.example.com:badport/path?email=a@b.com"),
+			)
+		})
+
+		It("redacts credentials in malformed URLs via regex fallback", func() {
+			Expect(redactProxyURL("http://user:secret@[::1")).To(
+				Equal("http://[REDACTED]@[::1"),
+			)
+			Expect(redactProxyURL("http://user:secret@proxy.example.com:badport/test?email=a@b.com")).To(
+				Equal("http://[REDACTED]@proxy.example.com:badport/test?email=a@b.com"),
+			)
+		})
+
+		It("preserves malformed URLs without authority credentials", func() {
+			malformedNoCreds := "http://proxy.example.com:badport/path?email=ops@example.com"
+			Expect(redactProxyURL(malformedNoCreds)).To(Equal(malformedNoCreds))
 		})
 	})
 

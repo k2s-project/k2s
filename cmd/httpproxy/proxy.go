@@ -12,11 +12,45 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/cloudflare/cfssl/whitelist"
 	"github.com/elazarl/goproxy"
 )
+
+var proxyURLCredsPattern = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.-]*://|//)[^/?#\s]*@`)
+var schemelessCredsPattern = regexp.MustCompile(`^(?:[^/?#\s:]+:[^/?#\s]*|[^/?#\s:@]+|:[^/?#\s]+)@`)
+
+func redactProxyURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return raw
+	}
+
+	if !strings.Contains(trimmed, "://") && !strings.HasPrefix(trimmed, "//") && schemelessCredsPattern.MatchString(trimmed) {
+		return schemelessCredsPattern.ReplaceAllString(trimmed, "[REDACTED]@")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err == nil {
+		if parsed.User == nil {
+			return trimmed
+		}
+		redacted := *parsed
+		redacted.User = nil
+		withoutCreds := redacted.String()
+		if idx := strings.Index(withoutCreds, "://"); idx >= 0 {
+			return withoutCreds[:idx+3] + "[REDACTED]@" + withoutCreds[idx+3:]
+		}
+		if strings.HasPrefix(withoutCreds, "//") {
+			return "//[REDACTED]@" + withoutCreds[2:]
+		}
+		return "[REDACTED]@" + withoutCreds
+	}
+
+	return proxyURLCredsPattern.ReplaceAllString(trimmed, "${1}[REDACTED]@")
+}
 
 func newProxyConfig(verbose *bool, listenAddress *string, forwardProxy *string, allowedCidrs networkCIDRs) *proxyConfig {
 	return &proxyConfig{
@@ -65,15 +99,22 @@ func newProxyHttpHandler(proxyConfig *proxyConfig) (http.Handler, error) {
 
 	proxy := goproxy.NewProxyHttpServer()
 
-	//if forward proxy is configured, use it
-	if proxyConfig.ForwardProxy != nil && strings.TrimSpace(*proxyConfig.ForwardProxy) != "" {
-		log.Printf("Starting httpproxy on %s with forward proxy: %s", *proxyConfig.ListenAddress, *proxyConfig.ForwardProxy)
-		configureForwardProxyInProxyHttpServer(proxy, *proxyConfig.ForwardProxy)
-	} else {
-		log.Printf("Starting httpproxy on %s", *proxyConfig.ListenAddress)
+	listenAddr := ""
+	if proxyConfig.ListenAddress != nil {
+		listenAddr = *proxyConfig.ListenAddress
 	}
 
-	proxy.Verbose = *proxyConfig.VerboseLogging
+	//if forward proxy is configured, use it
+	if proxyConfig.ForwardProxy != nil && strings.TrimSpace(*proxyConfig.ForwardProxy) != "" {
+		log.Printf("Starting httpproxy on %s with forward proxy: %s", listenAddr, redactProxyURL(*proxyConfig.ForwardProxy))
+		configureForwardProxyInProxyHttpServer(proxy, *proxyConfig.ForwardProxy)
+	} else {
+		log.Printf("Starting httpproxy on %s", listenAddr)
+	}
+
+	if proxyConfig.VerboseLogging != nil {
+		proxy.Verbose = *proxyConfig.VerboseLogging
+	}
 
 	//restrict http proxy access to clients from certain networks
 	log.Printf("Http Proxy available for clients from networks: %s", proxyConfig.AllowedCidrs.String())

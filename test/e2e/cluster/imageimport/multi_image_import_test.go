@@ -262,7 +262,7 @@ func listControlPlaneImages() map[string][]string {
 }
 
 func listTemporaryArchives() []string {
-	return strings.Fields(mustExecOnControlPlane("ls -1 /tmp/k2s-image-import-*.tar 2>/dev/null || true"))
+	return strings.Fields(mustExecOnControlPlane("ls -1 /var/tmp/k2s-image-import-*.tar 2>/dev/null || true"))
 }
 
 var _ = Describe("k2s image import of multi-image Docker archives", Label("image", "image-import"), Ordered, func() {

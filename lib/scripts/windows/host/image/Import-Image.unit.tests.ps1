@@ -5,8 +5,8 @@ BeforeAll {
     $modulePath = "$PSScriptRoot/Image-Common.module.psm1"
     $moduleName = (Import-Module $modulePath -PassThru -Force).Name
 
-    # Every import copies the archive to its own '/tmp/k2s-image-import-<guid>.tar'; commands are recorded with that path replaced by '<archive>'
-    $script:remotePathPattern = '/tmp/k2s-image-import-[0-9a-f]{32}\.tar'
+    # Every import copies the archive to its own '/var/tmp/k2s-image-import-<guid>.tar'; commands are recorded with that path replaced by '<archive>'
+    $script:remotePathPattern = '/var/tmp/k2s-image-import-[0-9a-f]{32}\.tar'
     $script:cleanupCommand = 'sudo rm -f <archive>'
     $script:legacyDockerCommand = 'sudo buildah pull docker-archive:<archive> 2>&1'
     $script:legacyOciCommand = 'sudo buildah pull oci-archive:<archive> 2>&1'
@@ -47,7 +47,7 @@ BeforeAll {
         $script:copyTargets.Count | Should -Be 1
         $script:copyTargets[0] | Should -Match "^$script:remotePathPattern$"
         foreach ($rawCommand in $script:rawCommands) {
-            foreach ($match in [regex]::Matches($rawCommand, '/tmp/\S+\.tar')) {
+            foreach ($match in [regex]::Matches($rawCommand, '/var/tmp/\S+\.tar')) {
                 $match.Value | Should -BeExactly $script:copyTargets[0]
             }
         }

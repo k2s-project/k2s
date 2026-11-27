@@ -180,6 +180,9 @@ function New-ExternalSwitch {
         Write-Log "Disable DNS for interface $endpointname : ($cbr0AdapterIfIndex)"
         Set-DnsClient -InterfaceIndex $cbr0AdapterIfIndex -ResetConnectionSpecificSuffix -RegisterThisConnectionsAddress $false
     }
+
+    # hide the endpoint interface from firewall network profile evaluation (no-op if not supported)
+    Set-K2sInterfaceHidden -InterfaceAlias $iname | Out-Null
 }
 
 function Remove-ExternalSwitch () {
@@ -286,6 +289,185 @@ function Set-InterfacePrivate {
     $endTime = Get-Date
     $durationSeconds = Get-DurationInSeconds -StartTime $startTime -EndTime $endTime
     Write-Log "OK: $InterfaceAlias set to private after $iteration attempts, total duration: ${durationSeconds} seconds"
+}
+
+# Single place that executes 'netsh nlm'; all other functions go through it.
+function Invoke-NetshNlm {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string[]] $Arguments
+    )
+
+    $output = & netsh nlm @Arguments 2>&1
+    return [PSCustomObject]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($output | Out-String).Trim()
+    }
+}
+
+<#
+.SYNOPSIS
+Checks if this Windows version supports 'netsh nlm set hidden'.
+
+.DESCRIPTION
+Calls 'netsh nlm set hidden' without parameters, which changes nothing and prints its usage
+if the command exists. The result is cached for the lifetime of the module.
+#>
+function Test-NetshNlmHiddenSupported {
+    if ($null -eq $script:netshNlmHiddenSupported) {
+        $result = Invoke-NetshNlm -Arguments @('set', 'hidden')
+        $script:netshNlmHiddenSupported = ($result.Output -match '\bunhide\b')
+        Write-Log "[NlmHidden] 'netsh nlm set hidden' supported: $($script:netshNlmHiddenSupported)"
+    }
+    return $script:netshNlmHiddenSupported
+}
+
+<#
+.SYNOPSIS
+Hides a K2s network interface (NCF_HIDDEN) so that it is not evaluated by firewall network profiles.
+
+.DESCRIPTION
+Uses 'netsh nlm set hidden alias <alias> action hide category <category>'.
+Never throws: returns an object with Applied = $false and an Error text if hiding is not possible,
+so that callers can fall back to the Private network profile.
+#>
+function Set-K2sInterfaceHidden {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $InterfaceAlias,
+        [Parameter()]
+        [ValidateSet('private', 'public', 'unchanged')]
+        [string] $Category = 'private',
+        [Parameter()]
+        [int] $MaxAttempts = 3,
+        [Parameter()]
+        [int] $RetryDelaySeconds = 2
+    )
+
+    $newResult = {
+        param([bool] $Applied, [string] $ErrorText)
+        [PSCustomObject]@{ InterfaceAlias = $InterfaceAlias; Applied = $Applied; Error = $ErrorText }
+    }
+
+    if (-not (Test-NetshNlmHiddenSupported)) {
+        Write-Log "[NlmHidden] 'netsh nlm set hidden' not available, '$InterfaceAlias' stays visible."
+        return & $newResult $false "'netsh nlm set hidden' not supported"
+    }
+
+    $adapter = Get-NetAdapter -Name $InterfaceAlias -IncludeHidden -ErrorAction SilentlyContinue
+    if (-not $adapter) {
+        Write-Log "[NlmHidden] Interface '$InterfaceAlias' not found, skipping hidden flag."
+        return & $newResult $false 'Interface not found'
+    }
+
+    $lastError = ''
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Log "[NlmHidden] Hiding '$InterfaceAlias' with category '$Category' (attempt $attempt of $MaxAttempts)"
+        $result = Invoke-NetshNlm -Arguments @('set', 'hidden', 'alias', $InterfaceAlias, 'action', 'hide', 'category', $Category)
+        if ($result.ExitCode -eq 0 -and $result.Output -notmatch 'parameter is incorrect') {
+            Write-Log "[NlmHidden] '$InterfaceAlias' is hidden"
+            return & $newResult $true $null
+        }
+        $lastError = "exit code $($result.ExitCode): $($result.Output)"
+        Write-Log "[NlmHidden] Hiding '$InterfaceAlias' failed ($lastError)"
+        if ($attempt -lt $MaxAttempts) {
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+    }
+
+    return & $newResult $false $lastError
+}
+
+<#
+.SYNOPSIS
+Checks the firewall posture of an interface: hidden, or Private network category as fallback.
+
+.OUTPUTS
+Hashtable with IsAcceptable, IsHidden, IsPrivate, CurrentCategory, InterfaceAlias and Error.
+#>
+function Test-K2sInterfaceFirewallPosture {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $InterfaceAlias
+    )
+
+    $adapter = Get-NetAdapter -Name $InterfaceAlias -IncludeHidden -ErrorAction SilentlyContinue
+    if (-not $adapter) {
+        Write-Log "[NlmHidden] Interface '$InterfaceAlias' not found during firewall posture check."
+        return @{
+            IsAcceptable    = $false
+            IsHidden        = $false
+            IsPrivate       = $false
+            CurrentCategory = 'Unknown'
+            InterfaceAlias  = $InterfaceAlias
+            Error           = 'Interface not found'
+        }
+    }
+
+    # a hidden adapter is not returned by Get-NetAdapter without -IncludeHidden
+    $visibleAdapter = Get-NetAdapter -Name $InterfaceAlias -ErrorAction SilentlyContinue
+    $isHidden = ($adapter.HiddenInterface -eq $true) -or (-not $visibleAdapter)
+    if ($isHidden) {
+        return @{
+            IsAcceptable    = $true
+            IsHidden        = $true
+            IsPrivate       = $false
+            CurrentCategory = 'Hidden'
+            InterfaceAlias  = $InterfaceAlias
+            Error           = $null
+        }
+    }
+
+    $connectionProfile = Get-NetConnectionProfile -InterfaceAlias $InterfaceAlias -ErrorAction SilentlyContinue
+    if (-not $connectionProfile) {
+        return @{
+            IsAcceptable    = $false
+            IsHidden        = $false
+            IsPrivate       = $false
+            CurrentCategory = 'NoProfile'
+            InterfaceAlias  = $InterfaceAlias
+            Error           = 'No connection profile found'
+        }
+    }
+
+    $category = $connectionProfile.NetworkCategory
+    return @{
+        IsAcceptable    = ($category -eq 'Private')
+        IsHidden        = $false
+        IsPrivate       = ($category -eq 'Private')
+        CurrentCategory = $category
+        InterfaceAlias  = $InterfaceAlias
+        Error           = $null
+    }
+}
+
+<#
+.SYNOPSIS
+Hides the interface if possible, otherwise sets it to the Private network profile (previous behavior).
+#>
+function Set-K2sInterfaceHiddenOrPrivate {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $InterfaceAlias
+    )
+
+    if ((Test-NetshNlmHiddenSupported)) {
+        $posture = Test-K2sInterfaceFirewallPosture -InterfaceAlias $InterfaceAlias
+        if ($posture.IsHidden) {
+            Write-Log "[NlmHidden] '$InterfaceAlias' is already hidden"
+            return
+        }
+        $hiddenResult = Set-K2sInterfaceHidden -InterfaceAlias $InterfaceAlias
+        if ($hiddenResult.Applied) {
+            return
+        }
+        Write-Log "[NlmHidden] Could not hide '$InterfaceAlias' ($($hiddenResult.Error)), falling back to Private network profile"
+    }
+
+    Set-InterfacePrivate -InterfaceAlias $InterfaceAlias
 }
 
 function Set-IPAddressAndDnsClientServerAddress {
@@ -678,25 +860,30 @@ function Set-KubeSwitchToPrivate {
     # get the real switch name
     $switchRealName = Get-VirtualSwitchName($switchname)
 
-    # set the switch to private
-    Set-InterfacePrivate -InterfaceAlias $switchRealName
+    # hide the switch (Private network profile as fallback); the WSL switch is only set to Private
+    if ($WSL) {
+        Set-InterfacePrivate -InterfaceAlias $switchRealName
+    }
+    else {
+        Set-K2sInterfaceHiddenOrPrivate -InterfaceAlias $switchRealName
+    }
 
     Write-Log 'Kubeswitch check finished.'
 }
 
 <#
 .SYNOPSIS
-Checks if the KubeSwitch network connection profile is set to Private.
+Checks if the KubeSwitch firewall posture is acceptable.
 
 .DESCRIPTION
-Verifies that the KubeSwitch (Hyper-V internal switch) has its network category set to Private.
+Verifies that the KubeSwitch (Hyper-V internal switch) is hidden or has its network category set to Private.
 This is required for proper communication between the Windows host and VMs on the switch.
-Returns a hashtable with IsPrivate (bool) and CurrentCategory (string).
+Returns a hashtable with IsAcceptable (bool), IsHidden (bool), IsPrivate (bool) and CurrentCategory (string).
 
 .EXAMPLE
 $result = Test-KubeSwitchPrivateProfile
-if (-not $result.IsPrivate) {
-    throw "KubeSwitch is set to '$($result.CurrentCategory)' - must be Private"
+if (-not $result.IsAcceptable) {
+    throw "KubeSwitch is set to '$($result.CurrentCategory)' - must be hidden or Private"
 }
 #>
 function Test-KubeSwitchPrivateProfile {
@@ -718,6 +905,8 @@ function Test-KubeSwitchPrivateProfile {
         Write-Log "[KubeSwitchCheck] Could not find interface for switch '$switchname': $_"
         return @{
             IsPrivate       = $false
+            IsHidden        = $false
+            IsAcceptable    = $false
             CurrentCategory = 'Unknown'
             SwitchName      = $switchname
             InterfaceAlias  = $null
@@ -725,27 +914,17 @@ function Test-KubeSwitchPrivateProfile {
         }
     }
 
-    $connectionProfile = Get-NetConnectionProfile -InterfaceAlias $switchRealName -ErrorAction SilentlyContinue
-    if (-not $connectionProfile) {
-        Write-Log "[KubeSwitchCheck] No connection profile found for '$switchRealName'"
-        return @{
-            IsPrivate       = $false
-            CurrentCategory = 'NoProfile'
-            SwitchName      = $switchname
-            InterfaceAlias  = $switchRealName
-            Error           = "No connection profile found"
-        }
-    }
-
-    $category = $connectionProfile.NetworkCategory
-    Write-Log "[KubeSwitchCheck] KubeSwitch '$switchRealName' has network category: $category"
+    $posture = Test-K2sInterfaceFirewallPosture -InterfaceAlias $switchRealName
+    Write-Log "[KubeSwitchCheck] KubeSwitch '$switchRealName' firewall posture: category=$($posture.CurrentCategory), hidden=$($posture.IsHidden), acceptable=$($posture.IsAcceptable)"
 
     return @{
-        IsPrivate       = ($category -eq 'Private')
-        CurrentCategory = $category
+        IsPrivate       = $posture.IsPrivate
+        IsHidden        = $posture.IsHidden
+        IsAcceptable    = $posture.IsAcceptable
+        CurrentCategory = $posture.CurrentCategory
         SwitchName      = $switchname
         InterfaceAlias  = $switchRealName
-        Error           = $null
+        Error           = $posture.Error
     }
 }
 
@@ -802,4 +981,5 @@ Set-IPAddressAndDnsClientServerAddress, Set-WSLSwitch,
 Add-VfpRulesToWindowsNode, Remove-VfpRulesFromWindowsNode, Get-ConfiguredClusterCIDRNextHop,
 Add-VfpRoute, Remove-VfpRoute, Get-VirtualSwitchName, Set-KubeSwitchToPrivate, Invoke-HNSCommand,
 Wait-ForServiceStopped, Wait-ForServiceRunning, Test-KubeSwitchPrivateProfile,
-Add-HostBridgeIpReservation, Remove-HostBridgeIpReservation
+Add-HostBridgeIpReservation, Remove-HostBridgeIpReservation,
+Test-NetshNlmHiddenSupported, Set-K2sInterfaceHidden, Set-K2sInterfaceHiddenOrPrivate, Test-K2sInterfaceFirewallPosture

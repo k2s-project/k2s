@@ -318,7 +318,7 @@ function Confirm-LoopbackAdapterIP {
     $mask = [IPAddress](([UInt32]::MaxValue) -shl (32 - $prefixLength) -shr (32 - $prefixLength))
 
     # Determine which adapter to check - vEthernet adapter if external switch exists, otherwise base adapter
-    $vEthernetAdapter = Get-NetAdapter -Name $vEthernetAdapterName -ErrorAction SilentlyContinue
+    $vEthernetAdapter = Get-NetAdapter -Name $vEthernetAdapterName -IncludeHidden -ErrorAction SilentlyContinue
     if ($null -ne $vEthernetAdapter) {
         $adapterName = $vEthernetAdapterName
         Write-Log "[LoopbackAdapter] External switch detected, checking vEthernet adapter '$adapterName'"
@@ -476,6 +476,8 @@ function Set-LoopbackAdapterExtendedProperties {
     Set-DnsClient -InterfaceIndex $loopbackAdapterIfIndex -RegisterThisConnectionsAddress $false | Out-Null
     netsh int ipv4 set int "$loopbackAdapterAlias" forwarding=enabled | Out-Null
     Set-NetIPInterface -InterfaceIndex $loopbackAdapterIfIndex -InterfaceMetric 102  | Out-Null
+    # hide the interface from firewall network profile evaluation (no-op if not supported)
+    Set-K2sInterfaceHidden -InterfaceAlias $loopbackAdapterAlias | Out-Null
 }
 
 function Set-NewNameForLoopbackAdapter {
@@ -516,7 +518,7 @@ function Set-NewNameForLoopbackAdapter {
 function Set-PrivateNetworkProfileForLoopbackAdapter {
     $adapterName = Get-L2BridgeName
     $loopbackAdapterAlias = Get-NetIPInterface | Where-Object InterfaceAlias -Like "vEthernet ($adapterName)*" | Where-Object AddressFamily -Eq IPv4 | Select-Object -expand 'InterfaceAlias' -First 1
-    Set-InterfacePrivate -InterfaceAlias "$loopbackAdapterAlias"
+    Set-K2sInterfaceHiddenOrPrivate -InterfaceAlias "$loopbackAdapterAlias"
 }
 
 Export-ModuleMember New-LoopbackAdapter

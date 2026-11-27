@@ -8,7 +8,7 @@ BeforeAll {
 
 Describe 'Start-ControlPlaneNodeOnNewVM KubeSwitch ordering' -Tag 'unit', 'ci', 'control-plane' {
     Context 'When recreating KubeSwitch on Hyper-V' {
-        It 'starts the control plane VM before waiting on Set-InterfacePrivate to avoid NLA gateway resolution deadlock' {
+        It 'starts the control plane VM before waiting on Set-K2sInterfaceHiddenOrPrivate to avoid NLA gateway resolution deadlock' {
             InModuleScope $moduleName {
                 function Get-ConfiguredKubeSwitchIP { '172.19.1.1' }
                 function Get-ConfigWslFlag { $false }
@@ -21,7 +21,7 @@ Describe 'Start-ControlPlaneNodeOnNewVM KubeSwitch ordering' -Tag 'unit', 'ci', 
                 function Connect-KubeSwitch {}
                 function Connect-WorkerNodesToKubeSwitch { param($ControlPlaneVMHostName, $SwitchName) }
                 function Start-VirtualMachine { param($VmName, [switch]$Wait) }
-                function Set-InterfacePrivate { param($InterfaceAlias) }
+                function Set-K2sInterfaceHiddenOrPrivate { param($InterfaceAlias) }
                 function Add-DnsServer { param($switchname) }
                 function Set-RoutesToKubemaster {}
                 function Wait-ForSSHConnectionToLinuxVMViaSshKey {}
@@ -44,7 +44,7 @@ Describe 'Start-ControlPlaneNodeOnNewVM KubeSwitch ordering' -Tag 'unit', 'ci', 
                 Mock Connect-KubeSwitch { $script:callOrder.Add('Connect-KubeSwitch') }
                 Mock Connect-WorkerNodesToKubeSwitch { $script:callOrder.Add('Connect-WorkerNodesToKubeSwitch') }
                 Mock Start-VirtualMachine { $script:callOrder.Add('Start-VirtualMachine') }
-                Mock Set-InterfacePrivate { $script:callOrder.Add("Set-InterfacePrivate:$InterfaceAlias") }
+                Mock Set-K2sInterfaceHiddenOrPrivate { $script:callOrder.Add("Set-K2sInterfaceHiddenOrPrivate:$InterfaceAlias") }
                 Mock Add-DnsServer {}
                 Mock Set-RoutesToKubemaster {}
                 Mock Wait-ForSSHConnectionToLinuxVMViaSshKey { $script:callOrder.Add('Wait-ForSSHConnectionToLinuxVMViaSshKey') }
@@ -58,7 +58,7 @@ Describe 'Start-ControlPlaneNodeOnNewVM KubeSwitch ordering' -Tag 'unit', 'ci', 
                 Start-ControlPlaneNodeOnNewVM -DnsServers '8.8.8.8' -SkipHeaderDisplay
 
                 $startVmIndex = $script:callOrder.IndexOf('Start-VirtualMachine')
-                $firstSetPrivateIndex = $script:callOrder.IndexOf('Set-InterfacePrivate:vEthernet (KubeSwitch)')
+                $firstSetPrivateIndex = $script:callOrder.IndexOf('Set-K2sInterfaceHiddenOrPrivate:vEthernet (KubeSwitch)')
 
                 $startVmIndex | Should -BeGreaterThan -1
                 $firstSetPrivateIndex | Should -BeGreaterThan $startVmIndex

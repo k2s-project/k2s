@@ -116,12 +116,17 @@ k2s_node_copy_artifacts() {
 
 # Installs buildah first (the image import needs it), then the Kubernetes packages. The scripts are the
 # node-extension scripts of cfg/nodeextension/debian13: they only install packages the node does not have.
+# The registry token goes to the worker through stdin into a file that only the worker user can read, so
+# it never appears on a command line on either machine. The file is removed even if the install fails.
 k2s_node_install_packages() {
-  local registry_token="$1"
+  local registry_token="$1" token_file="$K2S_NODE_REMOTE_DIR/registry-token" status=0
   k2s_log INFO "Installing buildah packages on $K2S_NODE_IP."
   k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-buildah-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/buildah" || return 1
   k2s_log INFO "Installing Kubernetes packages on $K2S_NODE_IP."
-  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-k8s-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes '' '$registry_token' false" || return 1
+  printf '%s' "$registry_token" | k2s_node_ssh "umask 077 && cat > $token_file" || return 1
+  k2s_node_ssh "sudo bash $K2S_NODE_REMOTE_DIR/scripts/install-k8s-packages.sh $K2S_NODE_REMOTE_DIR/packages/debian13/kubernetes '' $token_file false" </dev/null || status=$?
+  k2s_node_ssh "rm -f $token_file" </dev/null || k2s_log WARN "Could not remove the registry token file $token_file on $K2S_NODE_IP."
+  return "$status"
 }
 
 # Imports every image archive into the container storage that CRI-O uses.

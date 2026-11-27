@@ -410,6 +410,26 @@ Describe 'Get-GpuContainerImages' -Tag 'unit', 'ci', 'gpu' {
     }
 }
 
+Describe 'Install-KubernetesArtifacts' -Tag 'unit', 'ci', 'provisioning' {
+    It 'passes the registry token to the install script as its secret argument' {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Get-RegistryToken { 'test-token' }
+            Mock Get-ConfigWslFlag { $false }
+            Mock Get-KubenodeNoProxy { 'localhost,127.0.0.1' }
+            Mock Get-LinuxScriptPath { 'C:\k2s\cfg\nodeextension\debian13\scripts' }
+            Mock Invoke-RemoteScript {}
+
+            Install-KubernetesArtifacts -UserName remote -IpAddress '172.19.1.101' -SourcePath '/tmp/kubernetes'
+
+            Should -Invoke Invoke-RemoteScript -Times 1 -Exactly -ParameterFilter {
+                $LocalScriptPath -eq 'C:\k2s\cfg\nodeextension\debian13\scripts\install-k8s-packages.sh' -and
+                $Arguments[2] -eq 'test-token' -and $SecretArgumentIndex -eq 2
+            }
+        }
+    }
+}
+
 Describe 'Invoke-RemoteScript' -Tag 'unit', 'ci', 'provisioning' {
     BeforeEach {
         Mock Write-Log {} -ModuleName $moduleName
@@ -444,6 +464,100 @@ Describe 'Invoke-RemoteScript' -Tag 'unit', 'ci', 'provisioning' {
 
             Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter {
                 $CmdToExecute -eq 'chmod +x /tmp/setproxy.sh && /tmp/setproxy.sh '
+            }
+        }
+    }
+
+    Context 'with a secret argument' {
+        BeforeEach {
+            InModuleScope $moduleName {
+                $script:secret = 'c2VjcmV0LXJlZ2lzdHJ5LXRva2Vu'
+                $script:copiedSecrets = [System.Collections.Generic.List[object]]::new()
+                $script:loggedMessages = [System.Collections.Generic.List[string]]::new()
+                $script:remoteCommands = [System.Collections.Generic.List[string]]::new()
+                $recordCopy = {
+                    if ($Target -like '/tmp/k2s-secret-*') {
+                        $script:copiedSecrets.Add([pscustomobject]@{
+                            Source  = $Source
+                            Target  = $Target
+                            Content = [System.IO.File]::ReadAllText($Source)
+                        })
+                    }
+                }
+                Mock Copy-ToRemoteComputerViaSshKey $recordCopy
+                Mock Copy-ToRemoteComputerViaUserAndPwd $recordCopy
+                Mock Invoke-CmdOnVmViaSSHKey {
+                    $script:remoteCommands.Add($CmdToExecute)
+                    [pscustomobject]@{ Success = $true; Output = '' }
+                }
+                Mock Invoke-CmdOnControlPlaneViaUserAndPwd {
+                    $script:remoteCommands.Add($CmdToExecute)
+                    [pscustomobject]@{ Success = $true; Output = '' }
+                }
+                Mock Write-Log { $script:loggedMessages.Add([string]$Messages) }
+            }
+        }
+
+        It 'passes the path of a private remote file instead of the secret with password <Password>' -ForEach @(
+            @{ Password = '' }
+            @{ Password = 'image-password' }
+        ) {
+            InModuleScope $moduleName -Parameters @{ Password = $Password } {
+                param($Password)
+                $arguments = @('/tmp/kubernetes', '', $script:secret, 'false')
+
+                Invoke-RemoteScript -LocalScriptPath 'C:\k\install-k8s-packages.sh' -UserName 'remote' -IpAddress '172.19.1.101' -UserPwd $Password `
+                    -Arguments $arguments -SecretArgumentIndex 2
+
+                $script:copiedSecrets.Count | Should -Be 1
+                $copied = $script:copiedSecrets[0]
+                $copied.Content | Should -BeExactly $script:secret
+                $copied.Target | Should -Match '^/tmp/k2s-secret-[0-9a-f]{32}/secret$'
+                [System.IO.File]::Exists($copied.Source) | Should -BeFalse
+                $secretDirectory = $copied.Target -replace '/secret$', ''
+                $arguments[2] | Should -BeExactly $script:secret
+
+                if ($Password) {
+                    Should -Invoke Copy-ToRemoteComputerViaUserAndPwd -Times 2 -Exactly
+                    Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 0 -Exactly
+                }
+                else {
+                    Should -Invoke Copy-ToRemoteComputerViaSshKey -Times 2 -Exactly
+                    Should -Invoke Invoke-CmdOnControlPlaneViaUserAndPwd -Times 0 -Exactly
+                }
+                $commands = $script:remoteCommands.ToArray()
+                $commands | Should -Contain "mkdir -p -m 700 $secretDirectory"
+                $commands | Should -Contain "chmod +x /tmp/install-k8s-packages.sh && /tmp/install-k8s-packages.sh '/tmp/kubernetes' '' '$($copied.Target)' 'false'"
+                $commands[-1] | Should -BeExactly "rm -rf $secretDirectory"
+                ($commands -join "`n") | Should -Not -Match $script:secret
+                ($script:loggedMessages -join "`n") | Should -Not -Match $script:secret
+            }
+        }
+
+        It 'removes the secret directory when the script fails' {
+            InModuleScope $moduleName {
+                Mock Invoke-CmdOnVmViaSSHKey {
+                    if ($CmdToExecute -like 'chmod +x *') {
+                        return [pscustomobject]@{ Success = $false; Output = 'dpkg failed' }
+                    }
+                    [pscustomobject]@{ Success = $true; Output = '' }
+                }
+
+                $thrown = { Invoke-RemoteScript -LocalScriptPath 'C:\k\install-k8s-packages.sh' -UserName 'remote' -IpAddress '172.19.1.101' `
+                    -Arguments @('/tmp/kubernetes', '', $script:secret) -SecretArgumentIndex 2 } | Should -Throw '*dpkg failed*' -PassThru
+
+                $thrown.Exception.Message | Should -Not -Match $script:secret
+                Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 1 -Exactly -ParameterFilter { $CmdToExecute -match '^rm -rf /tmp/k2s-secret-[0-9a-f]{32}$' }
+            }
+        }
+
+        It 'rejects a secret argument index outside of the arguments before copying anything' {
+            InModuleScope $moduleName {
+                { Invoke-RemoteScript -LocalScriptPath 'C:\k\install-k8s-packages.sh' -UserName 'remote' -IpAddress '172.19.1.101' `
+                    -Arguments @('/tmp/kubernetes') -SecretArgumentIndex 1 } | Should -Throw '*out of range*'
+
+                Should -Invoke Copy-ToRemoteComputerViaSshKey -Times 0 -Exactly
+                Should -Invoke Invoke-CmdOnVmViaSSHKey -Times 0 -Exactly
             }
         }
     }

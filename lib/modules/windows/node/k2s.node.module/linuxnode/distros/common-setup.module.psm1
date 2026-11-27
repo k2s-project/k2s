@@ -496,6 +496,7 @@ Function Install-KubernetesArtifacts {
                         -IpAddress $IpAddress `
                         -UserPwd $UserPwd `
                         -Arguments @($SourcePath, $Proxy, $token, $isWsl, $noProxy, 'false') `
+                        -SecretArgumentIndex 2 `
                         -CleanupAfterExecution `
                         -Retries 2
 
@@ -2684,7 +2685,14 @@ function Invoke-RemoteScript {
         # Opt-in flag (currently used by the Ceph storage addon) that adds a start marker,
         # per-line output logging and an execution-duration line. Left off by default so all
         # other callers keep their original single 'Script output:' log line behavior.
-        [switch]$DetailedLogging
+        [switch]$DetailedLogging,
+
+        # Index of the argument in Arguments that holds a secret (e.g. a registry token). The secret is
+        # written to a file in a private directory on the remote computer and the script receives the
+        # path of that file instead, so the secret appears neither in logs nor in the remote process list.
+        # The directory is removed after the script has run, also when it fails.
+        [ValidateRange(-1, [int]::MaxValue)]
+        [int]$SecretArgumentIndex = -1
     )
     
     # Generate remote script path (always /tmp), using the original script filename
@@ -2692,6 +2700,10 @@ function Invoke-RemoteScript {
     
     if (!(Test-Path $LocalScriptPath)) {
         throw "Local script not found: $LocalScriptPath"
+    }
+
+    if ($SecretArgumentIndex -ge $Arguments.Count) {
+        throw "Secret argument index $SecretArgumentIndex is out of range for $($Arguments.Count) argument(s)"
     }
     
     Write-Log "Copying script to remote: $RemoteScriptPath"
@@ -2703,16 +2715,6 @@ function Invoke-RemoteScript {
     } else {
         Copy-ToRemoteComputerViaSshKey -Source $LocalScriptPath -Target $RemoteScriptPath -UserName $UserName -IpAddress $IpAddress
     }
-    
-    # Build command with arguments. Each argument is passed as a single-quoted shell word; embedded single
-    # quotes are written as '\'' so that no argument can terminate its quoting and inject shell code.
-    $argumentString = if ($Arguments.Count -gt 0) { 
-        ($Arguments | ForEach-Object { "'" + ([string]$_).Replace("'", "'\''") + "'" }) -join ' '
-    } else { 
-        "" 
-    }
-    
-    Write-Log "Executing remote script: $RemoteScriptPath $argumentString"
     
     # Make executable and run (supports both SSH key and password auth for command execution)
     $remoteUser = "$UserName@$IpAddress"
@@ -2743,39 +2745,85 @@ function Invoke-RemoteScript {
     # may have \r\n endings which cause bash to fail finding the interpreter in the shebang line.
     &$executeRemoteCommand "sed -i 's/\r//' $RemoteScriptPath" | Out-Null
 
-    if ($DetailedLogging) {
-        $scriptLeafName = Split-Path -Leaf $RemoteScriptPath
-        Write-Log "[RemoteScript:$scriptLeafName] Execution started"
-        $remoteExecStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $scriptArguments = @($Arguments)
+    $remoteSecretDirectory = $null
+    try {
+        if ($SecretArgumentIndex -ge 0) {
+            # The directory name is random and the directory is only accessible by the remote user.
+            $remoteSecretDirectory = "/tmp/k2s-secret-$([guid]::NewGuid().ToString('N'))"
+            $remoteSecretFile = "$remoteSecretDirectory/secret"
+            &$executeRemoteCommand "mkdir -p -m 700 $remoteSecretDirectory" | Out-Null
 
-        $result = &$executeRemoteCommand "chmod +x $RemoteScriptPath && $RemoteScriptPath $argumentString"
+            $localSecretFile = [System.IO.Path]::GetTempFileName()
+            try {
+                [System.IO.File]::WriteAllText($localSecretFile, $scriptArguments[$SecretArgumentIndex], [System.Text.UTF8Encoding]::new($false))
+                if (![string]::IsNullOrWhiteSpace($UserPwd)) {
+                    Copy-ToRemoteComputerViaUserAndPwd -Source $localSecretFile -Target $remoteSecretFile -IpAddress $IpAddress -UserName $UserName -UserPwd $UserPwd
+                } else {
+                    Copy-ToRemoteComputerViaSshKey -Source $localSecretFile -Target $remoteSecretFile -UserName $UserName -IpAddress $IpAddress
+                }
+            }
+            finally {
+                Remove-Item -Path $localSecretFile -Force -ErrorAction SilentlyContinue
+            }
 
-        $remoteExecStopwatch.Stop()
+            $scriptArguments[$SecretArgumentIndex] = $remoteSecretFile
+        }
 
-        # Log the captured remote output line-by-line so each line becomes its own timestamped log
-        # entry (far easier to read and correlate than the single bulk 'Script output:' line).
-        # NOTE: the remote command's stdout is only available after the script returns, so these
-        # timestamps reflect log-write time on the Windows host, not the instant each line was produced
-        # on the remote node. The '[RemoteScript:<name>] completed in <n>s' line below is therefore the
-        # authoritative measure of how long the remote step actually took.
-        $remoteOutputLines = ($result | Out-String) -split "`n" | ForEach-Object { $_.TrimEnd("`r") }
-        $hasRemoteOutput = $false
-        foreach ($remoteLine in $remoteOutputLines) {
-            if (-not [string]::IsNullOrWhiteSpace($remoteLine)) {
-                Write-Log "[RemoteScript:$scriptLeafName] $remoteLine"
-                $hasRemoteOutput = $true
+        # Build command with arguments. Each argument is passed as a single-quoted shell word; embedded single
+        # quotes are written as '\'' so that no argument can terminate its quoting and inject shell code.
+        $argumentString = if ($scriptArguments.Count -gt 0) {
+            ($scriptArguments | ForEach-Object { "'" + ([string]$_).Replace("'", "'\''") + "'" }) -join ' '
+        } else {
+            ""
+        }
+
+        Write-Log "Executing remote script: $RemoteScriptPath $argumentString"
+
+        if ($DetailedLogging) {
+            $scriptLeafName = Split-Path -Leaf $RemoteScriptPath
+            Write-Log "[RemoteScript:$scriptLeafName] Execution started"
+            $remoteExecStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+            $result = &$executeRemoteCommand "chmod +x $RemoteScriptPath && $RemoteScriptPath $argumentString"
+
+            $remoteExecStopwatch.Stop()
+
+            # Log the captured remote output line-by-line so each line becomes its own timestamped log
+            # entry (far easier to read and correlate than the single bulk 'Script output:' line).
+            # NOTE: the remote command's stdout is only available after the script returns, so these
+            # timestamps reflect log-write time on the Windows host, not the instant each line was produced
+            # on the remote node. The '[RemoteScript:<name>] completed in <n>s' line below is therefore the
+            # authoritative measure of how long the remote step actually took.
+            $remoteOutputLines = ($result | Out-String) -split "`n" | ForEach-Object { $_.TrimEnd("`r") }
+            $hasRemoteOutput = $false
+            foreach ($remoteLine in $remoteOutputLines) {
+                if (-not [string]::IsNullOrWhiteSpace($remoteLine)) {
+                    Write-Log "[RemoteScript:$scriptLeafName] $remoteLine"
+                    $hasRemoteOutput = $true
+                }
+            }
+            if (-not $hasRemoteOutput) {
+                Write-Log "[RemoteScript:$scriptLeafName] (no output)"
+            }
+
+            Write-Log "[RemoteScript:$scriptLeafName] completed in $([math]::Round($remoteExecStopwatch.Elapsed.TotalSeconds, 1))s"
+        }
+        else {
+            $result = &$executeRemoteCommand "chmod +x $RemoteScriptPath && $RemoteScriptPath $argumentString"
+
+            Write-Log "Script output: $result"
+        }
+    }
+    finally {
+        if ($null -ne $remoteSecretDirectory) {
+            try {
+                &$executeRemoteCommand "rm -rf $remoteSecretDirectory" | Out-Null
+            }
+            catch {
+                Write-Log "[RemoteScript] Could not remove the secret directory '$remoteSecretDirectory' on '$IpAddress': $($_.Exception.Message)"
             }
         }
-        if (-not $hasRemoteOutput) {
-            Write-Log "[RemoteScript:$scriptLeafName] (no output)"
-        }
-
-        Write-Log "[RemoteScript:$scriptLeafName] completed in $([math]::Round($remoteExecStopwatch.Elapsed.TotalSeconds, 1))s"
-    }
-    else {
-        $result = &$executeRemoteCommand "chmod +x $RemoteScriptPath && $RemoteScriptPath $argumentString"
-
-        Write-Log "Script output: $result"
     }
     
     # Cleanup

@@ -217,15 +217,17 @@ try {
     # ------------------------------------------------------------------
     Write-Log "[NodeUpgrade] === Phase 2: Locating node and determining OS ===" -Console
 
-    $nodeResult = (Invoke-Kubectl -Params @('get', 'node', $NodeName, '--no-headers', '-o', 'name')).Output
-    if ([string]::IsNullOrWhiteSpace($nodeResult)) {
+    $nodeLookup = Invoke-Kubectl -Params @('get', 'node', $NodeName, '--no-headers', '-o', 'name')
+    $nodeResult = ($nodeLookup.Output | Out-String).Trim()
+    if (-not $nodeLookup.Success -or [string]::IsNullOrWhiteSpace($nodeResult)) {
         throw "[NodeUpgrade] Node '$NodeName' not found in cluster."
     }
     Write-Log "[NodeUpgrade] Node '$NodeName' found in cluster." -Console
 
     # Check if the node is Ready before proceeding with upgrade
-    $nodeStatusOutput = (Invoke-Kubectl -Params @('get', 'node', $NodeName, '--no-headers')).Output | Out-String
-    if ([string]::IsNullOrWhiteSpace($nodeStatusOutput) -or -not ($nodeStatusOutput -match '\s+Ready(?:\s|,|$)')) {
+    $nodeStatusLookup = Invoke-Kubectl -Params @('get', 'node', $NodeName, '--no-headers')
+    $nodeStatusOutput = $nodeStatusLookup.Output | Out-String
+    if (-not $nodeStatusLookup.Success -or [string]::IsNullOrWhiteSpace($nodeStatusOutput) -or -not ($nodeStatusOutput -match '\s+Ready(?:\s|,|$)')) {
         throw "[NodeUpgrade] Node '$NodeName' is not in Ready state. Cannot proceed with upgrade."
     }
     Write-Log "[NodeUpgrade] Node '$NodeName' is in Ready state." -Console

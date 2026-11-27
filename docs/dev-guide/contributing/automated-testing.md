@@ -154,6 +154,83 @@ The fixture helpers can be tested without a cluster or hostname changes:
 go test ./test/e2e/cluster/noderename -run 'TestWorkerDiscovery|TestReplacementName|TestDescriptorFixtures|TestManagedMetadataKeys|TestRebootBootID|TestSMBWorkloadDefinition|TestSMBReaderPlacement|TestSyntheticNodeDaemonPod|TestRestartedNodes|TestRenameObserverLifecycle'
 ```
 
+### Linux Worker Node Upgrade Acceptance Tests
+
+The shared [node-upgrade suite](../../../test/e2e/cluster/nodeupgrade/node_upgrade_test.go)
+covers end-to-end creation and verification of full node system packages
+(`k2s system package --node-package`), node delta packages
+(`k2s system package --node-package --delta-package`), and in-place Linux worker
+node upgrades (`k2s system upgrade --node <name> --path <zip>`).
+
+The suite reads `cluster.json` via `clusterconfig.Read` and selects a managed
+Linux worker (`HOST` or `VM-EXISTING` with stored IP and SSH username),
+preferring `node-deb13` or `k2s-nodepkg-debian13` when present and falling back
+to the first managed Linux worker. Set `K2S_NODE_UPGRADE_NODE` to target a
+specific managed Linux worker. The suite skips when executed outside Windows, on
+Linux-only setups, or when `cluster.json` has no managed Linux worker.
+
+Run from an elevated PowerShell on a **disposable Windows K2s installation**
+with a running cluster, a Ready schedulable Linux worker, and SSH access
+supporting noninteractive `sudo`:
+
+```powershell
+go run github.com/onsi/ginkgo/v2/ginkgo --label-filter=node-upgrade --timeout=120m -v .\test\e2e\cluster\nodeupgrade
+```
+
+Argo can select the full suite with `node-upgrade`, run only the fast validation
+subset with `node-upgrade-rejections`, run local delta-package contract and
+validation checks without live node upgrades using
+`node-delta-package && !node-upgrade-full`, or select the ordered 4-step package
+and upgrade lifecycle with `node-upgrade-full` or `node-upgrade-delta` (the
+`Ordered` container carries `node-package`, `node-delta-package`,
+`node-upgrade-full`, and `node-upgrade-delta` so its four dependent steps always
+run together in sequence). The suite is labeled `disruptive` and
+`internet-required` because live node-package builds provision an ephemeral
+Hyper-V VM to download Debian packages and container images, and node upgrades
+cordon, drain, reinstall packages/images, and restart `kubelet` on the worker.
+
+Optional environment variables let CI pipelines or offline runs supply prebuilt
+artifacts or custom images:
+
+- `K2S_NODE_UPGRADE_NODE`: explicit managed Linux worker name from `cluster.json`.
+- `K2S_NODE_UPGRADE_FULL_PACKAGE` (or `K2S_NODE_UPGRADE_TARGET_PACKAGE`): path to an
+  existing full node package ZIP; skips live full node package generation when set.
+- `K2S_NODE_UPGRADE_BASE_PACKAGE`: path to an older base full node package ZIP
+  used as `--package-version-from` when generating the node delta package. When
+  unset, the suite derives a base archive from the full node package so both
+  `Added` and `Changed` diffs are exercised with genuine target `.deb` and `.tar`
+  artifacts.
+- `K2S_NODE_UPGRADE_PROXY`: explicit proxy URL passed via `--proxy` to
+  `k2s system package --node-package` (omitted by default so the K2s cluster
+  transparent proxy is used).
+- `K2S_NODE_UPGRADE_WORKLOAD_IMAGE`: container image for the test workloads
+  (defaults to `docker.io/curlimages/curl:8.5.0` with `IfNotPresent`).
+
+Coverage includes:
+
+- CLI and validation rejections for `k2s system package --node-package`,
+  `k2s system package --node-package --delta-package`, and
+  `k2s system upgrade --node` (unpaired flags, invalid/missing paths, unknown,
+  unready, and unmanaged Nodes, missing `packages/`, mismatched OS folders, and
+  non-`node-package` delta manifests) while verifying no mutation to Nodes,
+  `cluster.json`, or `kubelet`.
+- Local node delta package manifest and archive contract tests (`Added`,
+  `Changed`, `Removed` `.deb`s and `.tar`s, `packages.removed`, `images.removed`,
+  helper scripts, explicit multi-OS `--os` selection, and zero-diff packages).
+- Live full node package upgrade and live node delta package upgrade: Node API
+  watch verification (`cordon -> uncordon -> Ready` without Node deletion or UID
+  change), Phase 1–8 log ordering and `FULL`/`DELTA` auto-detection, `kubelet`
+  restart verification, `dpkg-query` and `crictl images` checks, remote temp
+  directory cleanup, custom label/annotation/taint and `PodCIDR` preservation,
+  drain eviction and rescheduling of a worker-pinned workload, and uninterrupted
+  continuity of a control-plane canary workload.
+
+The fixture and archive helpers can be unit-tested without a cluster:
+
+```console
+go test ./test/e2e/cluster/nodeupgrade -run 'TestWorkerSelection|TestParseDistroKey|TestDebFilenameToPackageName|TestNodeDeltaManifestParsing|TestFullAndDeltaZipValidation|TestDeriveBaseNodePackage|TestUpgradeLogOrdering|TestUpgradeObserverLifecycle|TestWorkloadDefinitionsAndPlacement|TestKubeletRestartVerification|TestSyntheticNodeHeartbeat'
+```
+
 ### Windows Workload Readiness Diagnostics
 
 If the core acceptance suite exhausts its Windows HTTP readiness retries, it

@@ -236,7 +236,11 @@ jobs:
           $releaseNotes.Add('')
 
           git merge-base --is-ancestor $previousTag $releaseTag
-          if ($LASTEXITCODE -eq 0) {
+          $isAncestor = ($LASTEXITCODE -eq 0)
+          # exit code 1 is an expected result here; reset it, otherwise the pwsh step wrapper fails the step with it
+          $global:LASTEXITCODE = 0
+
+          if ($isAncestor) {
             $releaseNotes.Add("Full Changelog: [$previousTag...$releaseTag](https://github.com/$repo/compare/$previousTag...$releaseTag)")
           }
           else {

@@ -19,6 +19,9 @@ Linux worker provisioning.
 cluster from an offline node package. It is invoked by `k2s node add` and uses
 `lib/modules/linux/node/worker-node.module.sh`.
 
+`host/image/` and `host/addon/` contain the native counterparts of the Windows image and addon
+scripts; the `k2s` CLI calls them for `k2s image ...` and `k2s addons export|import` on a Linux host.
+
 For direct operational invocation, use the Linux-only entry points, for example:
 
 ```console

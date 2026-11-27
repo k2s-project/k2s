@@ -59,17 +59,10 @@ if ($systemError) {
 }
 
 $setupInfo = Get-SetupInfo
-if ($setupInfo.LinuxOnly -eq $true) {
-    $errMsg = 'Cannot export addons in Linux-only setup' 
-    if ($EncodeStructuredOutput -eq $true) {
-        $err = New-Error -Severity Warning -Code ErrCodeWrongSetupType -Message $errMsg
-        Send-ToCli -MessageType $MessageType -Message @{Error = $err }
-        return
-    }
-
-    Write-Log $errMsg -Error
-    exit 1
-}
+# A Linux-only setup has no Windows node to pull Windows images on; they are skipped, like on import.
+# Its Windows packages are skipped as well, like on Linux hosts, so that the artifact carries no Windows content.
+$exportWindowsImages = $setupInfo.LinuxOnly -ne $true
+$exportWindowsPackages = $exportWindowsImages
 
 $tmpExportDir = "${ExportDir}\tmp-exported-addons"
 Remove-Item -Force "$tmpExportDir" -Recurse -Confirm:$False -ErrorAction SilentlyContinue
@@ -190,14 +183,18 @@ try {
              $configStaging = Join-Path $artifactPath 'config-staging'
              $manifestsStaging = Join-Path $artifactPath 'manifests-staging'
              $scriptsStaging = Join-Path $artifactPath 'scripts-staging'
+             $sharedScriptsStaging = Join-Path $artifactPath 'shared-scripts-staging'
              $packagesStaging = Join-Path $artifactPath 'packages-staging'
              $imagesStaging = Join-Path $artifactPath 'images-staging'
              
              New-Item -ItemType Directory -Path $configStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $manifestsStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $scriptsStaging -Force | Out-Null
+             New-Item -ItemType Directory -Path $sharedScriptsStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $packagesStaging -Force | Out-Null
              New-Item -ItemType Directory -Path $imagesStaging -Force | Out-Null
+
+             Copy-AddonSharedScripts -AddonPath $manifest.dir.path -ImplementationPath $dirPath -DestinationPath $sharedScriptsStaging
 
              $sourceManifestsDir = Join-Path $dirPath 'manifests'
              if (Test-Path $sourceManifestsDir) {
@@ -269,9 +266,9 @@ try {
                  }
              }
              
-             @('*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.drawio', '*.drawio.png', '*.md', '*.ndjson', '*.json', '*.license', 'Dockerfile*') | ForEach-Object {
+             @('*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.drawio', '*.drawio.png', '*.md', '*.ndjson', '*.json', '*.license', '*.tar.gz', 'Dockerfile*') | ForEach-Object {
                  Get-ChildItem -Path $dirPath -Filter $_ -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-                     if ($_.Name -ne 'README.md') {
+                     if ($_.FullName -ne $readmePath) {
                          $relativePath = $_.FullName.Substring($dirPath.Length + 1)
                          $targetPath = Join-Path $scriptsStaging $relativePath
                          $targetDir = Split-Path $targetPath -Parent
@@ -349,6 +346,7 @@ try {
             $addonSpecificConfigs = Get-ChildItem -Path $dirPath -Recurse -Include '*.json' -File -ErrorAction SilentlyContinue | 
                 Where-Object { 
                     $_.Name -notmatch '^(package|tsconfig|eslint|babel)' -and
+                    $_.DirectoryName -eq $dirPath -and
                     $_.Directory.Name -eq $manifest.metadata.name -and
                     (Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -notmatch '"apiVersion"\s*:\s*"'
                 }
@@ -459,6 +457,13 @@ try {
             $linuxImages = Remove-VersionlessImages -Images $linuxImages
             $windowsImages = $windowsImages | Select-Object -Unique | Where-Object { $_ -ne '' } | ForEach-Object { $_.Trim("`"'").Trim(' ') }
             $windowsImages = Remove-VersionlessImages -Images $windowsImages
+            if (-not $exportWindowsImages) {
+                $skippedWindowsImages = @($windowsImages | Where-Object { $_ })
+                if ($skippedWindowsImages.Count -gt 0) {
+                    Write-Log "Skipping $($skippedWindowsImages.Count) Windows image(s) of addon ${addonName}: a Linux-only setup has no Windows node" -Console
+                }
+                $windowsImages = @()
+            }
             $images += $linuxImages
             $images += $windowsImages
             $images = $images | Select-Object -Unique
@@ -516,7 +521,7 @@ try {
                 Write-Log '---'
 
                 $linuxContainerImages = Get-ContainerImagesOnLinuxNode -IncludeK8sImages $false
-                $windowsContainerImages = Get-ContainerImagesOnWindowsNode -IncludeK8sImages $false
+                $windowsContainerImages = if ($exportWindowsImages) { Get-ContainerImagesOnWindowsNode -IncludeK8sImages $false } else { @() }
 
                 Write-Log "Exporting images for addon $addonName" -Console
                 Write-Log "[AddonExport] Found $($linuxContainerImages.Count) linux container images, $($windowsContainerImages.Count) windows container images"
@@ -668,8 +673,12 @@ try {
 
                 # download windows packages via curl
                 $windowsPackages = $implementation.offline_usage.windows
-                $windowsCurlPackages = $windowsPackages.curl
-                if ($windowsCurlPackages) {
+                $windowsCurlPackages = @($windowsPackages.curl | Where-Object { $_ })
+                if (-not $exportWindowsPackages -and $windowsCurlPackages.Count -gt 0) {
+                    Write-Log "Skipping $($windowsCurlPackages.Count) Windows package(s) of addon ${addonName}: a Linux-only setup does not use them" -Console
+                    $windowsCurlPackages = @()
+                }
+                if ($windowsCurlPackages.Count -gt 0) {
                     $targetWinPkgDir = "${packagesStaging}\windowspackages"
                     mkdir -Force $targetWinPkgDir | Out-Null
                     foreach ($package in $windowsCurlPackages) {
@@ -775,6 +784,21 @@ try {
                 }
             }
             
+            if (@(Get-ChildItem -LiteralPath $sharedScriptsStaging -File -Force -ErrorAction Stop).Count -gt 0) {
+                $sharedScriptsTarPath = Join-Path $artifactPath 'shared-scripts.tar.gz'
+                if (-not (New-TarGzArchive -SourcePath $sharedScriptsStaging -DestinationPath $sharedScriptsTarPath -ArchiveContents)) {
+                    throw "Failed to archive shared scripts for addon '$addonName'."
+                }
+                $blobResult = Add-ContentToBlobs -BlobsDir $blobsDir -SourcePath $sharedScriptsTarPath -Move
+                $ociLayerDescriptors += @{
+                    mediaType = $ociMediaTypes.SharedScripts
+                    size = $blobResult.Size
+                    digest = $blobResult.Digest
+                    annotations = @{ 'org.opencontainers.image.title' = 'shared-scripts.tar.gz' }
+                }
+                Write-Log "[Export] Created shared scripts layer: $($blobResult.Digest)"
+            }
+
             # Layer 4: Linux Images - store in blobs
             $linuxImagesLayer = Join-Path $artifactPath 'images-linux.tar'
             if (Test-Path $linuxImagesLayer) {
@@ -900,6 +924,7 @@ try {
             Remove-Item -Path $configStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $manifestsStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $scriptsStaging -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $sharedScriptsStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $packagesStaging -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path $imagesStaging -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -944,6 +969,20 @@ try {
     $indexJsonPath = "${tmpExportDir}\artifacts\index.json"
     $json = $indexManifest | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText($indexJsonPath, $json, [System.Text.UTF8Encoding]::new($false))
+}
+catch {
+    # An error that ends the export statement must not leave an artifact without addons behind,
+    # reported as a successful export.
+    $errMsg = "Exporting the addons failed: $($_.Exception.Message)"
+    Remove-Item -Force "$tmpExportDir" -Recurse -Confirm:$False -ErrorAction SilentlyContinue
+    if ($EncodeStructuredOutput -eq $true) {
+        $err = New-Error -Code 'addon-export-failed' -Message $errMsg
+        Send-ToCli -MessageType $MessageType -Message @{Error = $err }
+        return
+    }
+
+    Write-Log $errMsg -Error
+    exit 1
 }
 finally {
     $env:http_proxy = $currentHttpProxy
@@ -991,17 +1030,24 @@ Write-Log "  Layer 0: config.tar.gz       (application/vnd.k2s.addon.configfiles
 Write-Log "  Layer 1: manifests.tar.gz    (application/vnd.k2s.addon.manifests.v1.tar+gzip)" -Console
 Write-Log "  Layer 2: charts.tar.gz       (application/vnd.cncf.helm.chart.content.v1.tar+gzip) [if helm-based]" -Console
 Write-Log "  Layer 3: scripts.tar.gz      (application/vnd.k2s.addon.scripts.v1.tar+gzip)" -Console
+Write-Log "  Shared: shared-scripts.tar.gz (addon-root scripts, when present)" -Console
 if ($OmitImages) {
     Write-Log "  Layer 4: images-linux.tar    (application/vnd.oci.image.layer.v1.tar) [SKIPPED]" -Console
     Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar) [SKIPPED]" -Console
 } else {
     Write-Log "  Layer 4: images-linux.tar    (application/vnd.oci.image.layer.v1.tar)" -Console
-    Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar)" -Console
+    if ($exportWindowsImages) {
+        Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar)" -Console
+    } else {
+        Write-Log "  Layer 5: images-windows.tar  (application/vnd.k2s.addon.images-windows.v1.tar) [SKIPPED in Linux-only setup]" -Console
+    }
 }
 if ($OmitPackages) {
     Write-Log "  Layer 6: packages.tar.gz     (application/vnd.k2s.addon.packages.v1.tar+gzip) [SKIPPED]" -Console
-} else {
+} elseif ($exportWindowsPackages) {
     Write-Log "  Layer 6: packages.tar.gz     (application/vnd.k2s.addon.packages.v1.tar+gzip)" -Console
+} else {
+    Write-Log "  Layer 6: packages.tar.gz     (application/vnd.k2s.addon.packages.v1.tar+gzip) [Windows packages SKIPPED in Linux-only setup]" -Console
 }
 
 if ($EncodeStructuredOutput -eq $true) {

@@ -5,8 +5,8 @@ BeforeAll {
     $modulePath = "$PSScriptRoot/Image-Common.module.psm1"
     $moduleName = (Import-Module $modulePath -PassThru -Force).Name
 
-    # Every import copies the archive to its own '/tmp/k2s-image-import-<guid>.tar'; commands are recorded with that path replaced by '<archive>'
-    $script:remotePathPattern = '/tmp/k2s-image-import-[0-9a-f]{32}\.tar'
+    # Every import copies the archive to its own '/var/tmp/k2s-image-import-<guid>.tar'; commands are recorded with that path replaced by '<archive>'
+    $script:remotePathPattern = '/var/tmp/k2s-image-import-[0-9a-f]{32}\.tar'
     $script:cleanupCommand = 'sudo rm -f <archive>'
     $script:legacyDockerCommand = 'sudo buildah pull docker-archive:<archive> 2>&1'
     $script:legacyOciCommand = 'sudo buildah pull oci-archive:<archive> 2>&1'
@@ -47,7 +47,7 @@ BeforeAll {
         $script:copyTargets.Count | Should -Be 1
         $script:copyTargets[0] | Should -Match "^$script:remotePathPattern$"
         foreach ($rawCommand in $script:rawCommands) {
-            foreach ($match in [regex]::Matches($rawCommand, '/tmp/\S+\.tar')) {
+            foreach ($match in [regex]::Matches($rawCommand, '/var/tmp/\S+\.tar')) {
                 $match.Value | Should -BeExactly $script:copyTargets[0]
             }
         }
@@ -117,6 +117,41 @@ BeforeAll {
         $archivePath = Join-Path $TestDrive "$Name.tar"
         [IO.File]::WriteAllBytes($archivePath, $stream.ToArray())
         return $archivePath
+    }
+}
+
+Describe 'Default image nodes' -Tag 'unit', 'ci', 'image' {
+    It 'queries the control-plane and the local Windows host of a setup with a Windows node' -TestCases @(
+        @{ LinuxOnly = $false }
+        @{ LinuxOnly = $null }
+    ) {
+        param($LinuxOnly)
+        InModuleScope $moduleName -Parameters @{ LinuxOnly = $LinuxOnly } {
+            param($LinuxOnly)
+            Mock Write-Log {}
+            Mock Get-SetupConfigFilePath { 'setup.json' }
+            Mock Get-ConfigValue { 'kubemaster' } -ParameterFilter { $Key -eq 'ControlPlaneNodeHostname' }
+            Mock Get-ConfigValue { $LinuxOnly } -ParameterFilter { $Key -eq 'LinuxOnly' }
+
+            $nodes = @(Get-DefaultNodeInfoList)
+
+            @($nodes | ForEach-Object { $_.Kind }) | Should -Be @('ControlPlane', 'LocalWindows')
+        }
+    }
+
+    It 'queries only the control-plane of a Linux-only setup, whose Windows host runs no container runtime' {
+        InModuleScope $moduleName {
+            Mock Write-Log {}
+            Mock Get-SetupConfigFilePath { 'setup.json' }
+            Mock Get-ConfigValue { 'kubemaster' } -ParameterFilter { $Key -eq 'ControlPlaneNodeHostname' }
+            Mock Get-ConfigValue { $true } -ParameterFilter { $Key -eq 'LinuxOnly' }
+
+            $nodes = @(Get-DefaultNodeInfoList)
+
+            $nodes.Count | Should -Be 1
+            $nodes[0].Kind | Should -Be 'ControlPlane'
+            $nodes[0].Name | Should -Be 'kubemaster'
+        }
     }
 }
 

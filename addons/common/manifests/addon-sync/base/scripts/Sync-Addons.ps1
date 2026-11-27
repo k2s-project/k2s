@@ -362,6 +362,10 @@ function Sync-AddonFromOciLayout {
                     New-Item -ItemType Directory -Path $chartsDest -Force | Out-Null
                     Expand-TarGz -Archive $blobPath -Destination $chartsDest; break
                 }
+                '*shared-scripts*' {
+                    Write-SyncLog "    Extracting shared scripts layer to addon root"
+                    Expand-TarGz -Archive $blobPath -Destination $destinationPath; break
+                }
                 '*scripts*' {
                     Write-SyncLog "    Extracting scripts layer"
                     Expand-TarGz -Archive $blobPath -Destination $implementationPath; break

@@ -193,7 +193,8 @@ function Resolve-ImageNode {
 Returns NodeInfo entries for the default nodes queried when no --node filter is given.
 
 .DESCRIPTION
-The default set is: control-plane (Linux) + local Windows host.
+The default set is: control-plane (Linux) + local Windows host. A Linux-only setup has no Windows
+node, and its Windows host runs no container runtime, so only the control-plane is queried there.
 Both are resolved via Resolve-ImageNode so the same routing logic applies.
 #>
 function Get-DefaultNodeInfoList {
@@ -203,10 +204,10 @@ function Get-DefaultNodeInfoList {
         $controlPlaneHostname = 'kubemaster'
     }
 
-    $defaultNodes = @(
-        (Resolve-ImageNode -NodeName $controlPlaneHostname),
-        (Resolve-ImageNode -NodeName $env:ComputerName)
-    )
+    $defaultNodes = @(Resolve-ImageNode -NodeName $controlPlaneHostname)
+    if ((Get-ConfigValue -Path $setupFilePath -Key 'LinuxOnly') -ne $true) {
+        $defaultNodes += Resolve-ImageNode -NodeName $env:ComputerName
+    }
 
     return @($defaultNodes | Where-Object { $null -ne $_ })
 }
@@ -959,7 +960,8 @@ function Invoke-LinuxNodeImageImport {
     )
 
     # A unique remote file per import keeps concurrent imports to the same node from overwriting or deleting each other's archive
-    $remoteImagePath = "/tmp/k2s-image-import-$([guid]::NewGuid().ToString('N')).tar"
+    # /var/tmp is disk-backed; /tmp is a RAM-sized tmpfs on Debian 13 and cannot hold large archives
+    $remoteImagePath = "/var/tmp/k2s-image-import-$([guid]::NewGuid().ToString('N')).tar"
     $importSuccess = $false
     $archiveTransport = if ($DockerArchive) { 'docker-archive' } else { 'oci-archive' }
     $pullCommand = "sudo buildah pull ${archiveTransport}:$remoteImagePath 2>&1"

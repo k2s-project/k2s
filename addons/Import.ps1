@@ -615,6 +615,11 @@ foreach ($addon in $addonsToImport) {
                 Expand-TarGzArchive -ArchivePath $blobPath -DestinationPath $chartsDestDir
                 break
             }
+            '*shared-scripts*' {
+                Write-Log "[Import] Extracting shared scripts layer to addon root"
+                Expand-TarGzArchive -ArchivePath $blobPath -DestinationPath $destinationPath
+                break
+            }
             '*scripts*' {
                 # Layer 3: Scripts - extract to implementation path for multi-impl addons
                 Write-Log "Extracting scripts layer from blob"
@@ -970,18 +975,23 @@ foreach ($planEntry in $importPlan) {
                 # instead of kubemaster so enable can install them offline on the correct host.
                 $debianPkgDir = Join-Path $packagesExtractDir 'debianpackages'
                 if (Test-Path $debianPkgDir) {
+                    # Must match the folder naming of Install-DebianPackages (.<addon>_<implementation>)
+                    $debDirName = $addon.name
+                    if (-not [string]::IsNullOrWhiteSpace($addon.implementation) -and $addon.implementation -ne $addon.name) {
+                        $debDirName += "_$($addon.implementation)"
+                    }
                     if ($null -ne $targetNode -and $targetNode.Kind -eq 'LinuxWorker') {
                         $nodeIp = $targetNode.IpAddress
                         $nodeUser = $targetNode.Username
                         Write-Log "Copying debian packages for addon $($addon.name) to node '$($targetNode.Name)' ($nodeIp)" -Console
-                        (Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo rm -rf .$($addon.name)" -UserName $nodeUser -IpAddress $nodeIp -NoLog -IgnoreErrors).Output | Write-Log
-                        (Invoke-CmdOnVmViaSSHKey -CmdToExecute "mkdir -p .$($addon.name)" -UserName $nodeUser -IpAddress $nodeIp -NoLog -IgnoreErrors).Output | Write-Log
-                        Copy-ToRemoteComputerViaSshKey -Source "$debianPkgDir\*" -Target ".$($addon.name)" -UserName $nodeUser -IpAddress $nodeIp
+                        (Invoke-CmdOnVmViaSSHKey -CmdToExecute "sudo rm -rf .$debDirName" -UserName $nodeUser -IpAddress $nodeIp -NoLog -IgnoreErrors).Output | Write-Log
+                        (Invoke-CmdOnVmViaSSHKey -CmdToExecute "mkdir -p .$debDirName" -UserName $nodeUser -IpAddress $nodeIp -NoLog -IgnoreErrors).Output | Write-Log
+                        Copy-ToRemoteComputerViaSshKey -Source "$debianPkgDir\*" -Target ".$debDirName" -UserName $nodeUser -IpAddress $nodeIp
                     }
                     else {
-                        (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "sudo rm -rf .$($addon.name)").Output | Write-Log
-                        (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "mkdir -p .$($addon.name)").Output | Write-Log
-                        Copy-ToControlPlaneViaSSHKey -Source "$debianPkgDir\*" -Target ".$($addon.name)"
+                        (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "sudo rm -rf .$debDirName").Output | Write-Log
+                        (Invoke-CmdOnControlPlaneViaSSHKey -Timeout 2 -CmdToExecute "mkdir -p .$debDirName").Output | Write-Log
+                        Copy-ToControlPlaneViaSSHKey -Source "$debianPkgDir\*" -Target ".$debDirName"
                     }
                 }
 

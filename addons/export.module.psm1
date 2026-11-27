@@ -19,3 +19,23 @@ function Get-NerdctlExe {
 function Get-CrictlExe {
     return $crictlExe    
 }
+
+function Copy-AddonSharedScripts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $AddonPath,
+        [Parameter(Mandatory = $true)]
+        [string] $ImplementationPath,
+        [Parameter(Mandatory = $true)]
+        [string] $DestinationPath
+    )
+
+    if ($AddonPath -eq $ImplementationPath) {
+        return
+    }
+
+    # The manifest is merged by the import through the config layer, so it must not be shipped here.
+    Get-ChildItem -LiteralPath $AddonPath -File -Force |
+        Where-Object { $_.Name -notin @('addon.manifest.yaml', 'addon.manifest.yaml.license') } |
+        Copy-Item -Destination $DestinationPath -Force -ErrorAction Stop
+}

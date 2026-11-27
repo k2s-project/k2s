@@ -57,14 +57,15 @@ var _ = BeforeSuite(func(ctx context.Context) {
 		framework.ClusterTestStepTimeout(time.Minute*10))
 	k2s = dsl.NewK2s(suite)
 
-	if suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
-		nodeIP, exitCode := suite.Kubectl().Exec(ctx, "get", "nodes", "-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}")
+	if runtime.GOOS == "linux" || suite.SetupInfo().RuntimeConfig.InstallConfig().LinuxOnly() {
+		nodeIP, exitCode := suite.Kubectl().Exec(ctx, "get", "nodes", "-l", "kubernetes.io/os=linux", "-o", "jsonpath={.items[0].status.addresses[?(@.type==\"InternalIP\")].address}")
 		if exitCode == 0 && len(strings.TrimSpace(nodeIP)) > 0 {
 			clusterIp = strings.TrimSpace(nodeIP)
 		} else {
 			clusterIp = "127.0.0.1"
 		}
 		weatherLinuxUrl = "http://" + clusterIp + "/weather-linux"
+		weatherWinUrl = "http://" + clusterIp + "/weather-win"
 	}
 
 	randomImageTag = strconv.FormatInt(GinkgoRandomSeed(), 10)
@@ -274,7 +275,12 @@ var _ = Describe("build container image", Ordered, func() {
 		It("builds the image", FlakeAttempts(buildAttempts), func(ctx context.Context) {
 			GinkgoWriter.Println("Create weather Windows image with input folder '", winSrcDirName, "' and using Dockerfile in input folder with push to registry")
 
-			suite.Cli("go.exe").WorkingDir(winSrcDirName).UseProxy().MustExec(ctx, "build")
+			if runtime.GOOS == "linux" {
+				goBin := suite.Cli("go.exe").Path()
+				suite.Cli("env").WorkingDir(winSrcDirName).UseProxy().MustExec(ctx, "GOOS=windows", "GOARCH=amd64", goBin, "build", "-o", "weather-win.exe")
+			} else {
+				suite.Cli("go.exe").WorkingDir(winSrcDirName).UseProxy().MustExec(ctx, "build")
+			}
 
 			suite.K2sCli().MustExec(ctx, "image", "build",
 				"--input-folder", winSrcDirName,

@@ -99,7 +99,7 @@ func removeImage(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := validateNodeSelector(options.nodes, runtimeConfig); err != nil {
+	if err := common.ValidateNodeSelector(options.nodes, runtimeConfig); err != nil {
 		return err
 	}
 

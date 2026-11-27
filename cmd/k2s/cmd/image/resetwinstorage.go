@@ -7,15 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 
 	cconfig "github.com/k2s-project/k2s/internal/contracts/config"
 	"github.com/k2s-project/k2s/internal/core/config"
-	"github.com/k2s-project/k2s/internal/host"
-	"github.com/k2s-project/k2s/internal/providers/powershell"
-
-	"github.com/k2s-project/k2s/cmd/k2s/utils"
+	"github.com/k2s-project/k2s/internal/provider"
 
 	"github.com/spf13/cobra"
 
@@ -26,28 +22,14 @@ type setupConfigProvider interface {
 	ReadConfig(configDir string) (*cconfig.K2sRuntimeConfig, error)
 }
 
-type powershellExecutor interface {
-	ExecutePsWithStructuredResult(psCmd string, params ...string) (*common.CmdResult, error)
-}
-
 type setupConfigProviderImpl struct{}
-
-type powershellExecutorImpl struct{}
 
 func (s *setupConfigProviderImpl) ReadConfig(configDir string) (*cconfig.K2sRuntimeConfig, error) {
 	return config.ReadRuntimeConfig(configDir)
 }
 
-func (p *powershellExecutorImpl) ExecutePsWithStructuredResult(psCmd string, params ...string) (*common.CmdResult, error) {
-	return powershell.ExecutePsWithStructuredResult[*common.CmdResult](psCmd, "CmdResult", common.NewPtermWriter(), params...)
-}
-
 func newSetupConfigProvider() setupConfigProvider {
 	return &setupConfigProviderImpl{}
-}
-
-func newPowershellExecutor() powershellExecutor {
-	return &powershellExecutorImpl{}
 }
 
 const (
@@ -83,10 +65,10 @@ const (
 )
 
 var (
-	// defaultContainerdDir is intentionally empty: an empty value signals
-	// ResetWinContainerStorage.ps1 to resolve the containerd storage path
+	// defaultContainerdDir and defaultDockerDir are intentionally empty: an empty value
+	// signals the platform provider to resolve the configured/default storage path.
 	defaultContainerdDir = ""
-	defaultDockerDir     = determineDefaultDir("docker")
+	defaultDockerDir     = ""
 
 	resetWinStorageCmd = &cobra.Command{
 		Use:     "reset-win-storage",
@@ -96,7 +78,6 @@ var (
 	}
 
 	getSetupConfigProvider func() setupConfigProvider
-	getPowershellExecutor  func() powershellExecutor
 )
 
 func init() {
@@ -109,17 +90,14 @@ func init() {
 	resetWinStorageCmd.Flags().PrintDefaults()
 
 	getSetupConfigProvider = newSetupConfigProvider
-	getPowershellExecutor = newPowershellExecutor
 }
 
 func resetWinStorage(cmd *cobra.Command, args []string) error {
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
-	psCmd, params, err := buildResetPsCmd(cmd)
+	cfg, err := buildResetWinStorageConfig(cmd)
 	if err != nil {
 		return err
 	}
-
-	slog.Debug("PS command created", "command", psCmd, "params", params)
 
 	setupConfigProvider := getSetupConfigProvider()
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
@@ -132,15 +110,8 @@ func resetWinStorage(cmd *cobra.Command, args []string) error {
 		return errors.New("Resetting WinContainerStorage for Linux-only setup is not supported.")
 	}
 
-	powershellExecutor := getPowershellExecutor()
-	cmdResult, err := powershellExecutor.ExecutePsWithStructuredResult(psCmd, params...)
-
-	if err != nil {
+	if err := context.Providers().Image.ResetWinStorage(cmd.Context(), cfg); err != nil {
 		return err
-	}
-
-	if cmdResult.Failure != nil {
-		return cmdResult.Failure
 	}
 
 	cmdSession.Finish()
@@ -148,72 +119,55 @@ func resetWinStorage(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildResetPsCmd(cmd *cobra.Command) (psCmd string, params []string, err error) {
-	psCmd = utils.FormatScriptFilePath(filepath.Join(utils.InstallDir(), "lib", "scripts", "windows", "host", "image", "ResetWinContainerStorage.ps1"))
-
+func buildResetWinStorageConfig(cmd *cobra.Command) (provider.ImageResetWinStorageConfig, error) {
 	force, err := strconv.ParseBool(cmd.Flags().Lookup(forceFlag).Value.String())
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", forceFlag, err)
+		return provider.ImageResetWinStorageConfig{}, fmt.Errorf("unable to parse flag '%s': %w", forceFlag, err)
 	}
 
 	showOutput, err := strconv.ParseBool(cmd.Flags().Lookup(common.OutputFlagName).Value.String())
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", common.OutputFlagName, err)
+		return provider.ImageResetWinStorageConfig{}, fmt.Errorf("unable to parse flag '%s': %w", common.OutputFlagName, err)
 	}
 
 	containerdDir, err := cmd.Flags().GetString(containerdDirFlag)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", containerdDirFlag, err)
+		return provider.ImageResetWinStorageConfig{}, fmt.Errorf("unable to parse flag '%s': %w", containerdDirFlag, err)
 	}
 
 	if containerdDir == "" {
-		slog.Info("No containerd directory provided; PowerShell will resolve the configured storage path")
+		slog.Info("No containerd directory provided; provider will resolve the configured storage path")
 	}
 
 	dockerDir, err := cmd.Flags().GetString(dockerDirFlag)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", dockerDirFlag, err)
+		return provider.ImageResetWinStorageConfig{}, fmt.Errorf("unable to parse flag '%s': %w", dockerDirFlag, err)
 	}
 
 	if dockerDir == "" {
-		slog.Info("Docker directory set as empty, will use default dir", "default-dir", defaultDockerDir)
-		dockerDir = defaultDockerDir
+		slog.Info("No docker directory provided; provider will resolve the default storage path")
 	}
 
 	maxRetries, err := cmd.Flags().GetInt(maxRetryFlag)
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", maxRetryFlag, err)
+		return provider.ImageResetWinStorageConfig{}, fmt.Errorf("unable to parse flag '%s': %w", maxRetryFlag, err)
 	}
 
 	if maxRetries <= 0 {
-		return "", nil, errors.New("illegal value for Max retries. Value of Max retries should be greater than or equal to 1")
+		return provider.ImageResetWinStorageConfig{}, errors.New("illegal value for Max retries. Value of Max retries should be greater than or equal to 1")
 	}
 
 	useZap, err := strconv.ParseBool(cmd.Flags().Lookup(forceZapFlag).Value.String())
 	if err != nil {
-		return "", nil, fmt.Errorf("unable to parse flag '%s': %w", forceZapFlag, err)
+		return provider.ImageResetWinStorageConfig{}, fmt.Errorf("unable to parse flag '%s': %w", forceZapFlag, err)
 	}
 
-	params = append(params,
-		" -Containerd "+utils.EscapeWithSingleQuotes(containerdDir),
-		" -Docker "+utils.EscapeWithSingleQuotes(dockerDir),
-		" -MaxRetries "+strconv.FormatUint(uint64(maxRetries), 10))
-
-	if showOutput {
-		params = append(params, " -ShowLogs")
-	}
-
-	if useZap {
-		params = append(params, " -ForceZap")
-	}
-
-	if force {
-		params = append(params, " -Force")
-	}
-
-	return
-}
-
-func determineDefaultDir(dirName string) string {
-	return filepath.Join(host.SystemDrive(), dirName)
+	return provider.ImageResetWinStorageConfig{
+		Containerd: containerdDir,
+		Docker:     dockerDir,
+		MaxRetry:   maxRetries,
+		ForceZap:   useZap,
+		Force:      force,
+		ShowOutput: showOutput,
+	}, nil
 }

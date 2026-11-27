@@ -107,7 +107,7 @@ func exportImage(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := validateNodeSelector(nodeSelector, runtimeConfig); err != nil {
+	if err := common.ValidateNodeSelector(nodeSelector, runtimeConfig); err != nil {
 		return err
 	}
 

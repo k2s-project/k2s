@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -147,8 +148,8 @@ var _ = Describe("Node Image CLI", Label("node-image", "image"), Ordered, func()
 			// Skip the Windows host node (registered by k2s at install time).
 			// It is the local machine itself; on Windows host, image operations on it run locally
 			// and are not covered by worker-node-focused test suite.
-			// On Linux-only setups, the local host is the sole cluster node running workloads.
-			if !isLinuxOnly && strings.ToLower(node.Metadata.Name) == localHostname {
+			// On Linux-only or Reverted Linux setups, the local host is the Linux control-plane node.
+			if runtime.GOOS == "windows" && !isLinuxOnly && strings.ToLower(node.Metadata.Name) == localHostname {
 				GinkgoWriter.Printf("[SETUP] Skipping host node <%s> (matches local hostname on Windows host)\n", node.Metadata.Name)
 				continue
 			}

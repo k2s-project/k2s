@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -19,8 +21,6 @@ import (
 	k2s_json "github.com/k2s-project/k2s/internal/json"
 	"github.com/k2s-project/k2s/internal/providers/ssh"
 	"github.com/k2s-project/k2s/test/framework/http"
-
-	"encoding/json"
 
 	//lint:ignore ST1001 test framework code
 	. "github.com/onsi/ginkgo/v2"
@@ -150,13 +150,18 @@ func (k2s *K2s) getK8sImageRepositories() (repos []string) {
 }
 
 func (k2s *K2s) getImagesFromWindowsNode(ctx context.Context) (images []string) {
-	if k2s.isLinuxOnly() || runtime.GOOS == "linux" {
+	if k2s.isLinuxOnly() {
 		return nil
 	}
 
-	crictl := k2s.suite.Cli(filepath.Join(k2s.suite.RootDir(), "bin", "crictl.exe"))
-	crictlConfig := filepath.Join(k2s.suite.RootDir(), "bin", "crictl.yaml")
-	output := crictl.NoStdOut().MustExec(ctx, "--config", crictlConfig, "images", "-o", "json")
+	var output string
+	if runtime.GOOS == "linux" {
+		output = k2s.getCrictlImagesViaSSH(ctx)
+	} else {
+		crictl := k2s.suite.Cli(filepath.Join(k2s.suite.RootDir(), "bin", "crictl.exe"))
+		crictlConfig := filepath.Join(k2s.suite.RootDir(), "bin", "crictl.yaml")
+		output = crictl.NoStdOut().MustExec(ctx, "--config", crictlConfig, "images", "-o", "json")
+	}
 
 	var imageResult crictlImagesResult
 	err := json.Unmarshal([]byte(output), &imageResult)
@@ -166,6 +171,71 @@ func (k2s *K2s) getImagesFromWindowsNode(ctx context.Context) (images []string) 
 		images = append(images, imageEntry.RepoTags...)
 	}
 	return
+}
+
+func (k2s *K2s) getCrictlImagesViaSSH(ctx context.Context) string {
+	configDir := k2s.suite.SetupInfo().Config.Host().K2sSetupConfigDir()
+
+	workerIP := "172.19.1.101"
+	if stateData, err := os.ReadFile(filepath.Join(configDir, "windows-worker.json")); err == nil {
+		var state struct {
+			IP string `json:"ip"`
+		}
+		if json.Unmarshal(stateData, &state) == nil && strings.TrimSpace(state.IP) != "" {
+			workerIP = strings.TrimSpace(state.IP)
+		}
+	}
+
+	keyPath := k2s.suite.SetupInfo().Config.Host().SshConfig().CurrentPrivateKeyPath()
+	if !isReadableFile(keyPath) {
+		if rootKey := "/root/.ssh/k2s/id_ed25519"; isReadableFile(rootKey) {
+			keyPath = rootKey
+		} else if home := os.Getenv("HOME"); home != "" {
+			if candidate := filepath.Join(home, ".ssh", "k2s", "id_ed25519"); isReadableFile(candidate) {
+				keyPath = candidate
+			}
+		}
+	}
+
+	args := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
+	}
+	if isReadableFile(keyPath) {
+		args = append(args, "-i", keyPath)
+	}
+
+	knownHostsPath := filepath.Join(configDir, "ssh", "windows-worker.known_hosts")
+	if isReadableFile(knownHostsPath) {
+		args = append(args, "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile="+knownHostsPath)
+	} else {
+		args = append(args, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null")
+	}
+
+	args = append(args, "remote@"+workerIP, `C:\k2s\bin\crictl.exe --config C:\k2s\bin\crictl.yaml images -o json`)
+
+	out, err := exec.CommandContext(ctx, "ssh", args...).Output()
+	Expect(err).ToNot(HaveOccurred(), "failed to query crictl images on Windows worker via SSH")
+
+	return strings.ReplaceAll(string(out), "\r", "")
+}
+
+func isReadableFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
 
 func (k2s *K2s) getImagesFromLinuxNode() (images []string) {
@@ -213,7 +283,7 @@ func (k2s *K2s) getImagesFromLinuxNode() (images []string) {
 }
 
 func (k2s *K2s) isImageAvailableOnWindowsNode(ctx context.Context, fullName string) bool {
-	if k2s.isLinuxOnly() || runtime.GOOS == "linux" {
+	if k2s.isLinuxOnly() {
 		return false
 	}
 	return slices.Contains(k2s.getImagesFromWindowsNode(ctx), fullName)

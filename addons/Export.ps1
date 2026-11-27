@@ -266,9 +266,9 @@ try {
                  }
              }
              
-             @('*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.drawio', '*.drawio.png', '*.md', '*.ndjson', '*.json', '*.license', 'Dockerfile*') | ForEach-Object {
+             @('*.png', '*.jpg', '*.jpeg', '*.gif', '*.svg', '*.drawio', '*.drawio.png', '*.md', '*.ndjson', '*.json', '*.license', '*.tar.gz', 'Dockerfile*') | ForEach-Object {
                  Get-ChildItem -Path $dirPath -Filter $_ -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-                     if ($_.Name -ne 'README.md') {
+                     if ($_.FullName -ne $readmePath) {
                          $relativePath = $_.FullName.Substring($dirPath.Length + 1)
                          $targetPath = Join-Path $scriptsStaging $relativePath
                          $targetDir = Split-Path $targetPath -Parent
@@ -346,6 +346,7 @@ try {
             $addonSpecificConfigs = Get-ChildItem -Path $dirPath -Recurse -Include '*.json' -File -ErrorAction SilentlyContinue | 
                 Where-Object { 
                     $_.Name -notmatch '^(package|tsconfig|eslint|babel)' -and
+                    $_.DirectoryName -eq $dirPath -and
                     $_.Directory.Name -eq $manifest.metadata.name -and
                     (Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -notmatch '"apiVersion"\s*:\s*"'
                 }
@@ -783,7 +784,7 @@ try {
                 }
             }
             
-            if (@(Get-ChildItem -LiteralPath $sharedScriptsStaging -File -ErrorAction Stop).Count -gt 0) {
+            if (@(Get-ChildItem -LiteralPath $sharedScriptsStaging -File -Force -ErrorAction Stop).Count -gt 0) {
                 $sharedScriptsTarPath = Join-Path $artifactPath 'shared-scripts.tar.gz'
                 if (-not (New-TarGzArchive -SourcePath $sharedScriptsStaging -DestinationPath $sharedScriptsTarPath -ArchiveContents)) {
                     throw "Failed to archive shared scripts for addon '$addonName'."

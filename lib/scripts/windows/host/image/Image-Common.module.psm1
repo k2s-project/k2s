@@ -960,7 +960,8 @@ function Invoke-LinuxNodeImageImport {
     )
 
     # A unique remote file per import keeps concurrent imports to the same node from overwriting or deleting each other's archive
-    $remoteImagePath = "/tmp/k2s-image-import-$([guid]::NewGuid().ToString('N')).tar"
+    # /var/tmp is disk-backed; /tmp is a RAM-sized tmpfs on Debian 13 and cannot hold large archives
+    $remoteImagePath = "/var/tmp/k2s-image-import-$([guid]::NewGuid().ToString('N')).tar"
     $importSuccess = $false
     $archiveTransport = if ($DockerArchive) { 'docker-archive' } else { 'oci-archive' }
     $pullCommand = "sudo buildah pull ${archiveTransport}:$remoteImagePath 2>&1"

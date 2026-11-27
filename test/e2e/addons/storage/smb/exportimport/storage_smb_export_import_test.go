@@ -35,7 +35,7 @@ var (
 
 func TestStorageSmbExportImport(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "storage smb Addon Export/Import Tests", Label("addon", "addon-ilities", "acceptance", "internet-required", "setup-required", "invasive", "storage-smb", "export-import", "air-gapped", "system-running"))
+	RunSpecs(t, "storage smb Addon Export/Import Tests", Label("addon", "addon-ilities", "acceptance", "internet-required", "setup-required", "invasive", "storage", "smb", "storage-smb", "export-import", "air-gapped", "system-running"))
 }
 
 var _ = BeforeSuite(func(ctx context.Context) {
@@ -89,6 +89,9 @@ var _ = Describe("storage smb addon export and import", Ordered, func() {
 	Describe("export storage smb addon", func() {
 		BeforeAll(func(ctx context.Context) {
 			exportimport.CleanupExportedFiles(exportPath, "")
+			// Earlier suites leave ~/.storage_smb and the installed packages behind; the export then skips the download.
+			exportimport.RemoveAddonPackagesFromControlPlane(ctx, suite, k2s, impl, controlPlaneIpAddress)
+			exportimport.PurgeAddonDebianPackages(ctx, suite, impl, controlPlaneIpAddress)
 		})
 
 		It("exports storage smb addon to versioned OCI tar file", func(ctx context.Context) {

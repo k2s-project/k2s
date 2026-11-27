@@ -845,11 +845,11 @@ func backupContainerImages(stagingDir string, includedNamespaces []string, expor
 		}
 
 		repo, tag := splitImageRepoTag(img)
+		// An empty Node marks a Linux image; restore treats any other node name except "kubemaster" as a Windows worker.
 		manifest.Images = append(manifest.Images, imageRestoreManifestEntry{
 			Repository: repo,
 			Tag:        tag,
 			TarFile:    sanitized,
-			Node:       "linux",
 		})
 	}
 

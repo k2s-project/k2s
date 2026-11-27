@@ -69,7 +69,11 @@ func addonIndexEntryMatches(addonName, implementationName, expectedAddonName, ex
 	return addonName == expectedAddonName && implementationName == expectedImplementationName
 }
 
-func importedDebianPackageDirName(addonName string) string {
+// importedDebianPackageDirName mirrors Install-DebianPackages/Import.ps1: ~/.<addon>[_<implementation>] on the control plane.
+func importedDebianPackageDirName(addonName, implementationName string) string {
+	if implementationName != "" && implementationName != addonName {
+		return addonName + "_" + implementationName
+	}
 	return addonName
 }
 
@@ -475,7 +479,7 @@ var _ = Describe("export and import a representative subset of addons and make s
 			GinkgoWriter.Printf("[BeforeAll] Removing downloaded debian packages for %d addons...\n", len(testAddons))
 			for _, a := range testAddons {
 				for _, i := range a.Spec.Implementations {
-					packageDir := importedDebianPackageDirName(a.Metadata.Name)
+					packageDir := importedDebianPackageDirName(a.Metadata.Name, i.Name)
 					GinkgoWriter.Printf("[BeforeAll]   Removing debian packages for %s/%s (dir: %s)\n", a.Metadata.Name, i.Name, packageDir)
 					suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIpAddress, "-u", "remote", "-c", fmt.Sprintf("sudo rm -rf .%s", packageDir))
 				}
@@ -491,7 +495,7 @@ var _ = Describe("export and import a representative subset of addons and make s
 
 			for _, a := range testAddons {
 				for _, i := range a.Spec.Implementations {
-					packageDir := importedDebianPackageDirName(a.Metadata.Name)
+					packageDir := importedDebianPackageDirName(a.Metadata.Name, i.Name)
 					GinkgoWriter.Printf("[Test]   Checking %s/%s (dir: .%s) does not exist...\n", a.Metadata.Name, i.Name, packageDir)
 					suite.K2sCli().ExpectedExitCode(cli.ExitCodeFailure).Exec(ctx, "node", "exec", "-i", controlPlaneIpAddress, "-u", "remote", "-c", fmt.Sprintf("[ -d .%s ]", packageDir))
 					GinkgoWriter.Printf("[Test]   OK: .%s does not exist\n", packageDir)
@@ -653,7 +657,7 @@ var _ = Describe("export and import a representative subset of addons and make s
 				for _, i := range a.Spec.Implementations {
 					GinkgoWriter.Printf("[Test]   Checking %s/%s - %d debian packages\n", a.Metadata.Name, i.Name, len(i.OfflineUsage.LinuxResources.DebPackages))
 					for pkgIdx, pkg := range i.OfflineUsage.LinuxResources.DebPackages {
-						packageDir := importedDebianPackageDirName(a.Metadata.Name)
+						packageDir := importedDebianPackageDirName(a.Metadata.Name, i.Name)
 						suite.K2sCli().MustExec(ctx, "node", "exec", "-i", controlPlaneIpAddress, "-u", "remote", "-c", fmt.Sprintf("[ -d .%s/%s ]", packageDir, pkg))
 						GinkgoWriter.Printf("[Test]     [%d] OK: %s\n", pkgIdx, pkg)
 					}

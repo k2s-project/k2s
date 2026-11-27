@@ -132,7 +132,11 @@ func (p *linuxSystemProvider) Compact(_ SystemCompactConfig) error {
 }
 
 func (p *linuxSystemProvider) Backup(cfg SystemBackupConfig) error {
-	return runLinuxSystemBackup(p.installDir, cfg)
+	return runLinuxSystemBackupWithProviderConfig(p.installDir, ProviderConfig{
+		InstallDir: p.installDir,
+		ConfigDir:  p.configDir,
+		StdWriter:  p.stdWriter,
+	}, cfg)
 }
 
 func (p *linuxSystemProvider) Restore(cfg SystemRestoreConfig) error {

@@ -103,14 +103,16 @@ type pvRestoreMetadata struct {
 	VolumeRootGID      uint32 `json:"volumeRootGID"`
 }
 
+type imageRestoreManifestEntry struct {
+	ImageId    string `json:"ImageId"`
+	Repository string `json:"Repository"`
+	Tag        string `json:"Tag"`
+	TarFile    string `json:"TarFile"`
+	Node       string `json:"Node"`
+}
+
 type imageRestoreManifest struct {
-	Images []struct {
-		ImageId    string `json:"ImageId"`
-		Repository string `json:"Repository"`
-		Tag        string `json:"Tag"`
-		TarFile    string `json:"TarFile"`
-		Node       string `json:"Node"`
-	} `json:"Images"`
+	Images []imageRestoreManifestEntry `json:"Images"`
 }
 
 type k8sOwnerReference struct {

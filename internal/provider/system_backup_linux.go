@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -130,6 +131,10 @@ type k8sPVItem struct {
 }
 
 func runLinuxSystemBackup(installDir string, cfg SystemBackupConfig) error {
+	return runLinuxSystemBackupWithProviderConfig(installDir, ProviderConfig{InstallDir: installDir}, cfg)
+}
+
+func runLinuxSystemBackupWithProviderConfig(installDir string, providerCfg ProviderConfig, cfg SystemBackupConfig) error {
 	slog.Info("[System Backup] Starting K2s system backup...")
 
 	if cfg.BackupFile == "" {
@@ -184,7 +189,15 @@ func runLinuxSystemBackup(installDir string, cfg SystemBackupConfig) error {
 	if cfg.SkipImages {
 		slog.Info("[System Backup] Skipping image backup as requested")
 	} else {
-		if err := backupContainerImages(stagingDir, includedNamespaces); err != nil {
+		imageProvider := newLinuxImageProvider(providerCfg)
+		exportImage := func(ctx context.Context, imageName, targetTar string) error {
+			return imageProvider.exportWithContext(ctx, ImageExportConfig{
+				ImageName:  imageName,
+				OutputPath: targetTar,
+				ShowOutput: cfg.ShowOutput,
+			})
+		}
+		if err := backupContainerImages(stagingDir, includedNamespaces, exportImage); err != nil {
 			return fmt.Errorf("failed to backup container images: %w", err)
 		}
 	}
@@ -772,7 +785,7 @@ func tarGzSingleFile(srcFile, destTarGz string) error {
 	return nil
 }
 
-func backupContainerImages(stagingDir string, includedNamespaces []string) error {
+func backupContainerImages(stagingDir string, includedNamespaces []string, exportImage func(ctx context.Context, imageName, targetTar string) error) error {
 	slog.Info("[System Backup] Backing up user workload images...")
 	imagesDir := filepath.Join(stagingDir, "images")
 	if err := os.MkdirAll(imagesDir, 0755); err != nil {
@@ -803,50 +816,68 @@ func backupContainerImages(stagingDir string, includedNamespaces []string) error
 		return fmt.Errorf("failed to query pod images: all %d namespace queries failed", queryFailures)
 	}
 
-	backedUpCount := 0
-	var exportErrors []string
+	images := make([]string, 0, len(imageSet))
 	for img := range imageSet {
+		images = append(images, img)
+	}
+	sort.Strings(images)
+
+	var manifest imageRestoreManifest
+	var exportErrors []string
+	for _, img := range images {
 		sanitized := sanitizeImageName(img) + ".tar"
 		targetTar := filepath.Join(imagesDir, sanitized)
 
-		// Try ctr (containerd in k8s.io namespace) first
-		ctxCtr, cancelCtr := context.WithTimeout(context.Background(), defaultImageExportTimeout)
-		cmd := exec.CommandContext(ctxCtr, "ctr", "-n", "k8s.io", "images", "export", targetTar, img)
-		errCtr := cmd.Run()
-		cancelCtr()
-
-		if errCtr != nil {
-			_ = os.Remove(targetTar)
-			// Fall back to nerdctl or docker
-			ctxNerd, cancelNerd := context.WithTimeout(context.Background(), defaultImageExportTimeout)
-			cmd2 := exec.CommandContext(ctxNerd, "nerdctl", "-n", "k8s.io", "save", "-o", targetTar, img)
-			errNerd := cmd2.Run()
-			cancelNerd()
-
-			if errNerd != nil {
-				_ = os.Remove(targetTar)
-				ctxDoc, cancelDoc := context.WithTimeout(context.Background(), defaultImageExportTimeout)
-				cmd3 := exec.CommandContext(ctxDoc, "docker", "save", "-o", targetTar, img)
-				errDoc := cmd3.Run()
-				cancelDoc()
-
-				if errDoc != nil {
-					_ = os.Remove(targetTar)
-					slog.Warn("[System Backup] Failed to export image", "image", img, "error", errDoc)
-					exportErrors = append(exportErrors, fmt.Sprintf("%s: %v", img, errDoc))
-					continue
-				}
-			}
+		var exportErr error
+		if exportImage != nil {
+			ctxExport, cancelExport := context.WithTimeout(context.Background(), defaultImageExportTimeout)
+			exportErr = exportImage(ctxExport, img, targetTar)
+			cancelExport()
+		} else {
+			exportErr = fmt.Errorf("image export provider not configured")
 		}
-		backedUpCount++
+
+		if exportErr != nil {
+			_ = os.Remove(targetTar)
+			slog.Warn("[System Backup] Failed to export image", "image", img, "error", exportErr)
+			exportErrors = append(exportErrors, fmt.Sprintf("%s: %v", img, exportErr))
+			continue
+		}
+
+		repo, tag := splitImageRepoTag(img)
+		manifest.Images = append(manifest.Images, imageRestoreManifestEntry{
+			Repository: repo,
+			Tag:        tag,
+			TarFile:    sanitized,
+			Node:       "linux",
+		})
 	}
 
 	if len(exportErrors) > 0 {
 		return fmt.Errorf("failed to export %d image(s): %s (use --skip-images to exclude images from backup)", len(exportErrors), strings.Join(exportErrors, "; "))
 	}
 
-	slog.Info("[System Backup] Successfully backed up user workload container images", "count", backedUpCount)
+	if len(manifest.Images) > 0 {
+		manifestData, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal image manifest: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(imagesDir, "manifest.json"), manifestData, 0644); err != nil {
+			return fmt.Errorf("failed to write image manifest: %w", err)
+		}
+	}
+
+	slog.Info("[System Backup] Successfully backed up user workload container images", "count", len(manifest.Images))
 	return nil
+}
+
+func splitImageRepoTag(image string) (string, string) {
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon > lastSlash {
+		return image[:lastColon], image[lastColon+1:]
+	}
+	return image, ""
 }
 
 func sanitizeImageName(image string) string {

@@ -68,7 +68,7 @@ func TestForwardingDiagnosticsProbeAllPathsDespiteCurlFailure(t *testing.T) {
 		hostURLs = append(hostURLs, args[len(args)-1])
 		return "", errors.New("Service timeout")
 	}
-	collectWindowsForwardingDiagnostics(context.Background(), []string{"albums-win1"}, kubectl, curl)
+	collectWindowsForwardingDiagnosticsWithLog(context.Background(), []string{"albums-win1"}, kubectl, curl, nil)
 	want := []string{
 		"http://albums-win1.k2s.svc.cluster.local:80/albums-win1",
 		"http://172.21.1.10:80/albums-win1",
@@ -96,7 +96,7 @@ func TestForwardingDiagnosticsContinueAfterUnavailableService(t *testing.T) {
 		URLs = append(URLs, args[len(args)-1])
 		return "", nil
 	}
-	collectWindowsForwardingDiagnostics(context.Background(), []string{"albums-win1"}, kubectl, curl)
+	collectWindowsForwardingDiagnosticsWithLog(context.Background(), []string{"albums-win1"}, kubectl, curl, nil)
 	if len(URLs) != 2 || !strings.Contains(URLs[1], "172.20.1.10") {
 		t.Fatalf("DNS and endpoint probes should still run: %v", URLs)
 	}
@@ -109,7 +109,7 @@ func TestForwardingDiagnosticsRespectCanceledContext(t *testing.T) {
 		t.Fatal("no diagnostics should launch after context cancellation")
 		return "", nil
 	}
-	collectWindowsForwardingDiagnostics(ctx, []string{"albums-win1"}, run, run)
+	collectWindowsForwardingDiagnosticsWithLog(ctx, []string{"albums-win1"}, run, run, nil)
 }
 
 func TestBoundedDiagnosticKeepsStderrOutOfJSON(t *testing.T) {
@@ -117,7 +117,7 @@ func TestBoundedDiagnosticKeepsStderrOutOfJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := runBoundedDiagnostic(context.Background(), executable, "-test.run=^TestDiagnosticProcessHelper$", "--", "output")
+	output, err := runBoundedDiagnostic(context.Background(), executable, nil, "-test.run=^TestDiagnosticProcessHelper$", "--", "output")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestBoundedDiagnosticReportsFailureAndPartialOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := runBoundedDiagnostic(context.Background(), executable, "-test.run=^TestDiagnosticProcessHelper$", "--", "failure")
+	output, err := runBoundedDiagnostic(context.Background(), executable, nil, "-test.run=^TestDiagnosticProcessHelper$", "--", "failure")
 	if err == nil || output != "partial evidence" {
 		t.Fatalf("failed command must preserve partial output and error: %q, %v", output, err)
 	}
@@ -145,7 +145,7 @@ func TestBoundedDiagnosticRespectsCollectionDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err = runBoundedDiagnostic(ctx, executable, "-test.run=^TestDiagnosticProcessHelper$", "--", "sleep")
+	_, err = runBoundedDiagnostic(ctx, executable, nil, "-test.run=^TestDiagnosticProcessHelper$", "--", "sleep")
 	if err == nil || ctx.Err() != context.DeadlineExceeded || time.Since(start) > 5*time.Second {
 		t.Fatalf("command did not honor aggregate deadline: %v, %v, elapsed %v", err, ctx.Err(), time.Since(start))
 	}

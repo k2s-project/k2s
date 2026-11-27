@@ -4,6 +4,7 @@
 package bash
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/k2s-project/k2s/internal/os"
@@ -13,6 +14,7 @@ import (
 const ShowLogsEnvVar = "K2S_SHOW_LOGS"
 
 type scriptBuilder struct {
+	ctx      context.Context
 	script   string
 	args     []string
 	showLogs bool
@@ -21,6 +23,11 @@ type scriptBuilder struct {
 
 func NewScript(script string) *scriptBuilder {
 	return &scriptBuilder{script: script}
+}
+
+func (builder *scriptBuilder) WithContext(ctx context.Context) *scriptBuilder {
+	builder.ctx = ctx
+	return builder
 }
 
 func (builder *scriptBuilder) WithArgs(args ...string) *scriptBuilder {
@@ -59,6 +66,9 @@ func (builder *scriptBuilder) Exec() error {
 	cmdArgs = append(cmdArgs, builder.args...)
 
 	cmd := os.NewCmd(cmdArgs[0]).WithArgs(cmdArgs[1:]...)
+	if builder.ctx != nil {
+		cmd.WithContext(builder.ctx)
+	}
 	if builder.writer != nil {
 		cmd.WithStdOutWriter(func(msg string, _ ...any) { builder.writer.WriteStdOut(msg) }).
 			WithStdErrWriter(func(msg string, _ ...any) { builder.writer.WriteStdErr(msg) })

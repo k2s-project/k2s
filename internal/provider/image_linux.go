@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -47,7 +48,12 @@ func newLinuxImageProvider(cfg ProviderConfig) *linuxImageProvider {
 }
 
 func (p *linuxImageProvider) runScript(script string, showOutput bool, args ...string) error {
+	return p.runScriptWithContext(context.Background(), script, showOutput, args...)
+}
+
+func (p *linuxImageProvider) runScriptWithContext(ctx context.Context, script string, showOutput bool, args ...string) error {
 	return bash.NewScript(script).
+		WithContext(ctx).
 		WithArgs(args...).
 		WithShowLogs(showOutput).
 		WithStdWriter(p.stdWriter).
@@ -377,6 +383,13 @@ func (p *linuxImageProvider) importWindowsImage(path string) error {
 }
 
 func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
+	return p.exportWithContext(context.Background(), cfg)
+}
+
+func (p *linuxImageProvider) exportWithContext(ctx context.Context, cfg ImageExportConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ref := cfg.ImageId
 	if ref == "" {
 		ref = cfg.ImageName
@@ -398,25 +411,31 @@ func (p *linuxImageProvider) Export(cfg ImageExportConfig) error {
 		if cfg.DockerArchive {
 			args = append(args, "--docker-archive")
 		}
-		return p.runScript(script, cfg.ShowOutput, args...)
+		return p.runScriptWithContext(ctx, script, cfg.ShowOutput, args...)
 	}
 
 	if cfg.DockerArchive {
-		cmd := exec.Command("nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref)
-		if cfg.ShowOutput {
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			return cmd.Run()
-		}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
-		}
-		return nil
+		return runExportCmd(ctx, cfg.ShowOutput, "nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref)
 	}
 
-	cmd := exec.Command("ctr", "-n", "k8s.io", "images", "export", cfg.OutputPath, ref)
-	if cfg.ShowOutput {
+	if err := runExportCmd(ctx, cfg.ShowOutput, "ctr", "-n", "k8s.io", "images", "export", cfg.OutputPath, ref); err != nil {
+		_ = os.Remove(cfg.OutputPath)
+		if nerdErr := runExportCmd(ctx, cfg.ShowOutput, "nerdctl", "-n", "k8s.io", "save", "-o", cfg.OutputPath, ref); nerdErr == nil {
+			return nil
+		}
+		_ = os.Remove(cfg.OutputPath)
+		if docErr := runExportCmd(ctx, cfg.ShowOutput, "docker", "save", "-o", cfg.OutputPath, ref); docErr == nil {
+			return nil
+		}
+		_ = os.Remove(cfg.OutputPath)
+		return err
+	}
+	return nil
+}
+
+func runExportCmd(ctx context.Context, showOutput bool, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if showOutput {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()

@@ -37,6 +37,11 @@ const (
 	trustedVolumeRootsEnvName = "K2S_RESTORE_PV_ROOTS"
 )
 
+var (
+	webhookEndpointsReadyTimeout = 3 * time.Minute
+	webhookEndpointsPollInterval = 2 * time.Second
+)
+
 var orderedClusterResourceTypes = []string{
 	"customresourcedefinitions",
 	"storageclasses",
@@ -75,7 +80,7 @@ var orderedNamespacedResourceTypes = []string{
 var restoreKubeconfig string
 
 // trustedVolumeRoots are the host directories below which persistent volume data may be restored.
-var trustedVolumeRoots = []string{"/mnt", "/srv", "/var/lib/k2s/volumes"}
+var trustedVolumeRoots = []string{"/mnt", "/srv", "/var/lib/k2s/volumes", "/registry"}
 
 var protectedVolumeRoots = []string{
 	"/bin", "/sbin", "/usr", "/etc", "/lib", "/lib32", "/lib64",
@@ -221,7 +226,8 @@ func resolveVolumePath(volumePath string) (string, error) {
 			return canonical, nil
 		}
 	}
-	return "", fmt.Errorf("volume path '%s' is not located in a trusted storage root", volumePath)
+	allowed := strings.Join(effectiveTrustedVolumeRoots(), ", ")
+	return "", fmt.Errorf("volume path '%s' is not located in a trusted storage root (allowed roots: %s; set %s to a colon-separated list of additional trusted roots to authorize custom locations)", volumePath, allowed, trustedVolumeRootsEnvName)
 }
 
 func isDangerousVolumePath(volumePath string) bool {
@@ -486,10 +492,21 @@ func runLinuxSystemRestoreWithProviderConfig(installDir string, providerCfg Prov
 	}
 
 	// Step 6: Restore persistent volumes
-	if errs := restorePersistentVolumes(stagingDir); len(errs) > 0 {
-		allErrors = append(allErrors, errs...)
+	quiescedConsumers, pvErrs := restorePersistentVolumesDeferredResume(stagingDir)
+	consumersResumed := false
+	defer func() {
+		if !consumersResumed {
+			for i := len(quiescedConsumers) - 1; i >= 0; i-- {
+				for _, e := range quiescedConsumers[i].scaleUp() {
+					slog.Warn("[System Restore] Failed to resume quiesced consumer after error", "error", e)
+				}
+			}
+		}
+	}()
+	if len(pvErrs) > 0 {
+		allErrors = append(allErrors, pvErrs...)
 		if cfg.ErrorOnFailure {
-			return fmt.Errorf("persistent volume restore failed: %s", strings.Join(errs, "; "))
+			return fmt.Errorf("persistent volume restore failed: %s", strings.Join(pvErrs, "; "))
 		}
 	}
 
@@ -516,7 +533,25 @@ func runLinuxSystemRestoreWithProviderConfig(installDir string, providerCfg Prov
 		}
 	}
 
-	// Step 9: Restore admission webhooks once their backing services exist
+	// Step 8b: Resume quiesced PV consumers and verify readiness now that Secrets/ConfigMaps/resources are restored
+	if len(quiescedConsumers) > 0 {
+		consumersResumed = true
+		var resumeErrs []string
+		for i := len(quiescedConsumers) - 1; i >= 0; i-- {
+			resumeErrs = append(resumeErrs, quiescedConsumers[i].scaleUp()...)
+		}
+		for i := len(quiescedConsumers) - 1; i >= 0; i-- {
+			resumeErrs = append(resumeErrs, quiescedConsumers[i].waitReady()...)
+		}
+		if len(resumeErrs) > 0 {
+			allErrors = append(allErrors, resumeErrs...)
+			if cfg.ErrorOnFailure {
+				return fmt.Errorf("failed to resume persistent volume consumers: %s", strings.Join(resumeErrs, "; "))
+			}
+		}
+	}
+
+	// Step 9: Restore admission webhooks once their backing services have ready endpoints
 	if errs := restoreDeferredClusterResources(stagingDir); len(errs) > 0 {
 		allErrors = append(allErrors, errs...)
 		if cfg.ErrorOnFailure {
@@ -646,7 +681,7 @@ func restoreContainerImages(stagingDir string, importImage func(tarPath string, 
 }
 
 func isWindowsImageNode(node string) bool {
-	return node != "" && !strings.EqualFold(node, "kubemaster")
+	return node != "" && !strings.EqualFold(node, "kubemaster") && !strings.EqualFold(node, "linux")
 }
 
 // findManifestImageArchive resolves an archive path of the image manifest (which may use Windows separators and is
@@ -694,7 +729,7 @@ func executeRestoreHooks(installDir, stagingDir, additionalHooksDir string) []st
 				parts := strings.Split(filepath.ToSlash(relPath), "/")
 				if len(parts) > 1 {
 					addonName := parts[len(parts)-2]
-					if !isAddonDeployed(addonName) {
+					if !isAddonDeployedWithKubeconfig(addonName, restoreKubeconfig) {
 						slog.Debug("[System Restore] Skipping restore hook for disabled addon", "addon", addonName, "path", p)
 						return nil
 					}
@@ -736,6 +771,8 @@ func runRestoreHook(scriptPath, hooksDir string) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath, "--backup-dir", hooksDir)
+	cmd.Env = withKubeconfigEnv(os.Environ(), restoreKubeconfig)
+	kos.ConfigureProcessGroup(cmd, 5*time.Second)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Warn("[System Restore] Hook execution failed", "path", scriptPath, "error", err, "output", string(out))
@@ -745,29 +782,58 @@ func runRestoreHook(scriptPath, hooksDir string) error {
 	return nil
 }
 
-func restorePersistentVolumes(stagingDir string) (errorsList []string) {
+type pvRestorePlan struct {
+	meta           pvRestoreMetadata
+	targetPath     string
+	tarGzPath      string
+	volumeKind     string
+	claimNamespace string
+	claimName      string
+}
+
+type stagedVolume struct {
+	pvName        string
+	targetPath    string
+	stageDir      string
+	newData       string
+	previousPath  string
+	oldExists     bool
+	swapped       bool
+	preserveStage bool
+}
+
+func (s *stagedVolume) cleanup() {
+	if s != nil && !s.preserveStage && s.stageDir != "" {
+		_ = os.RemoveAll(s.stageDir)
+	}
+}
+
+func restorePersistentVolumes(stagingDir string) []string {
+	quiesced, errs := restorePersistentVolumesDeferredResume(stagingDir)
+	for i := len(quiesced) - 1; i >= 0; i-- {
+		errs = append(errs, quiesced[i].resume()...)
+	}
+	return errs
+}
+
+func restorePersistentVolumesDeferredResume(stagingDir string) ([]*consumerQuiesce, []string) {
 	pvDir := filepath.Join(stagingDir, "pv")
 	stat, err := os.Stat(pvDir)
 	if err != nil || !stat.IsDir() {
 		slog.Debug("[System Restore] No PV directory found in backup, skipping PV restore")
-		return nil
+		return nil, nil
 	}
 
 	slog.Info("[System Restore] Restoring persistent volumes...")
 
 	entries, err := os.ReadDir(pvDir)
 	if err != nil {
-		return []string{fmt.Sprintf("failed to read pv directory: %v", err)}
+		return nil, []string{fmt.Sprintf("failed to read pv directory: %v", err)}
 	}
 
-	restoredCount := 0
-	var quiescedConsumers []*consumerQuiesce
-	defer func() {
-		for i := len(quiescedConsumers) - 1; i >= 0; i-- {
-			errorsList = append(errorsList, quiescedConsumers[i].resume()...)
-		}
-	}()
-
+	// Phase 1: Preflight and validate every PV before stopping consumers or modifying disk state.
+	var plans []pvRestorePlan
+	var errorsList []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -828,81 +894,149 @@ func restorePersistentVolumes(stagingDir string) (errorsList []string) {
 			errorsList = append(errorsList, fmt.Sprintf("failed to inspect live claim binding for PV '%s': %v", meta.PVName, err))
 			continue
 		}
-		var quiesced *consumerQuiesce
-		if claimNamespace != "" && claimName != "" {
-			var qErr error
-			quiesced, qErr = quiescePVCConsumers(claimNamespace, claimName)
-			quiescedConsumers = append(quiescedConsumers, quiesced)
-			if qErr != nil {
-				errMsg := fmt.Sprintf("failed to stop consumers of PVC '%s/%s' for PV '%s': %v", claimNamespace, claimName, meta.PVName, qErr)
-				slog.Warn("[System Restore] " + errMsg)
-				errorsList = append(errorsList, errMsg)
-				continue
-			}
-		}
 
-		slog.Info("[System Restore] Extracting persistent volume data", "pv", meta.PVName, "target", targetPath)
-		installErr := installVolumeData(tarGzPath, targetPath, volumeKind, meta)
-		if installErr != nil {
-			errMsg := fmt.Sprintf("failed to restore PV archive '%s' to '%s': %v", tarGzPath, targetPath, installErr)
-			slog.Warn("[System Restore] " + errMsg)
-			errorsList = append(errorsList, errMsg)
-		} else {
-			restoredCount++
-		}
-
+		plans = append(plans, pvRestorePlan{
+			meta:           meta,
+			targetPath:     targetPath,
+			tarGzPath:      tarGzPath,
+			volumeKind:     volumeKind,
+			claimNamespace: claimNamespace,
+			claimName:      claimName,
+		})
 	}
 
-	slog.Info("[System Restore] Persistent volume restore finished", "restored", restoredCount, "failed", len(errorsList))
-	return errorsList
+	if len(errorsList) > 0 {
+		slog.Info("[System Restore] Persistent volume restore aborted during preflight", "failed", len(errorsList))
+		return nil, errorsList
+	}
+	if len(plans) == 0 {
+		return nil, nil
+	}
+
+	// Phase 2: Stage all PV archives into sibling temp directories before touching live volumes.
+	var staged []*stagedVolume
+	cleanupStaged := func() {
+		for _, sv := range staged {
+			sv.cleanup()
+		}
+	}
+
+	for _, plan := range plans {
+		slog.Info("[System Restore] Staging persistent volume data", "pv", plan.meta.PVName, "target", plan.targetPath)
+		sv, stageErr := stageVolumeData(plan.tarGzPath, plan.targetPath, plan.volumeKind, plan.meta)
+		if stageErr != nil {
+			errMsg := fmt.Sprintf("failed to restore PV archive '%s' to '%s': %v", plan.tarGzPath, plan.targetPath, stageErr)
+			slog.Warn("[System Restore] " + errMsg)
+			errorsList = append(errorsList, errMsg)
+			cleanupStaged()
+			return nil, errorsList
+		}
+		sv.pvName = plan.meta.PVName
+		staged = append(staged, sv)
+	}
+
+	// Phase 3: Quiesce all unique PVC consumers.
+	var quiescedConsumers []*consumerQuiesce
+	resumeConsumersOnFailure := func() {
+		for i := len(quiescedConsumers) - 1; i >= 0; i-- {
+			errorsList = append(errorsList, quiescedConsumers[i].scaleUp()...)
+		}
+	}
+	seenClaims := make(map[string]bool)
+	for _, plan := range plans {
+		if plan.claimNamespace == "" || plan.claimName == "" {
+			continue
+		}
+		claimKey := plan.claimNamespace + "/" + plan.claimName
+		if seenClaims[claimKey] {
+			continue
+		}
+		seenClaims[claimKey] = true
+
+		quiesced, qErr := quiescePVCConsumers(plan.claimNamespace, plan.claimName)
+		quiescedConsumers = append(quiescedConsumers, quiesced)
+		if qErr != nil {
+			errMsg := fmt.Sprintf("failed to stop consumers of PVC '%s/%s' for PV '%s': %v", plan.claimNamespace, plan.claimName, plan.meta.PVName, qErr)
+			slog.Warn("[System Restore] " + errMsg)
+			errorsList = append(errorsList, errMsg)
+			cleanupStaged()
+			resumeConsumersOnFailure()
+			return nil, errorsList
+		}
+	}
+
+	// Phase 4: Swap all staged volumes into place, retaining previous data until every swap succeeds.
+	var committed []*stagedVolume
+	for _, sv := range staged {
+		if err := commitStagedVolume(sv); err != nil {
+			errMsg := fmt.Sprintf("failed to swap PV '%s' at '%s': %v", sv.pvName, sv.targetPath, err)
+			slog.Warn("[System Restore] " + errMsg)
+			errorsList = append(errorsList, errMsg)
+
+			// Roll back every previously committed swap in reverse order before resuming consumers.
+			for i := len(committed) - 1; i >= 0; i-- {
+				if rbErr := rollbackCommittedVolume(committed[i]); rbErr != nil {
+					slog.Error("[System Restore] Failed to roll back PV swap", "pv", committed[i].pvName, "error", rbErr)
+					errorsList = append(errorsList, rbErr.Error())
+				}
+			}
+			cleanupStaged()
+			resumeConsumersOnFailure()
+			return nil, errorsList
+		}
+		committed = append(committed, sv)
+	}
+
+	// Every PV swap succeeded; now it is safe to discard the retained previous data.
+	cleanupStaged()
+	slog.Info("[System Restore] Persistent volume restore finished", "restored", len(committed), "failed", 0)
+	return quiescedConsumers, nil
 }
 
-// installVolumeData extracts the archive into a clean sibling location and then swaps it with the current volume
-// data. The previous data is kept until the swap succeeded and is moved back if it fails.
-func installVolumeData(tarGzPath, targetPath, volumeKind string, meta pvRestoreMetadata) error {
+func stageVolumeData(tarGzPath, targetPath, volumeKind string, meta pvRestoreMetadata) (*stagedVolume, error) {
 	parent := filepath.Dir(targetPath)
 	if err := os.MkdirAll(parent, 0755); err != nil {
-		return fmt.Errorf("failed to create parent directory '%s': %w", parent, err)
+		return nil, fmt.Errorf("failed to create parent directory '%s': %w", parent, err)
 	}
 
 	oldInfo, oldErr := os.Lstat(targetPath)
 	oldExists := oldErr == nil
 	if oldErr != nil && !errors.Is(oldErr, fs.ErrNotExist) {
-		return fmt.Errorf("failed to inspect '%s': %w", targetPath, oldErr)
+		return nil, fmt.Errorf("failed to inspect '%s': %w", targetPath, oldErr)
 	}
 
 	isFile := volumeKind == "file"
 
 	stageDir, err := os.MkdirTemp(parent, pvRestoreTempPrefix)
 	if err != nil {
-		return fmt.Errorf("failed to create staging directory beneath '%s': %w", parent, err)
+		return nil, fmt.Errorf("failed to create staging directory beneath '%s': %w", parent, err)
 	}
-	preserveStage := false
+	success := false
 	defer func() {
-		if !preserveStage {
+		if !success {
 			_ = os.RemoveAll(stageDir)
 		}
 	}()
 
 	extractDir := filepath.Join(stageDir, "data")
 	if err := kos.ExtractTarGz(tarGzPath, extractDir); err != nil {
-		return err
+		return nil, err
 	}
 
 	newData := extractDir
 	if isFile {
 		entries, err := os.ReadDir(extractDir)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if len(entries) != 1 || !entries[0].Type().IsRegular() {
-			return fmt.Errorf("archive of file volume must contain exactly one regular file")
+			return nil, fmt.Errorf("archive of file volume must contain exactly one regular file")
 		}
 		newData = filepath.Join(extractDir, entries[0].Name())
 	} else {
 		rootInfo, err := os.Lstat(extractDir)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rootMetadata := volumeRootMetadataFromInfo(rootInfo)
 		if meta.VolumeRootMetadata {
@@ -915,29 +1049,76 @@ func installVolumeData(tarGzPath, targetPath, volumeKind string, meta pvRestoreM
 			rootMetadata = volumeRootMetadataFromInfo(oldInfo)
 		}
 		if err := os.Chmod(extractDir, 0700); err != nil {
-			return fmt.Errorf("failed to make staged volume root accessible: %w", err)
+			return nil, fmt.Errorf("failed to make staged volume root accessible: %w", err)
 		}
 		if err := applyVolumeRootMetadata(extractDir, rootMetadata); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	previous := filepath.Join(stageDir, "previous")
-	if oldExists {
-		if err := os.Rename(targetPath, previous); err != nil {
+	success = true
+	return &stagedVolume{
+		targetPath:   targetPath,
+		stageDir:     stageDir,
+		newData:      newData,
+		previousPath: filepath.Join(stageDir, "previous"),
+		oldExists:    oldExists,
+	}, nil
+}
+
+func commitStagedVolume(sv *stagedVolume) error {
+	_, oldErr := os.Lstat(sv.targetPath)
+	sv.oldExists = oldErr == nil
+	if oldErr != nil && !errors.Is(oldErr, fs.ErrNotExist) {
+		return fmt.Errorf("failed to inspect '%s': %w", sv.targetPath, oldErr)
+	}
+
+	if sv.oldExists {
+		if err := os.Rename(sv.targetPath, sv.previousPath); err != nil {
 			return fmt.Errorf("failed to move existing volume data aside (the volume path must not be a mount point): %w", err)
 		}
 	}
-	if err := os.Rename(newData, targetPath); err != nil {
-		if oldExists {
-			if rbErr := os.Rename(previous, targetPath); rbErr != nil {
-				preserveStage = true
-				return fmt.Errorf("failed to install restored data: %v; ROLLBACK FAILED, previous data is kept in '%s': %w", err, previous, rbErr)
+	if err := os.Rename(sv.newData, sv.targetPath); err != nil {
+		if sv.oldExists {
+			if rbErr := os.Rename(sv.previousPath, sv.targetPath); rbErr != nil {
+				sv.preserveStage = true
+				return fmt.Errorf("failed to install restored data: %v; ROLLBACK FAILED, previous data is kept in '%s': %w", err, sv.previousPath, rbErr)
 			}
 		}
 		return fmt.Errorf("failed to install restored data: %w", err)
 	}
+	sv.swapped = true
 	return nil
+}
+
+func rollbackCommittedVolume(sv *stagedVolume) error {
+	if sv == nil || !sv.swapped {
+		return nil
+	}
+	revertedPath := filepath.Join(sv.stageDir, "reverted")
+	if err := os.Rename(sv.targetPath, revertedPath); err != nil {
+		sv.preserveStage = true
+		return fmt.Errorf("ROLLBACK FAILED for PV '%s' at '%s' (previous data kept in '%s'): %w", sv.pvName, sv.targetPath, sv.previousPath, err)
+	}
+	if sv.oldExists {
+		if err := os.Rename(sv.previousPath, sv.targetPath); err != nil {
+			sv.preserveStage = true
+			return fmt.Errorf("ROLLBACK FAILED for PV '%s' at '%s' (previous data kept in '%s'): %w", sv.pvName, sv.targetPath, sv.previousPath, err)
+		}
+	}
+	sv.swapped = false
+	return nil
+}
+
+// installVolumeData extracts the archive into a clean sibling location and then swaps it with the current volume
+// data. The previous data is kept until the swap succeeded and is moved back if it fails.
+func installVolumeData(tarGzPath, targetPath, volumeKind string, meta pvRestoreMetadata) error {
+	sv, err := stageVolumeData(tarGzPath, targetPath, volumeKind, meta)
+	if err != nil {
+		return err
+	}
+	defer sv.cleanup()
+	return commitStagedVolume(sv)
 }
 
 type volumeRootMetadata struct {
@@ -1155,8 +1336,8 @@ func quiescePVCConsumers(namespace, claimName string) (*consumerQuiesce, error) 
 	}
 }
 
-// resume restarts what was stopped and waits for readiness; failures are returned instead of being swallowed.
-func (q *consumerQuiesce) resume() []string {
+// scaleUp restarts stopped workloads without waiting for rollout readiness.
+func (q *consumerQuiesce) scaleUp() []string {
 	if q == nil {
 		return nil
 	}
@@ -1176,16 +1357,40 @@ func (q *consumerQuiesce) resume() []string {
 		slog.Info("[System Restore] Scaling workload back up", "namespace", q.namespace, "workload", ref, "replicas", w.replicas)
 		if _, err := runRestoreKubectl(defaultKubeTimeout, "scale", w.kind, w.name, "-n", q.namespace, fmt.Sprintf("--replicas=%d", w.replicas)); err != nil {
 			errorsList = append(errorsList, fmt.Sprintf("failed to scale %s in namespace '%s' back to %d replicas: %v", ref, q.namespace, w.replicas, err))
-			continue
-		}
-		if w.kind == "deployment" || w.kind == "statefulset" {
-			timeout := fmt.Sprintf("--timeout=%ds", int(consumerRolloutTimeout.Seconds()))
-			if _, err := runRestoreKubectl(consumerRolloutTimeout+30*time.Second, "rollout", "status", ref, "-n", q.namespace, timeout); err != nil {
-				errorsList = append(errorsList, fmt.Sprintf("%s in namespace '%s' did not become ready after restore: %v", ref, q.namespace, err))
-			}
 		}
 	}
 	return errorsList
+}
+
+// waitReady verifies that resumed Deployments and StatefulSets have rolled out cleanly.
+func (q *consumerQuiesce) waitReady() []string {
+	if q == nil {
+		return nil
+	}
+	var errorsList []string
+	for _, w := range q.workloads {
+		if w.kind != "deployment" && w.kind != "statefulset" {
+			continue
+		}
+		ref := w.kind + "/" + w.name
+		timeout := fmt.Sprintf("--timeout=%ds", int(consumerRolloutTimeout.Seconds()))
+		if _, err := runRestoreKubectl(consumerRolloutTimeout+30*time.Second, "rollout", "status", ref, "-n", q.namespace, timeout); err != nil {
+			errorsList = append(errorsList, fmt.Sprintf("%s in namespace '%s' did not become ready after restore: %v", ref, q.namespace, err))
+		}
+	}
+	return errorsList
+}
+
+// resume restarts what was stopped and waits for readiness; failures are returned instead of being swallowed.
+func (q *consumerQuiesce) resume() []string {
+	if q == nil {
+		return nil
+	}
+	errs := q.scaleUp()
+	if len(errs) > 0 {
+		return errs
+	}
+	return q.waitReady()
 }
 
 func restoreClusterResources(stagingDir string) []string {
@@ -1241,11 +1446,162 @@ func restoreClusterResources(stagingDir string) []string {
 	return errorsList
 }
 
+type webhookServiceRef struct {
+	namespace string
+	name      string
+}
+
+func extractWebhookBackingServices(yamlFile string) ([]webhookServiceRef, error) {
+	data, err := os.ReadFile(yamlFile)
+	if err != nil {
+		return nil, err
+	}
+
+	type webhookConfig struct {
+		Webhooks []struct {
+			ClientConfig struct {
+				Service *struct {
+					Namespace string `yaml:"namespace"`
+					Name      string `yaml:"name"`
+				} `yaml:"service"`
+			} `yaml:"clientConfig"`
+		} `yaml:"webhooks"`
+	}
+	type webhookList struct {
+		Items    []webhookConfig `yaml:"items"`
+		Webhooks []struct {
+			ClientConfig struct {
+				Service *struct {
+					Namespace string `yaml:"namespace"`
+					Name      string `yaml:"name"`
+				} `yaml:"service"`
+			} `yaml:"clientConfig"`
+		} `yaml:"webhooks"`
+	}
+
+	var parsed webhookList
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool)
+	var refs []webhookServiceRef
+	add := func(ns, name string) {
+		if ns == "" || name == "" {
+			return
+		}
+		key := ns + "/" + name
+		if !seen[key] {
+			seen[key] = true
+			refs = append(refs, webhookServiceRef{namespace: ns, name: name})
+		}
+	}
+
+	for _, item := range parsed.Items {
+		for _, wh := range item.Webhooks {
+			if wh.ClientConfig.Service != nil {
+				add(wh.ClientConfig.Service.Namespace, wh.ClientConfig.Service.Name)
+			}
+		}
+	}
+	for _, wh := range parsed.Webhooks {
+		if wh.ClientConfig.Service != nil {
+			add(wh.ClientConfig.Service.Namespace, wh.ClientConfig.Service.Name)
+		}
+	}
+	return refs, nil
+}
+
+func webhookServiceHasReadyEndpoints(namespace, serviceName string) (bool, error) {
+	out, err := runRestoreKubectl(defaultKubeTimeout, "get", "endpointslices", "-n", namespace,
+		"-l", "kubernetes.io/service-name="+serviceName, "-o", "json")
+	if err == nil {
+		var sliceList struct {
+			Items []struct {
+				Endpoints []struct {
+					Addresses  []string `json:"addresses"`
+					Conditions struct {
+						Ready *bool `json:"ready"`
+					} `json:"conditions"`
+				} `json:"endpoints"`
+			} `json:"items"`
+		}
+		if json.Unmarshal([]byte(out), &sliceList) == nil {
+			for _, item := range sliceList.Items {
+				for _, ep := range item.Endpoints {
+					if len(ep.Addresses) > 0 && (ep.Conditions.Ready == nil || *ep.Conditions.Ready) {
+						return true, nil
+					}
+				}
+			}
+		}
+	}
+
+	epOut, epErr := runRestoreKubectl(defaultKubeTimeout, "get", "endpoints", serviceName, "-n", namespace, "-o", "json")
+	if epErr != nil {
+		if err != nil {
+			return false, epErr
+		}
+		return false, nil
+	}
+	var ep struct {
+		Subsets []struct {
+			Addresses []struct {
+				IP string `json:"ip"`
+			} `json:"addresses"`
+		} `json:"subsets"`
+	}
+	if err := json.Unmarshal([]byte(epOut), &ep); err != nil {
+		return false, err
+	}
+	for _, subset := range ep.Subsets {
+		if len(subset.Addresses) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func waitForWebhookServiceEndpoints(namespace, serviceName string) error {
+	slog.Info("[System Restore] Waiting for webhook backing service endpoints to become ready", "namespace", namespace, "service", serviceName)
+	deadline := time.Now().Add(webhookEndpointsReadyTimeout)
+	var lastErr error
+	for {
+		ready, err := webhookServiceHasReadyEndpoints(namespace, serviceName)
+		if err == nil && ready {
+			return nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("webhook backing service '%s/%s' did not have ready endpoints before timeout: %w", namespace, serviceName, lastErr)
+			}
+			return fmt.Errorf("webhook backing service '%s/%s' did not have ready endpoints before timeout", namespace, serviceName)
+		}
+		time.Sleep(webhookEndpointsPollInterval)
+	}
+}
+
 func restoreDeferredClusterResources(stagingDir string) []string {
 	var errorsList []string
 	for _, resType := range deferredClusterResourceTypes {
 		file := filepath.Join(stagingDir, "NotNamespaced", resType+".yaml")
 		if fileExists(file) {
+			services, err := extractWebhookBackingServices(file)
+			if err != nil {
+				errorsList = append(errorsList, fmt.Sprintf("failed to inspect webhook backing services in '%s': %v", filepath.Base(file), err))
+				continue
+			}
+			ready := true
+			for _, svc := range services {
+				if err := waitForWebhookServiceEndpoints(svc.namespace, svc.name); err != nil {
+					errorsList = append(errorsList, err.Error())
+					ready = false
+				}
+			}
+			if !ready {
+				continue
+			}
 			slog.Info("[System Restore] Applying cluster resource", "type", resType)
 			if err := applyResourceYaml(file, ""); err != nil {
 				errorsList = append(errorsList, err.Error())
@@ -1376,8 +1732,23 @@ func restoreNamespacedResources(stagingDir string) []string {
 			file := filepath.Join(nsDir, resType+".yaml")
 			if fileExists(file) {
 				slog.Info("[System Restore] Applying namespaced resource", "namespace", ns, "type", resType)
-				if err := applyResourceYaml(file, ns); err != nil {
+				targetFile := file
+				var cleanup func()
+				if resType == "jobs" {
+					prepared, cleanupFn, prepErr := prepareJobsYamlForRestore(file, ns)
+					if prepErr != nil {
+						errorsList = append(errorsList, fmt.Sprintf("failed to prepare jobs manifest in namespace '%s': %v", ns, prepErr))
+						applied[file] = true
+						continue
+					}
+					targetFile = prepared
+					cleanup = cleanupFn
+				}
+				if err := applyResourceYaml(targetFile, ns); err != nil {
 					errorsList = append(errorsList, err.Error())
+				}
+				if cleanup != nil {
+					cleanup()
 				}
 				applied[file] = true
 			}
@@ -1403,6 +1774,156 @@ func restoreNamespacedResources(stagingDir string) []string {
 	}
 
 	return errorsList
+}
+
+func getLiveJobNames(namespace string) (map[string]bool, error) {
+	out, err := runRestoreKubectl(defaultKubeTimeout, "get", "jobs", "-n", namespace, "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &list); err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool, len(list.Items))
+	for _, item := range list.Items {
+		if item.Metadata.Name != "" {
+			names[item.Metadata.Name] = true
+		}
+	}
+	return names, nil
+}
+
+// sanitizeMissingJob strips Kubernetes-generated selector and controller-UID/job-name labels from a Job
+// that is being recreated from backup, unless spec.manualSelector is true.
+func sanitizeMissingJob(job map[string]any) bool {
+	spec, _ := job["spec"].(map[string]any)
+	if spec == nil {
+		return false
+	}
+	if manual, ok := spec["manualSelector"].(bool); ok && manual {
+		return false
+	}
+
+	changed := false
+	if _, hasSelector := spec["selector"]; hasSelector {
+		delete(spec, "selector")
+		changed = true
+	}
+
+	if tpl, ok := spec["template"].(map[string]any); ok {
+		if tplMeta, ok := tpl["metadata"].(map[string]any); ok {
+			if labels, ok := tplMeta["labels"].(map[string]any); ok {
+				for _, key := range []string{
+					"controller-uid",
+					"batch.kubernetes.io/controller-uid",
+					"job-name",
+					"batch.kubernetes.io/job-name",
+				} {
+					if _, exists := labels[key]; exists {
+						delete(labels, key)
+						changed = true
+					}
+				}
+				if len(labels) == 0 {
+					delete(tplMeta, "labels")
+				}
+			}
+		}
+	}
+
+	if meta, ok := job["metadata"].(map[string]any); ok {
+		if labels, ok := meta["labels"].(map[string]any); ok {
+			for _, key := range []string{
+				"controller-uid",
+				"batch.kubernetes.io/controller-uid",
+			} {
+				if _, exists := labels[key]; exists {
+					delete(labels, key)
+					changed = true
+				}
+			}
+			if len(labels) == 0 {
+				delete(meta, "labels")
+			}
+		}
+	}
+
+	return changed
+}
+
+func prepareJobsYamlForRestore(file, namespace string) (string, func(), error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var parsed map[string]any
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		return "", nil, err
+	}
+	if len(parsed) == 0 {
+		return file, nil, nil
+	}
+
+	liveJobs, err := getLiveJobNames(namespace)
+	if err != nil {
+		slog.Warn("[System Restore] Could not list live jobs; proceeding with raw jobs manifest", "namespace", namespace, "error", err)
+		return file, nil, nil
+	}
+
+	modified := false
+	processJob := func(item map[string]any) {
+		meta, _ := item["metadata"].(map[string]any)
+		name, _ := meta["name"].(string)
+		if name != "" && liveJobs[name] {
+			return
+		}
+		if sanitizeMissingJob(item) {
+			modified = true
+		}
+	}
+
+	if items, ok := parsed["items"].([]any); ok {
+		for _, raw := range items {
+			if m, ok := raw.(map[string]any); ok {
+				processJob(m)
+			}
+		}
+	} else if kind, _ := parsed["kind"].(string); strings.EqualFold(kind, "Job") {
+		processJob(parsed)
+	}
+
+	if !modified {
+		return file, nil, nil
+	}
+
+	out, err := yaml.Marshal(parsed)
+	if err != nil {
+		return "", nil, err
+	}
+
+	tmp, err := os.CreateTemp("", "k2s-restore-jobs-*.yaml")
+	if err != nil {
+		return "", nil, err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return "", nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", nil, err
+	}
+	return tmpPath, func() { _ = os.Remove(tmpPath) }, nil
 }
 
 func ensureNamespaceExists(ns string) error {

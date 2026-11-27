@@ -88,14 +88,28 @@ if command -v buildah >/dev/null 2>&1; then
         .names[]? as $n |
         $n == $name or
         $n == "localhost/" + $name or
+        $n == "docker.io/library/" + $name or
         $n == $name + ":latest" or
         $n == "localhost/" + $name + ":latest" or
+        $n == "docker.io/library/" + $name + ":latest" or
         ($n | split(":")[0]) == $name
       )][0] // empty
     ' 2>/dev/null || true)"
     if [[ -n "$match" && "$match" != "null" ]]; then
       resolved_id="$(echo "$match" | jq -r '.id')"
-      resolved_full_name="$(echo "$match" | jq -r '(.names[]? // empty) | select(. != "<none>")' | head -n 1 || true)"
+      resolved_full_name="$(echo "$match" | jq -r --arg name "$search_name" '
+        (.names // []) as $names |
+        (
+          ($names[] | select(. == $name)),
+          ($names[] | select(. == "localhost/" + $name)),
+          ($names[] | select(. == "docker.io/library/" + $name)),
+          ($names[] | select(. == $name + ":latest")),
+          ($names[] | select(. == "localhost/" + $name + ":latest")),
+          ($names[] | select(. == "docker.io/library/" + $name + ":latest")),
+          ($names[] | select((. | split(":")[0]) == $name)),
+          ($names[] | select(. != "<none>"))
+        )
+      ' | head -n 1 || true)"
       if [[ -z "$resolved_full_name" ]]; then
         resolved_full_name="$image_name"
       fi
@@ -109,7 +123,22 @@ if [[ -z "$resolved_id" ]] && command -v crictl >/dev/null 2>&1; then
   inspect_json="$(crictl inspecti "$query" 2>/dev/null || true)"
   if [[ -n "$inspect_json" ]]; then
     resolved_id="$(echo "$inspect_json" | jq -r '.status.id // empty')"
-    resolved_full_name="$(echo "$inspect_json" | jq -r '.status.repoTags[0] // empty')"
+    if [[ -n "$image_name" ]]; then
+      resolved_full_name="$(echo "$inspect_json" | jq -r --arg name "$image_name" '
+        (.status.repoTags // []) as $tags |
+        (
+          ($tags[] | select(. == $name)),
+          ($tags[] | select(. == "localhost/" + $name)),
+          ($tags[] | select(. == "docker.io/library/" + $name)),
+          ($tags[] | select(. == $name + ":latest")),
+          ($tags[] | select(. == "localhost/" + $name + ":latest")),
+          ($tags[] | select(. == "docker.io/library/" + $name + ":latest")),
+          ($tags[0] // empty)
+        )
+      ' | head -n 1 || true)"
+    else
+      resolved_full_name="$(echo "$inspect_json" | jq -r '.status.repoTags[0] // empty')"
+    fi
   fi
 fi
 

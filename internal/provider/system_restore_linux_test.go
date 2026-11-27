@@ -432,8 +432,261 @@ var _ = Describe("Linux System Restore", func() {
 
 		It("classifies manifest entries by their source node", func() {
 			Expect(isWindowsImageNode("kubemaster")).To(BeFalse())
+			Expect(isWindowsImageNode("linux")).To(BeFalse())
+			Expect(isWindowsImageNode("Linux")).To(BeFalse())
 			Expect(isWindowsImageNode("windows-worker")).To(BeTrue())
 			Expect(isWindowsImageNode("")).To(BeFalse())
+		})
+	})
+
+	Describe("loadBackupConfig with shipped cfg/config.json", func() {
+		It("uses Linux backup defaults without excluding addon namespaces, storageclasses, or addon PVs", func() {
+			repoRoot := filepath.Join("..", "..")
+			cfg := loadBackupConfig(repoRoot)
+
+			Expect(cfg.ExcludedNamespaces).To(ContainElements("kube-system", "kube-public", "kube-node-lease"))
+			Expect(cfg.ExcludedNamespaces).NotTo(ContainElements("ingress-nginx", "monitoring", "logging", "storage"))
+			Expect(cfg.ExcludedClusterResources).NotTo(ContainElement("storageclasses"))
+			Expect(cfg.ExcludedAddonPersistentVolumes).To(BeEmpty())
+		})
+	})
+
+	Describe("cleanResourceMap", func() {
+		It("filters controller-owned Pods and ReplicaSets inside generic kind List", func() {
+			list := map[string]any{
+				"apiVersion": "v1",
+				"kind":       "List",
+				"items": []any{
+					map[string]any{
+						"apiVersion": "v1",
+						"kind":       "Pod",
+						"metadata": map[string]any{
+							"name": "owned-pod",
+							"ownerReferences": []any{
+								map[string]any{"kind": "ReplicaSet", "name": "rs-1", "controller": true},
+							},
+						},
+					},
+					map[string]any{
+						"apiVersion": "v1",
+						"kind":       "Pod",
+						"metadata":   map[string]any{"name": "standalone-pod"},
+					},
+					map[string]any{
+						"apiVersion": "apps/v1",
+						"kind":       "ReplicaSet",
+						"metadata": map[string]any{
+							"name": "owned-rs",
+							"ownerReferences": []any{
+								map[string]any{"kind": "Deployment", "name": "dep-1", "controller": true},
+							},
+						},
+					},
+				},
+			}
+
+			cleanResourceMap(list)
+			items, ok := list["items"].([]any)
+			Expect(ok).To(BeTrue())
+			Expect(items).To(HaveLen(1))
+			meta := items[0].(map[string]any)["metadata"].(map[string]any)
+			Expect(meta["name"]).To(Equal("standalone-pod"))
+		})
+	})
+
+	Describe("resolveVolumePath policy", func() {
+		It("accepts /registry paths by default", func() {
+			p, err := resolveVolumePath("/registry/data")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(p).To(Equal("/registry/data"))
+		})
+
+		It("reports allowed roots and K2S_RESTORE_PV_ROOTS when rejecting untrusted paths", func() {
+			_, err := resolveVolumePath("/tmp/untrusted-pv")
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("K2S_RESTORE_PV_ROOTS"))
+			Expect(err.Error()).To(ContainSubstring("/registry"))
+		})
+	})
+
+	Describe("sanitizeMissingJob", func() {
+		It("strips generated selector and controller-UID/job-name labels", func() {
+			job := map[string]any{
+				"apiVersion": "batch/v1",
+				"kind":       "Job",
+				"metadata": map[string]any{
+					"name": "my-job",
+					"labels": map[string]any{
+						"app":                              "demo",
+						"controller-uid":                   "old-uid",
+						"batch.kubernetes.io/controller-uid": "old-uid",
+					},
+				},
+				"spec": map[string]any{
+					"selector": map[string]any{
+						"matchLabels": map[string]any{"controller-uid": "old-uid"},
+					},
+					"template": map[string]any{
+						"metadata": map[string]any{
+							"labels": map[string]any{
+								"app":                              "demo",
+								"controller-uid":                   "old-uid",
+								"batch.kubernetes.io/controller-uid": "old-uid",
+								"job-name":                         "my-job",
+								"batch.kubernetes.io/job-name":     "my-job",
+							},
+						},
+					},
+				},
+			}
+
+			Expect(sanitizeMissingJob(job)).To(BeTrue())
+			spec := job["spec"].(map[string]any)
+			Expect(spec).NotTo(HaveKey("selector"))
+			tplLabels := spec["template"].(map[string]any)["metadata"].(map[string]any)["labels"].(map[string]any)
+			Expect(tplLabels).To(Equal(map[string]any{"app": "demo"}))
+			metaLabels := job["metadata"].(map[string]any)["labels"].(map[string]any)
+			Expect(metaLabels).To(Equal(map[string]any{"app": "demo"}))
+		})
+
+		It("preserves selector and labels when manualSelector is true", func() {
+			job := map[string]any{
+				"metadata": map[string]any{"name": "manual-job"},
+				"spec": map[string]any{
+					"manualSelector": true,
+					"selector": map[string]any{
+						"matchLabels": map[string]any{"custom": "val"},
+					},
+					"template": map[string]any{
+						"metadata": map[string]any{
+							"labels": map[string]any{"custom": "val"},
+						},
+					},
+				},
+			}
+
+			Expect(sanitizeMissingJob(job)).To(BeFalse())
+			Expect(job["spec"].(map[string]any)).To(HaveKey("selector"))
+		})
+	})
+
+	Describe("extractWebhookBackingServices", func() {
+		It("extracts unique backing services from webhook list manifests", func() {
+			whFile := filepath.Join(tempDir, "validatingwebhookconfigurations.yaml")
+			content := `apiVersion: v1
+kind: List
+items:
+- apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingWebhookConfiguration
+  metadata:
+    name: my-wh
+  webhooks:
+  - name: a.example.com
+    clientConfig:
+      service:
+        namespace: cert-manager
+        name: cert-manager-webhook
+  - name: b.example.com
+    clientConfig:
+      service:
+        namespace: cert-manager
+        name: cert-manager-webhook
+`
+			Expect(os.WriteFile(whFile, []byte(content), 0644)).To(Succeed())
+
+			refs, err := extractWebhookBackingServices(whFile)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(refs).To(Equal([]webhookServiceRef{{namespace: "cert-manager", name: "cert-manager-webhook"}}))
+		})
+	})
+
+	Describe("transactional multi-PV restore", func() {
+		It("aborts before mutating PV #1 when PV #2 fails preflight", func() {
+			origRoots := trustedVolumeRoots
+			trustedVolumeRoots = []string{tempDir}
+			defer func() { trustedVolumeRoots = origRoots }()
+
+			pv1Target := filepath.Join(tempDir, "pv1")
+			Expect(os.MkdirAll(pv1Target, 0755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(pv1Target, "state.txt"), []byte("original-pv1"), 0644)).To(Succeed())
+
+			srcDir := filepath.Join(tempDir, "src-pv1")
+			Expect(os.MkdirAll(srcDir, 0755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(srcDir, "state.txt"), []byte("restored-pv1"), 0644)).To(Succeed())
+
+			pvDir := filepath.Join(tempDir, "staging", "pv")
+			Expect(os.MkdirAll(pvDir, 0755)).To(Succeed())
+			Expect(tarGzDirectory(srcDir, filepath.Join(pvDir, "pv1-backup.tar.gz"))).To(Succeed())
+
+			meta1 := pvRestoreMetadata{
+				PVName:     "pv1",
+				VolumePath: pv1Target,
+				VolumeKind: "directory",
+				BackupFile: "pv1-backup.tar.gz",
+			}
+			b1, err := json.Marshal(meta1)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(pvDir, "pv1-metadata.json"), b1, 0644)).To(Succeed())
+
+			// PV #2 references a missing archive, so preflight must abort before pv1 is modified.
+			meta2 := pvRestoreMetadata{
+				PVName:     "pv2",
+				VolumePath: filepath.Join(tempDir, "pv2"),
+				VolumeKind: "directory",
+				BackupFile: "missing.tar.gz",
+			}
+			b2, err := json.Marshal(meta2)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(pvDir, "pv2-metadata.json"), b2, 0644)).To(Succeed())
+
+			_, errs := restorePersistentVolumesDeferredResume(filepath.Join(tempDir, "staging"))
+			Expect(errs).NotTo(BeEmpty())
+
+			data, err := os.ReadFile(filepath.Join(pv1Target, "state.txt"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(string(data)).To(Equal("original-pv1"))
+		})
+	})
+
+	Describe("windowsWorkerSSHOptions", func() {
+		It("pins known_hosts, enforces strict host key checking, and sets noninteractive timeouts", func() {
+			cfgDir := filepath.Join(tempDir, "k2s-cfg")
+			sshDir := filepath.Join(cfgDir, "ssh")
+			keyDir := filepath.Join(sshDir, "k2s")
+			Expect(os.MkdirAll(keyDir, 0700)).To(Succeed())
+			keyPath := filepath.Join(keyDir, "id_ed25519")
+			knownHostsPath := filepath.Join(sshDir, "windows-worker.known_hosts")
+			Expect(os.WriteFile(keyPath, []byte("dummy-key"), 0600)).To(Succeed())
+			Expect(os.WriteFile(knownHostsPath, []byte("172.19.1.101 ssh-ed25519 AAAA\n"), 0600)).To(Succeed())
+
+			installDir := filepath.Join(tempDir, "install")
+			Expect(os.MkdirAll(filepath.Join(installDir, "cfg"), 0755)).To(Succeed())
+			cfgJSON, err := json.Marshal(map[string]any{
+				"smallsetup": map[string]any{"kubeSwitch": "172.19.1.1"},
+				"configDir":  map[string]any{"ssh": sshDir},
+				"sshKey": map[string]any{
+					"subDir":   "k2s",
+					"fileName": map[string]any{"linux": "id_ed25519"},
+				},
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(installDir, "cfg", "config.json"), cfgJSON, 0644)).To(Succeed())
+
+			p := &linuxImageProvider{installDir: installDir, configDir: cfgDir}
+			kPath, khPath, workerIP, err := p.windowsWorkerSSHConfig()
+			Expect(err).ToNot(HaveOccurred())
+			Expect(kPath).To(Equal(keyPath))
+			Expect(khPath).To(Equal(knownHostsPath))
+			Expect(workerIP).To(Equal("172.19.1.101"))
+
+			opts := windowsWorkerSSHOptions(kPath, khPath)
+			Expect(opts).To(ContainElements(
+				"BatchMode=yes",
+				"StrictHostKeyChecking=yes",
+				"UserKnownHostsFile="+knownHostsPath,
+				"ServerAliveInterval=15",
+				"ServerAliveCountMax=4",
+			))
 		})
 	})
 

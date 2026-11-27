@@ -1465,8 +1465,19 @@ func (p *linuxAddonProvider) isAddonEnabledInConfig(addonName string, impl ...st
 
 // isAddonDeployed checks if an addon has any pods deployed in the cluster.
 func isAddonDeployed(addonName string) bool {
+	return isAddonDeployedWithKubeconfig(addonName, "")
+}
+
+func isAddonDeployedWithKubeconfig(addonName, kubeconfig string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultKubeTimeout)
 	defer cancel()
+
+	kubectlCmd := func(args ...string) *exec.Cmd {
+		if kubeconfig != "" {
+			args = append([]string{"--kubeconfig", kubeconfig}, args...)
+		}
+		return exec.CommandContext(ctx, "kubectl", args...)
+	}
 
 	namespaces := []string{addonName}
 	if addonName == "ingress" {
@@ -1474,21 +1485,21 @@ func isAddonDeployed(addonName string) bool {
 	}
 
 	for _, ns := range namespaces {
-		output, err := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns,
+		output, err := kubectlCmd("get", "pods", "-n", ns,
 			"-o", "jsonpath={.items}").Output()
 		if err == nil && len(strings.TrimSpace(string(output))) > 2 {
 			return true
 		}
 	}
 
-	output, err := exec.CommandContext(ctx, "kubectl", "get", "pods", "-A",
+	output, err := kubectlCmd("get", "pods", "-A",
 		"-l", fmt.Sprintf("app.kubernetes.io/name=%s", addonName),
 		"-o", "jsonpath={.items}").Output()
 	if err == nil && len(strings.TrimSpace(string(output))) > 2 {
 		return true
 	}
 
-	output, err = exec.CommandContext(ctx, "kubectl", "get", "pods", "-A",
+	output, err = kubectlCmd("get", "pods", "-A",
 		"-l", fmt.Sprintf("app=%s", addonName),
 		"-o", "jsonpath={.items}").Output()
 	if err == nil && len(strings.TrimSpace(string(output))) > 2 {

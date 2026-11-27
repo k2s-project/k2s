@@ -175,6 +175,8 @@ func (c *CmdBuilder) WithContext(ctx context.Context) *CmdBuilder {
 	return c
 }
 
+const cmdCancelWaitDelay = 5 * time.Second
+
 // Exec executes the command built by the command builder.
 // It streams the standard output and error to the configured writers and waits for the command to finish.
 func (c *CmdBuilder) Exec() error {
@@ -183,6 +185,7 @@ func (c *CmdBuilder) Exec() error {
 		cmd = exec.Command(c.cmd, c.args...)
 	} else {
 		cmd = exec.CommandContext(c.ctx, c.cmd, c.args...)
+		ConfigureProcessGroup(cmd, cmdCancelWaitDelay)
 	}
 
 	cmd.Stdin = bos.Stdin
@@ -208,6 +211,19 @@ func (c *CmdBuilder) Exec() error {
 
 	slog.Debug("Command started", "command", c.cmd)
 
+	var ctxDone <-chan struct{}
+	if c.ctx != nil {
+		ctxDone = c.ctx.Done()
+	}
+	var drainTimer *time.Timer
+	var drainTimeout <-chan time.Time
+	defer func() {
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+	}()
+
+drainLoop:
 	for stdOutChan != nil || stdErrChan != nil {
 		select {
 		case errMsg, ok := <-stdErrChan:
@@ -226,12 +242,24 @@ func (c *CmdBuilder) Exec() error {
 				continue
 			}
 			c.stdOutWriter(outMsg)
+		case <-ctxDone:
+			ctxDone = nil
+			drainTimer = time.NewTimer(cmdCancelWaitDelay)
+			drainTimeout = drainTimer.C
+		case <-drainTimeout:
+			slog.Debug("Timed out draining command output after cancellation")
+			_ = stdOut.Close()
+			_ = stdErr.Close()
+			break drainLoop
 		}
 	}
 
 	slog.Debug("Waiting for command to finish", "command", c.cmd)
 
 	if err := cmd.Wait(); err != nil {
+		if c.ctx != nil && c.ctx.Err() != nil {
+			return fmt.Errorf("command '%s' failed: %w", c.cmd, c.ctx.Err())
+		}
 		return fmt.Errorf("command '%s' failed: %w", c.cmd, err)
 	}
 
@@ -252,6 +280,7 @@ func (exe *CmdExecutor) ExecuteCmd(name string, arg ...string) error {
 		cmd = exec.Command(name, arg...)
 	} else {
 		cmd = exec.CommandContext(exe.ctx, name, arg...)
+		ConfigureProcessGroup(cmd, cmdCancelWaitDelay)
 	}
 
 	cmd.Stdin = bos.Stdin
@@ -277,6 +306,19 @@ func (exe *CmdExecutor) ExecuteCmd(name string, arg ...string) error {
 
 	slog.Debug("Command started")
 
+	var ctxDone <-chan struct{}
+	if exe.ctx != nil {
+		ctxDone = exe.ctx.Done()
+	}
+	var drainTimer *time.Timer
+	var drainTimeout <-chan time.Time
+	defer func() {
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+	}()
+
+drainLoop:
 	for stdOutChan != nil || stdErrChan != nil {
 		select {
 		case errMsg, ok := <-stdErrChan:
@@ -295,6 +337,15 @@ func (exe *CmdExecutor) ExecuteCmd(name string, arg ...string) error {
 				continue
 			}
 			exe.stdWriter.WriteStdOut(stdMsg)
+		case <-ctxDone:
+			ctxDone = nil
+			drainTimer = time.NewTimer(cmdCancelWaitDelay)
+			drainTimeout = drainTimer.C
+		case <-drainTimeout:
+			slog.Debug("Timed out draining command output after cancellation")
+			_ = stdOut.Close()
+			_ = stdErr.Close()
+			break drainLoop
 		}
 	}
 
@@ -303,6 +354,9 @@ func (exe *CmdExecutor) ExecuteCmd(name string, arg ...string) error {
 	slog.Debug("Waiting for command to finish")
 
 	if err := cmd.Wait(); err != nil {
+		if exe.ctx != nil && exe.ctx.Err() != nil {
+			return fmt.Errorf("command failed: %w", exe.ctx.Err())
+		}
 		return fmt.Errorf("command failed: %w", err)
 	}
 

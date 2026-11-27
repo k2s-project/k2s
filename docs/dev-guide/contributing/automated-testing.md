@@ -25,7 +25,7 @@ successful query. The regression cases are in
 
 ### Linux Worker Rename Acceptance Tests
 
-The shared [node-rename suite](../../../test/e2e/cluster/noderename/node_rename_test.go)
+The shared [node-rename suite](https://github.com/k2s-project/k2s/blob/main/test/e2e/cluster/noderename/node_rename_test.go)
 selects the Linux worker named `node-deb13` or `k2s-nodepkg-debian13` from `cluster.json`
 (the first of the two that is present), using the same
 cluster configuration reader as the other node suites. Argo or another fixture

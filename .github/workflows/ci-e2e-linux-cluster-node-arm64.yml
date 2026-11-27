@@ -82,6 +82,7 @@ jobs:
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           KVM_ATTEMPT: ${{ inputs.kvm_attempt }}
           K2S_NIGHTLY: ${{ inputs.nightly }}
         run: |

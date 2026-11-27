@@ -6,9 +6,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 
 var kernel32 = syscall.NewLazyDLL("kernel32.dll")
 var setConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
+var shutdownOnce sync.Once
 
 // Console control event types
 const (
@@ -81,12 +85,16 @@ func systemStartupCmd() error {
 func consoleCtrlHandler(ctrlType uint32) uintptr {
 	switch ctrlType {
 	case CTRL_CLOSE_EVENT:
-		slog.Info("Console close event received.")
+		slog.Info("Console close event received, closing listener.")
+		if err := closeListener(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("Failed to close listener on console close", "error", err)
+		}
 		return 1
 	case CTRL_SHUTDOWN_EVENT:
-		cleanupWg.Add(1)
-		go func() {
-			defer cleanupWg.Done()
+		shutdownOnce.Do(func() {
+			finishCleanup := beginShutdownCleanup()
+			defer finishCleanup()
+
 			slog.Info("Shutdown event received: Attempting cleanup.")
 
 			// Hard timeout slightly below the NSSM AppStopMethodConsole timeout
@@ -107,17 +115,23 @@ func consoleCtrlHandler(ctrlType uint32) uintptr {
 			case <-time.After(25 * time.Second):
 				slog.Warn("Shutdown cleanup timed out after 25s, proceeding with exit")
 			}
-		}()
-		cleanupWg.Wait()
-		if listener != nil {
-			listener.Close()
-		}
+
+			if err := closeListener(); err != nil && !errors.Is(err, net.ErrClosed) {
+				slog.Error("Failed to close listener on shutdown", "error", err)
+			}
+		})
 		return 1
 	case CTRL_C_EVENT:
-		slog.Info("Ctrl+C received.")
+		slog.Info("Ctrl+C received, closing listener.")
+		if err := closeListener(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("Failed to close listener on Ctrl+C", "error", err)
+		}
 		return 1
 	case CTRL_BREAK_EVENT:
-		slog.Info("Ctrl+Break received.")
+		slog.Info("Ctrl+Break received, closing listener.")
+		if err := closeListener(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("Failed to close listener on Ctrl+Break", "error", err)
+		}
 		return 1
 	}
 	return 0
@@ -132,6 +146,8 @@ func registerPlatformHandler() error {
 		return fmt.Errorf("error registering console control handler: %v", err)
 	}
 	// Call the system startup command
-	systemStartupCmd()
+	if err := systemStartupCmd(); err != nil {
+		slog.Error("System startup command failed", "error", err)
+	}
 	return nil
 }

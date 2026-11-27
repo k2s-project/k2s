@@ -7,7 +7,9 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,16 +21,12 @@ func registerPlatformHandler() error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		sig := <-sigCh
-		slog.Info("Signal received, shutting down.", "signal", sig)
-		cleanupWg.Add(1)
-		go func() {
-			defer cleanupWg.Done()
-			if listener != nil {
-				listener.Close()
+		for sig := range sigCh {
+			slog.Info("Signal received, shutting down.", "signal", sig)
+			if err := closeListener(); err != nil && !errors.Is(err, net.ErrClosed) {
+				slog.Error("Failed to close listener on signal", "error", err)
 			}
-		}()
-		cleanupWg.Wait()
+		}
 	}()
 
 	return nil

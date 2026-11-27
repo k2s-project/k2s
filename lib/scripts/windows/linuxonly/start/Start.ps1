@@ -33,15 +33,13 @@ if ([string]::IsNullOrWhiteSpace($dnsServersForControlPlane)) {
     $dnsServersForControlPlane = '8.8.8.8,8.8.4.4'
 }
 
-$controlPlaneParams = " -AdditionalHooksDir '$AdditionalHooksDir'"
-$controlPlaneParams += " -DnsAddresses '$dnsServersForControlPlane'"
-if ($HideHeaders.IsPresent) {
-    $controlPlaneParams += ' -SkipHeaderDisplay'
+$controlPlaneParams = @{
+    AdditionalHooksDir = $AdditionalHooksDir
+    DnsAddresses       = $dnsServersForControlPlane
+    SkipHeaderDisplay  = $HideHeaders.IsPresent
+    ShowLogs           = $ShowLogs.IsPresent
 }
-if ($ShowLogs.IsPresent) {
-    $controlPlaneParams += ' -ShowLogs'
-}
-& powershell.exe "$PSScriptRoot\..\..\..\control-plane\Start.ps1" $controlPlaneParams
+& "$PSScriptRoot\..\..\..\control-plane\Start.ps1" @controlPlaneParams
 
 Write-Log 'Waiting for control-plane pods to be ready'
 Wait-ForControlPlanePodsReady

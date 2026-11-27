@@ -5,8 +5,9 @@
 
 $infraModule = "$PSScriptRoot\..\..\..\..\infra\k2s.infra.module\k2s.infra.module.psm1"
 $clusterModule = "$PSScriptRoot\..\..\..\..\cluster\k2s.cluster.module\k2s.cluster.module.psm1"
+$httpProxyModule = "$PSScriptRoot\..\downloader\artifacts\httpproxy\httpproxy.module.psm1"
 
-Import-Module $infraModule, $clusterModule
+Import-Module $infraModule, $clusterModule, $httpProxyModule
 
 
 function Add-WindowsWorkerNodeOnWindowsHost {
@@ -212,7 +213,7 @@ function Start-WindowsWorkerNode {
     
     Write-Log 'Starting Kubernetes services on the Windows node' -Console
     Start-ServiceAndSetToAutoStart -Name 'containerd'
-    Start-ServiceAndSetToAutoStart -Name 'httpproxy'
+    Start-WinHttpProxy -OnlyProxy
     Confirm-LoopbackAdapterIP
 
     # Remove broken flannel routes on Loopbackk2s BEFORE starting flanneld.

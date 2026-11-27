@@ -159,6 +159,7 @@ nav:
       - HSTS & Certificate Issues: troubleshooting/hsts-certificate-issues.md
 not_in_nav: |
   /includes/**/*.*
+  /op-manual/preparing-windows-worker-qcow2.md
 extra:
   generator: false
   version:

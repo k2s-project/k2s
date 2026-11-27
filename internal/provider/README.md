@@ -19,7 +19,7 @@ Command handlers in `cmd/k2s/cmd/` call provider interfaces exclusively, elimina
 | `ImageProvider` | List, Pull, Remove, Build, Import, Export, Tag, Push, Clean, Repair, RegistryAdd, RegistryRemove | Container image and registry operations |
 | `NodeProvider` | Add, Remove, Rename | Worker node management |
 | `SystemProvider` | Dump, Upgrade, Package, Reset, ResetNetwork, Compact, Backup, Restore, CertificateRenew, CertificateAutoRotation, Check | System-level operations and read-only health checks |
-| `AddonProvider` | Enable, Disable, List, Status, Export, Import, RunCommand | Addon lifecycle |
+| `AddonProvider` | Enable, Disable, List, Status, Export, Import, Backup, Restore, RunCommand | Addon lifecycle and addon data backup/restore |
 
 ## File Layout
 
@@ -54,7 +54,7 @@ provider/
 
 ## Experimental Status
 
-> **Linux host support is experimental.** The Linux providers cover cluster lifecycle (install, start, stop, uninstall, reset), status, image management, addon enable/disable/list/status, node add (from an offline node package) and removal, system dump, backup, certificate operations, and health checks. Not yet available on Linux: system upgrade, restore, compact, full offline packaging, node delta packages, addon export/import, node add without `--node-package`, node rename, and image repair. These return an unsupported or not-implemented error. A runtime warning is printed to stderr on every CLI invocation on Linux.
+> **Linux host support is experimental.** The Linux providers cover cluster lifecycle (install, start, stop, uninstall, reset), status, image management, addon enable/disable/list/status, addon backup/restore for `registry`, `ingress nginx` and `ingress traefik`, node add (from an offline node package) and removal, system dump, backup, certificate operations, and health checks. Not yet available on Linux: system upgrade, restore, compact, full offline packaging, node delta packages, addon export/import, node add without `--node-package`, node rename, and image repair. These return an unsupported or not-implemented error. A runtime warning is printed to stderr on every CLI invocation on Linux.
 
 ## How It Works
 

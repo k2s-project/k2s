@@ -117,6 +117,29 @@ k2s addons restore security
 
 After restore each addon is re-enabled with its backed-up configuration applied on top.
 
+## \[Experimental\] Linux Host
+
+On a native [Linux host](../user-guide/hosting-variants.md#linux-host), `k2s addons backup` and `k2s addons restore` run without *PowerShell* for the addons that the Linux host manages natively:
+
+| Addon | What Gets Backed Up |
+|-------|---------------------|
+| **registry** | `tar.gz` of `/registry/repository` on the host, `registry-config` ConfigMap |
+| **ingress nginx** | Controller ConfigMap, optional cluster-local Ingress |
+| **ingress traefik** | Cluster-local Ingress |
+
+The zip archive has the same layout and `backup.json` format as on a *Windows* host, so a backup can be restored on either host variant. The restore flow is the same as described above: the addon must be disabled, the CLI re-enables it and then applies the backed-up data.
+
+Run the commands with root privileges, e.g.:
+
+```console
+sudo ./k2s addons backup registry
+sudo ./k2s addons restore registry
+```
+
+When `-f` is omitted, backups are written to and looked up in `$TMPDIR/k2s/Addons` (`/tmp/k2s/Addons` by default).
+
+Other addons are rejected with a *not supported* error before anything is changed. Backups that record an infrastructure node selector cannot be restored on a Linux host, because selector placement is supported on *Windows*-hosted clusters only.
+
 ## What Gets Backed Up — Summary
 
 The following table shows at a glance what each addon's backup contains.
@@ -298,6 +321,7 @@ Some addons add extra fields (e.g. `ingress`, `enableParams`, `scope`, `storageU
 | `no backup zip found` | No matching zip in `C:\Temp\k2s\Addons` | Provide an explicit path with `-f` |
 | Manifest addon/implementation mismatch | The zip was created for a different addon | Use the correct zip file for the target addon |
 | `No Backup.ps1 found` | Addon does not support backup | Nothing to back up — the addon is fully recreated on enable |
+| `'addons backup' is not supported on this platform` | The addon has no native backup on a Linux host yet | Back up the addon on a *Windows* host, or recreate its configuration after enabling it |
 | Restore fails during re-enable | Cluster resources unavailable | Check cluster health with `k2s system status` and retry |
 | Registry restore overwrites data | By design — restore replaces existing repository contents | Back up the current state first if needed |
 | ArgoCD credentials in backup | `argocd admin export` includes repo secrets | Store the backup zip securely; delete after restore |

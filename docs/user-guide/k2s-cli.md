@@ -566,6 +566,8 @@ k2s system upgrade [flags]
 | `--node` | `-n` | Name of the worker node to upgrade (requires `--path`) |
 | `--path` | | Path to a node package zip for an offline node upgrade (requires `--node`) |
 
+With `--node` and `--path`, the command upgrades a single worker node instead of the cluster and is equivalent to [`k2s node upgrade`](#node-upgrade).
+
 ### system package
 
 Build a *K2s* zip package (optionally offline, delta, node-package, or code-signed).
@@ -908,6 +910,25 @@ On failure, the command ends with an error and a non-zero exit code. The error n
 - Linux worker: if the original client certificate is already missing or invalid, restore the old credentials before retrying. Bootstrap tokens are short-lived and revoked after the bootstrap attempt.
 - Windows host: if the command fails before the drain completes, the node services keep running under the old name, but the kubelet uses the new hostname again the next time it starts. If it fails after the drain, `kubeproxy`, `kubelet`, and `flanneld` stay stopped until a retry succeeds. If the new certificate does not arrive, check the kubelet log and the pending certificate requests with `kubectl get csr`.
 - Both: the command does not force-delete workloads as a substitute for a safe drain.
+
+### node upgrade
+
+Upgrade a Linux worker node in place from a full node package or a node delta package, without touching the control plane. The command is equivalent to `k2s system upgrade --node <name> --path <zip>`; see [Applying a Node Upgrade](../op-manual/delta-packages.md#applying-a-node-upgrade).
+
+```console
+k2s node upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian13-node-delta-v1.7.0-to-v1.8.0.zip" -o
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--node` | `-n` | **Required.** Name of the worker node as registered in the cluster |
+| `--path` | | **Required.** Path to the node package ZIP (full or node delta package) |
+
+The upgrade mode is detected from the ZIP: a ZIP with a `delta-manifest.json` of `DeltaType` `node-package` is applied as a delta (only changed and added packages are installed, and removed Debian packages are purged), and a ZIP without `delta-manifest.json` is applied as a full node package. Any other `DeltaType`, for example that of a cluster delta package, is rejected. The ZIP must contain the packages for the distribution of the node, for example `packages/debian13`.
+
+The node must be `Ready` and listed in the cluster descriptor (`cluster.json`), which provides its SSH user. The command cordons and drains the node, installs the packages and container images, restarts kubelet, uncordons the node, and waits until it is `Ready` again.
+
+The node name is lowercased and must be a valid Kubernetes node name, and `--path` must point to an existing `.zip` file; otherwise the command fails before it changes the node. Like `k2s system upgrade`, the command is not available in a Linux-only setup. Windows worker nodes, and node upgrades from a Linux host, are not supported yet.
 
 ### node copy
 

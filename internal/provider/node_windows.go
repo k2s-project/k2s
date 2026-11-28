@@ -50,6 +50,25 @@ func buildRenameScript(installDir string, cfg NodeRenameConfig) (string, []strin
 	return script, params
 }
 
+func (p *windowsNodeProvider) Upgrade(cfg NodeUpgradeConfig) error {
+	cfg, err := cfg.Validated()
+	if err != nil {
+		return err
+	}
+	return powershell.ExecutePs(buildNodeUpgradeScript(p.installDir, cfg), p.stdWriter)
+}
+
+// buildNodeUpgradeScript builds the Upgrade-K2sNode.ps1 call for both 'k2s node upgrade' and 'k2s system upgrade --node'.
+func buildNodeUpgradeScript(installDir string, cfg NodeUpgradeConfig) string {
+	cmd := utils.FormatScriptFilePath(filepath.Join(installDir, "lib", "scripts", "windows", "host", "system", "upgrade", "Upgrade-K2sNode.ps1"))
+	cmd += " -NodeName " + utils.EscapeWithSingleQuotes(cfg.NodeName)
+	cmd += " -NodePackagePath " + utils.EscapeWithSingleQuotes(cfg.NodePackagePath)
+	if cfg.ShowOutput {
+		cmd += " -ShowLogs"
+	}
+	return cmd
+}
+
 func newWindowsNodeProvider(cfg ProviderConfig) *windowsNodeProvider {
 	return &windowsNodeProvider{
 		installDir: cfg.InstallDir,

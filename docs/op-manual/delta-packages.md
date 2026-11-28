@@ -246,7 +246,7 @@ The `delta-manifest.json` uses `ManifestVersion: "2.0"` and `DeltaType: "node-pa
 
 ### Applying a Node Upgrade
 
-Use `k2s system upgrade --node` to upgrade a worker node. The upgrade mode is **auto-detected** from the ZIP contents:
+Use `k2s node upgrade` or `k2s system upgrade --node` to upgrade a worker node. Both commands are equivalent: they take the same `--node`, `--path` and `-o` flags, run the same checks and upgrade steps, and produce the same result. The upgrade mode is **auto-detected** from the ZIP contents:
 
 - ZIP contains `delta-manifest.json` with `DeltaType: "node-package"` → **delta upgrade**  
   (installs only changed/added packages; purges removed ones)
@@ -254,16 +254,25 @@ Use `k2s system upgrade --node` to upgrade a worker node. The upgrade mode is **
   (installs all packages present in the ZIP)
 
 ```console
-k2s system upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian13-node-delta-v1.7.0-to-v1.8.0.zip" -o
+k2s node upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian13-node-delta-v1.7.0-to-v1.8.0.zip" -o
 ```
 
 The same command works for full node packages:
 
 ```console
+k2s node upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian13-node-v1.8.0.zip" -o
+```
+
+The equivalent `k2s system upgrade` calls are:
+
+```console
+k2s system upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian13-node-delta-v1.7.0-to-v1.8.0.zip" -o
 k2s system upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian13-node-v1.8.0.zip" -o
 ```
 
-#### `k2s system upgrade --node` Flags
+Before the node is changed, both commands check the input: the node name is lowercased and must be a valid Kubernetes node name, and `--path` must point to an existing `.zip` file. A relative path is resolved against the current directory.
+
+#### Node Upgrade Flags
 
 | Flag | Required | Description |
 |------|----------|-------------|
@@ -271,8 +280,11 @@ k2s system upgrade --node k2s-nodepkg-debian13 --path "C:\ws\DeltaPackage\debian
 | `--path` | Yes | Path to the node package ZIP (full or delta) |
 | `-o, --output` | No | Show detailed log output |
 
-!!! note "`--node` and `--path` are paired flags"
-    Both flags must always be specified together. Omitting one while providing the other results in an error.
+!!! note "`--node` and `--path` are paired flags in `k2s system upgrade`"
+    `k2s node upgrade` requires both flags. In `k2s system upgrade`, both flags must always be specified together: omitting one while providing the other results in an error, and omitting both starts a cluster upgrade.
+
+!!! note "Linux host (experimental)"
+    Node upgrade is not supported on a Linux host yet.
 
 ## Best Practices
 

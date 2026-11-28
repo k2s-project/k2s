@@ -205,7 +205,7 @@ try {
     }
     $NodePackagePath = $resolvedPackagePath.Path
 
-    if (-not $NodePackagePath.EndsWith('.zip')) {
+    if (-not $NodePackagePath.EndsWith('.zip', [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "[NodeUpgrade] Node package path '$NodePackagePath' must be a .zip file."
     }
 

@@ -56,17 +56,6 @@ func (p *windowsSystemProvider) Dump(cfg SystemDumpConfig) error {
 }
 
 func (p *windowsSystemProvider) Upgrade(cfg SystemUpgradeConfig) error {
-	if cfg.NodeName != "" && cfg.NodePackagePath != "" {
-		psCmd := p.scriptPath("upgrade/Upgrade-K2sNode.ps1")
-		var params string
-		params += " -NodeName " + utils.EscapeWithSingleQuotes(cfg.NodeName)
-		params += " -NodePackagePath " + utils.EscapeWithSingleQuotes(cfg.NodePackagePath)
-		if cfg.ShowOutput {
-			params += " -ShowLogs"
-		}
-		return powershell.ExecutePs(psCmd+params, p.stdWriter)
-	}
-
 	return powershell.ExecutePs(p.clusterUpgradeCommand(cfg), p.stdWriter)
 }
 

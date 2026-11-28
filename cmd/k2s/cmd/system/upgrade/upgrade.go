@@ -82,6 +82,7 @@ NODE UPGRADE:
 
   Required flags: --node <node-name> --path <node-package.zip>
   Both flags must always be specified together.
+  'k2s node upgrade --node <node-name> --path <node-package.zip>' is equivalent.
 `
 
 var upgradeCommandExample = `
@@ -148,6 +149,16 @@ func AddInitFlags(cmd *cobra.Command) {
 }
 
 func upgradeCluster(cmd *cobra.Command, args []string) error {
+	nodeNameVal, _ := cmd.Flags().GetString(nodeNameFlag)
+	nodePackageVal, _ := cmd.Flags().GetString(nodePackageFlag)
+
+	if (nodeNameVal == "") != (nodePackageVal == "") {
+		return errors.New("--node and --path must be specified together")
+	}
+	if nodeNameVal != "" {
+		return UpgradeNode(cmd, nodeNameVal, nodePackageVal)
+	}
+
 	cmdSession := common.StartCmdSession(cmd.CommandPath())
 	pterm.Println("🤖 Analyze current cluster and check prerequisites ...")
 
@@ -158,22 +169,8 @@ func upgradeCluster(cmd *cobra.Command, args []string) error {
 
 	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
 
-	runtimeConfig, resolvedConfigDir, err := readConfigLegacyAware(context.Config())
+	resolvedConfigDir, err := checkUpgradePrerequisites(context)
 	if err != nil {
-		if errors.Is(err, cconfig.ErrSystemInCorruptedState) {
-			return common.CreateSystemInCorruptedStateCmdFailure()
-		}
-		if errors.Is(err, cconfig.ErrSystemNotInstalled) {
-			return common.CreateSystemNotInstalledCmdFailure()
-		}
-		return err
-	}
-
-	if runtimeConfig.InstallConfig().LinuxOnly() {
-		return common.CreateFuncUnavailableForLinuxOnlyCmdFailure()
-	}
-
-	if err := context.EnsureK2sK8sContext(runtimeConfig.ClusterConfig().Name()); err != nil {
 		return err
 	}
 
@@ -185,29 +182,20 @@ func upgradeCluster(cmd *cobra.Command, args []string) error {
 	additionalHooksDir := cmd.Flags().Lookup(common.AdditionalHooksDirFlagName).Value.String()
 	backupDirVal := cmd.Flags().Lookup(backupDir).Value.String()
 	forceVal, _ := cmd.Flags().GetBool(force)
-	nodeNameVal, _ := cmd.Flags().GetString(nodeNameFlag)
-	nodePackageVal, _ := cmd.Flags().GetString(nodePackageFlag)
-
-	if (nodeNameVal == "") != (nodePackageVal == "") {
-		return errors.New("--node and --path must be specified together")
-	}
 
 	if err := installconfig.ValidateProxy(proxyVal); err != nil {
 		return err
 	}
 
-	cleanupUpgradeConfig := func() error { return nil }
-	if nodeNameVal == "" {
-		configFile, cleanupUpgradeConfig, err = prepareUpgradeInstallConfig(configFile, resolvedConfigDir)
-		if err != nil {
-			return fmt.Errorf("failed to prepare install configuration: %w", err)
-		}
-		defer func() {
-			if cleanupErr := cleanupUpgradeConfig(); cleanupErr != nil {
-				slog.Warn("Failed to clean staged install configuration", "error", cleanupErr)
-			}
-		}()
+	configFile, cleanupUpgradeConfig, err := prepareUpgradeInstallConfig(configFile, resolvedConfigDir)
+	if err != nil {
+		return fmt.Errorf("failed to prepare install configuration: %w", err)
 	}
+	defer func() {
+		if cleanupErr := cleanupUpgradeConfig(); cleanupErr != nil {
+			slog.Warn("Failed to clean staged install configuration", "error", cleanupErr)
+		}
+	}()
 
 	switchToUpgradeLogFile(showLog, context.Logger())
 
@@ -225,8 +213,6 @@ func upgradeCluster(cmd *cobra.Command, args []string) error {
 		BackupDir:          backupDirVal,
 		AdditionalHooksDir: additionalHooksDir,
 		Force:              forceVal,
-		NodeName:           nodeNameVal,
-		NodePackagePath:    nodePackageVal,
 		ShowOutput:         showLog,
 	})
 
@@ -239,6 +225,75 @@ func upgradeCluster(cmd *cobra.Command, args []string) error {
 	cmdSession.Finish()
 
 	return nil
+}
+
+// UpgradeNode upgrades a single worker node from a full node package or a node delta package zip.
+// It implements both 'k2s system upgrade --node <name> --path <zip>' and 'k2s node upgrade', so that
+// both commands validate, check prerequisites, log and upgrade the node in exactly the same way.
+func UpgradeNode(cmd *cobra.Command, nodeName string, nodePackagePath string) error {
+	showLog, err := cmd.Flags().GetBool(common.OutputFlagName)
+	if err != nil {
+		return err
+	}
+
+	upgradeConfig, err := (provider.NodeUpgradeConfig{NodeName: nodeName, NodePackagePath: nodePackagePath, ShowOutput: showLog}).Validated()
+	if err != nil {
+		return err
+	}
+
+	cmdSession := common.StartCmdSession(cmd.CommandPath())
+	pterm.Println("🤖 Analyze current cluster and check prerequisites ...")
+
+	context := cmd.Context().Value(common.ContextKeyCmdContext).(*common.CmdContext)
+
+	resolvedConfigDir, err := checkUpgradePrerequisites(context)
+	if err != nil {
+		return err
+	}
+
+	switchToUpgradeLogFile(showLog, context.Logger())
+
+	if err := applySetupConfigDirOverride(resolvedConfigDir, context.Config().Host().K2sSetupConfigDir()); err != nil {
+		switchToDefaultLogFile(showLog, context.Logger())
+		return err
+	}
+
+	upgradeErr := context.Providers().Node.Upgrade(upgradeConfig)
+
+	switchToDefaultLogFile(showLog, context.Logger())
+
+	if upgradeErr != nil {
+		return upgradeErr
+	}
+
+	cmdSession.Finish()
+
+	return nil
+}
+
+// checkUpgradePrerequisites reads the setup config of the installed K2s and checks that its cluster can be upgraded.
+// It returns the setup config dir of the installed K2s.
+func checkUpgradePrerequisites(context *common.CmdContext) (string, error) {
+	runtimeConfig, resolvedConfigDir, err := readConfigLegacyAware(context.Config())
+	if err != nil {
+		if errors.Is(err, cconfig.ErrSystemInCorruptedState) {
+			return "", common.CreateSystemInCorruptedStateCmdFailure()
+		}
+		if errors.Is(err, cconfig.ErrSystemNotInstalled) {
+			return "", common.CreateSystemNotInstalledCmdFailure()
+		}
+		return "", err
+	}
+
+	if runtimeConfig.InstallConfig().LinuxOnly() {
+		return "", common.CreateFuncUnavailableForLinuxOnlyCmdFailure()
+	}
+
+	if err := context.EnsureK2sK8sContext(runtimeConfig.ClusterConfig().Name()); err != nil {
+		return "", err
+	}
+
+	return resolvedConfigDir, nil
 }
 
 func prepareUpgradeInstallConfig(requestedPath string, setupConfigDir string) (string, func() error, error) {

@@ -40,6 +40,31 @@ func TestBuildRenameScript(t *testing.T) {
 	}
 }
 
+func TestBuildNodeUpgradeScript(t *testing.T) {
+	cfg := NodeUpgradeConfig{NodeName: "k2s-nodepkg-debian13", NodePackagePath: `C:\ws\owner's packages\debian13-node.zip`}
+
+	script := buildNodeUpgradeScript(`C:\k2s`, cfg)
+	want := `&'C:\k2s\lib\scripts\windows\host\system\upgrade\Upgrade-K2sNode.ps1' -NodeName 'k2s-nodepkg-debian13' -NodePackagePath 'C:\ws\owner''s packages\debian13-node.zip'`
+	if script != want {
+		t.Fatalf("script = %q, want %q", script, want)
+	}
+
+	cfg.ShowOutput = true
+	script = buildNodeUpgradeScript(`C:\k2s`, cfg)
+	if script != want+" -ShowLogs" {
+		t.Fatalf("script = %q, want %q", script, want+" -ShowLogs")
+	}
+}
+
+func TestNodeUpgradeRejectsInvalidInputBeforeRunningScript(t *testing.T) {
+	provider := &windowsNodeProvider{installDir: t.TempDir()}
+
+	err := provider.Upgrade(NodeUpgradeConfig{NodeName: "k2s-nodepkg-debian13", NodePackagePath: `C:\does\not\exist.zip`})
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("Upgrade() error = %v, want missing node package error", err)
+	}
+}
+
 // renameScriptMessage encodes a result the way Send-ToCli in the rename script does.
 func renameScriptMessage(t *testing.T, payload string) string {
 	t.Helper()

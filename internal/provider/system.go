@@ -58,16 +58,12 @@ type SystemUpgradeConfig struct {
 	Proxy              string
 	BackupDir          string
 	AdditionalHooksDir string
-	// NodeName identifies a specific worker node to upgrade (requires NodePackagePath).
-	NodeName string
-	// NodePackagePath is the path to the node package zip used for an offline node upgrade (requires NodeName).
-	NodePackagePath string
-	SkipImages      bool
-	SkipResources   bool
-	ForceOnline     bool
-	Force           bool
-	ShowOutput      bool
-	DeletePackage   bool
+	SkipImages         bool
+	SkipResources      bool
+	ForceOnline        bool
+	Force              bool
+	ShowOutput         bool
+	DeletePackage      bool
 }
 
 // SystemPackageConfig holds parameters for the package operation.

@@ -41,6 +41,13 @@ func (p *linuxNodeProvider) Rename(cfg NodeRenameConfig) error {
 	return NotSupportedError("node rename", "worker identity repair is currently available only from a Windows K2s host")
 }
 
+func (p *linuxNodeProvider) Upgrade(cfg NodeUpgradeConfig) error {
+	if _, err := cfg.Validated(); err != nil {
+		return err
+	}
+	return NotSupportedError("node upgrade", "upgrading a worker node from a node package is currently available only from a Windows K2s host")
+}
+
 // Add joins a Debian 13 worker node (amd64 or arm64) to the cluster that runs on this host via
 // lib/scripts/linux/debian/worker/bare-metal/Add.sh; without a node package the node downloads its packages itself.
 func (p *linuxNodeProvider) Add(cfg NodeAddConfig) error {

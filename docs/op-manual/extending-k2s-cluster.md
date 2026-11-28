@@ -409,6 +409,19 @@ cat /tmp/authorized_keys > ~/.ssh/authorized_keys && rm /tmp/authorized_keys
 !!! warning "Linux host (experimental)"
     `k2s uninstall` does not remove added nodes yet. Remove them with `sudo k2s node remove` before uninstalling *K2s*.
 
+## Upgrading Added Nodes
+
+An added Linux worker node can be upgraded in place from a newer full node package or from a node delta package (see [Node Packages](delta-packages.md#node-packages)):
+
+```console
+k2s node upgrade --node <NodeName> --path C:\temp\debian13-node-delta-v1.7.0-to-v1.8.0.zip
+```
+
+`k2s system upgrade --node <NodeName> --path <NodePackageZip>` is equivalent. The node is drained during the upgrade and uncordoned afterwards. See [Applying a Node Upgrade](delta-packages.md#applying-a-node-upgrade) for details.
+
+!!! note "Linux host (experimental)"
+    Node upgrade is not supported on a Linux host yet.
+
 ## When the Node IP Changes
 
 `k2s node add` stores the node IP address for later management operations. If the node gets a different LAN IP after a reboot or network change, SSH-based operations can fail.

@@ -4,7 +4,11 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,6 +33,9 @@ type NodeProvider interface {
 
 	// Rename repairs the identity of a managed worker after its OS hostname changed.
 	Rename(config NodeRenameConfig) error
+
+	// Upgrade upgrades a worker node in place from a full node package or a node delta package.
+	Upgrade(config NodeUpgradeConfig) error
 }
 
 // NodeAddConfig holds parameters for adding a node.
@@ -83,13 +90,8 @@ func (c NodeRenameConfig) Validated() (NodeRenameConfig, error) {
 	c.OldName = strings.ToLower(c.OldName)
 	c.NewName = strings.ToLower(c.NewName)
 	for _, name := range []string{c.OldName, c.NewName} {
-		if problems := validation.IsDNS1123Subdomain(name); len(problems) != 0 {
-			return c, fmt.Errorf("invalid node name %q: %s", name, strings.Join(problems, "; "))
-		}
-		for _, label := range strings.Split(name, ".") {
-			if problems := validation.IsDNS1123Label(label); len(problems) != 0 {
-				return c, fmt.Errorf("invalid node name %q: %s", name, strings.Join(problems, "; "))
-			}
+		if err := validateNodeName(name); err != nil {
+			return c, err
 		}
 	}
 	if c.OldName == c.NewName {
@@ -99,4 +101,53 @@ func (c NodeRenameConfig) Validated() (NodeRenameConfig, error) {
 		return c, fmt.Errorf("rename timeout must be between 1m and 24h")
 	}
 	return c, nil
+}
+
+// NodeUpgradeConfig holds parameters for upgrading a worker node from a node package.
+type NodeUpgradeConfig struct {
+	NodeName string
+	// NodePackagePath is the path to a full node package or node delta package zip; the upgrade mode is detected from its content.
+	NodePackagePath string
+	ShowOutput      bool
+}
+
+// Validated normalizes the node name and resolves the node package path to an absolute path, so that
+// the upgrade fails fast on an invalid node name or a node package path that is not an existing .zip file.
+func (c NodeUpgradeConfig) Validated() (NodeUpgradeConfig, error) {
+	c.NodeName = strings.ToLower(strings.TrimSpace(c.NodeName))
+	if err := validateNodeName(c.NodeName); err != nil {
+		return c, err
+	}
+	if strings.TrimSpace(c.NodePackagePath) == "" {
+		return c, errors.New("node package path must not be empty")
+	}
+	packagePath, err := filepath.Abs(c.NodePackagePath)
+	if err != nil {
+		return c, fmt.Errorf("invalid node package path '%s': %w", c.NodePackagePath, err)
+	}
+	info, err := os.Stat(packagePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return c, fmt.Errorf("node package path '%s' does not exist", c.NodePackagePath)
+	}
+	if err != nil {
+		return c, fmt.Errorf("cannot access node package path '%s': %w", c.NodePackagePath, err)
+	}
+	if info.IsDir() || !strings.EqualFold(filepath.Ext(packagePath), ".zip") {
+		return c, fmt.Errorf("node package path '%s' must be a .zip file", c.NodePackagePath)
+	}
+	c.NodePackagePath = packagePath
+	return c, nil
+}
+
+// validateNodeName checks that name is a valid Kubernetes Node name (a lowercase RFC 1123 subdomain).
+func validateNodeName(name string) error {
+	if problems := validation.IsDNS1123Subdomain(name); len(problems) != 0 {
+		return fmt.Errorf("invalid node name %q: %s", name, strings.Join(problems, "; "))
+	}
+	for _, label := range strings.Split(name, ".") {
+		if problems := validation.IsDNS1123Label(label); len(problems) != 0 {
+			return fmt.Errorf("invalid node name %q: %s", name, strings.Join(problems, "; "))
+		}
+	}
+	return nil
 }

@@ -42,6 +42,8 @@ func resetAllFlags() {
 	flags.Set(common.AdditionalHooksDirFlagName, "")
 	flags.Set(backupDir, "")
 	flags.Set(force, "false")
+	flags.Set(nodeNameFlag, "")
+	flags.Set(nodePackageFlag, "")
 }
 
 var _ = Describe("upgrade", func() {
@@ -94,6 +96,31 @@ var _ = Describe("upgrade", func() {
 
 				Expect(actual).To(Equal(expected))
 			})
+		})
+	})
+
+	Describe("node upgrade", func() {
+		AfterEach(resetAllFlags)
+
+		DescribeTable("rejects --node and --path when they are not specified together",
+			func(flag string, value string) {
+				Expect(UpgradeCmd.Flags().Set(flag, value)).To(Succeed())
+
+				err := upgradeCluster(UpgradeCmd, nil)
+
+				Expect(err).To(MatchError("--node and --path must be specified together"))
+			},
+			Entry("--node without --path", nodeNameFlag, "k2s-nodepkg-debian13"),
+			Entry("--path without --node", nodePackageFlag, `C:\ws\DeltaPackage\debian13-node-v1.8.0.zip`),
+		)
+
+		It("validates the node package before reading the installed setup", func() {
+			Expect(UpgradeCmd.Flags().Set(nodeNameFlag, "k2s-nodepkg-debian13")).To(Succeed())
+			Expect(UpgradeCmd.Flags().Set(nodePackageFlag, filepath.Join(GinkgoT().TempDir(), "missing.zip"))).To(Succeed())
+
+			err := upgradeCluster(UpgradeCmd, nil)
+
+			Expect(err).To(MatchError(ContainSubstring("does not exist")))
 		})
 	})
 

@@ -111,6 +111,17 @@ var _ = Describe("linuxNodeProvider", Label("unit"), func() {
 			Expect(strings.TrimSpace(string(args))).To(Equal("--name worker1 --wait-for-not-ready --install-dir " + installDir + " --config-dir /var/lib/k2s"))
 		})
 	})
+
+	Describe("Upgrade", func() {
+		It("validates the input and reports that node upgrade is not supported", func() {
+			nodePackage := filepath.Join(GinkgoT().TempDir(), "debian13-node.zip")
+			Expect(os.WriteFile(nodePackage, []byte("zip"), 0o600)).To(Succeed())
+			p := &linuxNodeProvider{installDir: GinkgoT().TempDir()}
+
+			Expect(p.Upgrade(NodeUpgradeConfig{NodeName: "worker;hostname", NodePackagePath: nodePackage})).To(MatchError(ContainSubstring("invalid node name")))
+			Expect(p.Upgrade(NodeUpgradeConfig{NodeName: "worker1", NodePackagePath: nodePackage})).To(MatchError(ErrNotSupported))
+		})
+	})
 })
 
 var _ = Describe("worker-node.module.sh", Label("unit"), func() {

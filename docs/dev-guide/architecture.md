@@ -191,7 +191,7 @@ The following operations are **not yet available** on Linux hosts and return an 
 |------|-----------|
 | System | `upgrade`, `restore`, `compact`, full offline `package`, node delta package |
 | Addons | `export`, `import` |
-| Nodes | `node rename` |
+| Nodes | `node rename`, `node upgrade` |
 | Images | `image repair` (Windows-only) |
 
 ### Adding a New Provider Domain
